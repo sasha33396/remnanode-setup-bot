@@ -108,17 +108,9 @@ Business-critical rules:
   installation, PostgreSQL-backed TOFU host-key verification, bounded SSH
   commands, and typed VPS preflight.
 
-## Current stage
-
 ### PROMPT 6 — Idempotent VPS Provisioner
 
-Current branch:
-
-```text
-feature/idempotent-provisioner
-```
-
-Implemented but not yet merged at the time this handoff was written:
+- Merged to `main` through pull request #3.
 
 - Stable stage engine for `system`, `docker`, `sysctl`, `limits`, `firewall`,
   `fail2ban`, `remnanode`, `node_exporter`, `speedtest_exporter`, `logrotate`,
@@ -174,6 +166,47 @@ Implemented but not yet merged at the time this handoff was written:
 Certificate Manager, certificate issuance/renewal, and deployment orchestration
 remain outside this stage.
 
+## Current stage
+
+### PROMPT 7 — Telegram Bot UI
+
+Current branch:
+
+```text
+feature/telegram-bot-ui
+```
+
+Implemented but not yet merged at the time this handoff was written:
+
+- Standard-library Telegram Bot API long-polling transport with token-safe
+  errors and inline/reply keyboard support.
+- `TELEGRAM_ALLOWED_USERS` authorization enforced before application calls.
+- Main menu for Add Node, Nodes, and Deployments.
+- Expiring, concurrency-safe Add Node wizard with Host inline buttons, manual
+  Node name validation, duplicate name checks, public VPS IP validation,
+  duplicate address checks, password capture, preflight, and confirmation.
+- Password messages are deleted immediately when possible. Password bytes live
+  only in clearable transient session memory, are actively cleared on expiry,
+  cancellation, replacement, failure, shutdown, or deployment completion, and
+  never enter callback data.
+- Callback data contains only an action, random nonce, and Host list index; Host
+  IDs, deployment IDs, IPs, and passwords are not embedded.
+- Confirmation renders only safe Host remark, `host.address` SNI, Node name, VPS
+  IP, resolved DNS zone, certificate readiness, config profile readiness, and
+  explicitly safe warnings.
+- Deploy edits the confirmation message in place for every safe progress update
+  and the terminal result.
+- Telegram depends only on an `Application` interface for Hosts, checks,
+  preflight, deployment, cancellation, Nodes, and deployment history. It does
+  not import SSH, provisioner, PostgreSQL, Remnawave, or DNS implementations.
+- Tests cover wizard transitions, duplicate validation, unauthorized users,
+  public IP policy, password-message deletion, callback secrecy, expiry cleanup,
+  single-message progress, Bot API keyboard serialization, and token-safe
+  transport errors.
+
+Application orchestration and runtime wiring in `cmd/deployer` remain outside
+this stage.
+
 ## Local checks
 
 PowerShell environments with restricted global Go caches can use:
@@ -199,7 +232,7 @@ go test -count=1 -v ./internal/repository/postgres
 The integration test creates and removes an isolated schema. Do not point it at
 a database where schema creation is prohibited.
 
-## Remaining work after PROMPT 6
+## Remaining work after PROMPT 7
 
 - Validate SSH and every provisioning stage against a disposable Ubuntu/Debian
   VPS before production use. Specifically smoke-test Docker builds on supported
@@ -208,7 +241,9 @@ a database where schema creation is prohibited.
 - Implement the centralized Certificate Manager and pass its in-memory
   certificate material into the adapter when orchestration is requested.
 - Wire preflight, certificates, provisioner, Remnawave, and DNS into deployment
-  orchestration only when a later prompt explicitly requests it.
-- Implement Telegram flow only when requested.
+  orchestration and implement the Telegram `Application` interface only when a
+  later prompt explicitly requests it.
+- Start the Bot API polling transport from `cmd/deployer` only after the
+  application implementation is available.
 - Preserve the persistent deployment state machine and safe error fields during
   future orchestration work.

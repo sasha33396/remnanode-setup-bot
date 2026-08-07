@@ -1,9 +1,10 @@
 # Remnanode Setup Bot
 
-Production-oriented Go service for deploying Remnawave nodes through a future
-Telegram-controlled workflow. Configuration, persistence, external API clients,
-SSH preflight, and the idempotent VPS provisioner are implemented; end-to-end
-deployment orchestration is intentionally not wired yet.
+Production-oriented Go service for deploying Remnawave nodes through a Telegram
+operator workflow. Configuration, persistence, external API clients, SSH
+preflight, the idempotent VPS provisioner, and the Telegram presentation/state
+layer are implemented; end-to-end deployment orchestration is intentionally not
+wired yet.
 
 ## Requirements
 
@@ -40,6 +41,18 @@ go run ./cmd/deployer
 ```
 
 The bootstrap validates the database URL but does not connect to PostgreSQL yet.
+
+## Telegram operator UI
+
+The `internal/telegram` package provides a Bot API long-polling transport and an
+authorized, expiring Add Node wizard. It exposes application interfaces for
+Hosts, duplicate checks, preflight, deployment progress, Nodes, and deployment
+history. It never imports or directly invokes SSH or concrete API clients.
+
+Temporary root passwords are deleted from Telegram when possible, retained only
+in clearable in-memory wizard state, and never placed in callback data. The
+current executable does not construct the application implementation or start
+the Telegram polling loop; that remains part of end-to-end orchestration.
 
 ## Database migrations
 
