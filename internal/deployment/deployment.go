@@ -92,6 +92,7 @@ type Deployment struct {
 	NodeName                  string
 	TargetVPSIP               netip.Addr
 	RemnawaveNodeUUID         *string
+	SSHHostKeyFingerprint     *string
 	Status                    Status
 	CurrentStep               string
 	SafeErrorCode             *string

@@ -43,12 +43,14 @@ Apply the migrations before using deployment persistence. With `psql` available:
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host_key.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host_key.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.down.sql
 ```
 
