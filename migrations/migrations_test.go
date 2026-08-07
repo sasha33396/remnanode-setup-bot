@@ -43,3 +43,31 @@ func TestSSHHostKeyMigrationPersistsFingerprintWithoutPassword(t *testing.T) {
 		t.Fatal("SSH host key migration must not contain a password column")
 	}
 }
+
+func TestCertificateManagerMigrationContainsMetadataWithoutPrivateKeys(t *testing.T) {
+	contents, err := Files.ReadFile("000003_certificate_manager.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"certificate_records", "certificate_versions", "certificate_distributions", "certificate_fingerprint", "expires_at", "last_renewed_at", "active_version"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("certificate migration does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"private_key", "privkey.pem", "cf_api_token"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("certificate migration contains forbidden secret field %q", forbidden)
+		}
+	}
+}
+
+func TestRecoveryMigrationAddsManualReview(t *testing.T) {
+	contents, err := Files.ReadFile("000004_production_recovery.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ToLower(string(contents)), "manual_review") {
+		t.Fatal("recovery migration does not contain MANUAL_REVIEW")
+	}
+}

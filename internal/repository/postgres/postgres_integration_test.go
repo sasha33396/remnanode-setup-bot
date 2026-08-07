@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	repositorycontract "remnanode-setup-bot/internal/repository"
 	"remnanode-setup-bot/migrations"
@@ -60,7 +61,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql"} {
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql"} {
 		upSQL, err := migrations.Files.ReadFile(migration)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", migration, err)
@@ -179,6 +180,27 @@ func TestRepositoryIntegration(t *testing.T) {
 	_, err = repo.GetDeployment(ctx, "11111111-1111-4111-8111-111111111111")
 	if !errors.Is(err, repositorycontract.ErrNotFound) {
 		t.Fatalf("GetDeployment(missing) error = %v, want ErrNotFound", err)
+	}
+
+	issuedAt := time.Now().Add(-time.Hour).UTC()
+	expiresAt := time.Now().Add(90 * 24 * time.Hour).UTC()
+	version := certmanager.Version{SNI: "de.example.com", Version: "v-20260807T120000Z-1234abcd", Fingerprint: strings.Repeat("a", 64), Serial: "1234", IssuedAt: issuedAt, ExpiresAt: expiresAt, Status: certmanager.VersionPending, CreatedAt: time.Now().UTC()}
+	if err := repo.SaveVersion(ctx, version); err != nil {
+		t.Fatalf("SaveVersion() error = %v", err)
+	}
+	if err := repo.ActivateVersion(ctx, version.SNI, version.Version, false); err != nil {
+		t.Fatalf("ActivateVersion() error = %v", err)
+	}
+	certificate, err := repo.GetActive(ctx, version.SNI)
+	if err != nil || certificate.ActiveVersion != version.Version || certificate.Fingerprint != version.Fingerprint {
+		t.Fatalf("GetActive() = %#v, %v", certificate, err)
+	}
+	if err := repo.RecordDistribution(ctx, certmanager.DistributionRecord{SNI: version.SNI, Version: version.Version, DeploymentID: first.ID, NodeIP: first.TargetVPSIP, Status: certmanager.DistributionSucceeded, AttemptedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("RecordDistribution() error = %v", err)
+	}
+	versions, err := repo.ListVersions(ctx, version.SNI)
+	if err != nil || len(versions) != 1 || versions[0].Status != certmanager.VersionActive {
+		t.Fatalf("ListVersions() = %#v, %v", versions, err)
 	}
 }
 

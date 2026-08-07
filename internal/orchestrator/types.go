@@ -34,12 +34,12 @@ var (
 	ErrPersistenceFailed        = errors.New("deployment persistence failed")
 )
 
-type CertificateReadiness string
+type CertificateReadiness = certificates.Readiness
 
 const (
-	CertificateUnknown  CertificateReadiness = "unknown"
-	CertificateReady    CertificateReadiness = "ready"
-	CertificateNotReady CertificateReadiness = "not_ready"
+	CertificateUnknown  = certificates.ReadinessUnknown
+	CertificateReady    = certificates.ReadinessReady
+	CertificateNotReady = certificates.ReadinessNotReady
 )
 
 // CertificateProvider owns certificate lookup/issuance. Prepare returns an
@@ -93,6 +93,15 @@ type Config struct {
 	NodeConnectTimeout       time.Duration
 	InitialPollBackoff       time.Duration
 	MaxPollBackoff           time.Duration
+	Observer                 Observer
+}
+
+type Observer interface {
+	DeploymentCreated()
+	DeploymentFailed()
+	ActiveDeployment(int64)
+	DeploymentDuration(time.Duration)
+	ProvisioningStepDuration(string, time.Duration)
 }
 
 type PrepareInput struct {
@@ -127,6 +136,12 @@ type Progress struct {
 }
 
 type ProgressSink func(Progress)
+
+type SafeLogEntry struct {
+	Step    string
+	Status  string
+	Summary string
+}
 
 // SafeError exposes only an allow-listed operator message and code.
 type SafeError struct {

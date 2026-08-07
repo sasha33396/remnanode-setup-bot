@@ -144,3 +144,12 @@ type Application interface {
 	ListNodes(context.Context) ([]NodeSummary, error)
 	ListDeployments(context.Context, int) ([]DeploymentSummary, error)
 }
+
+// RecoveryApplication is optional. Controller exposes these operations only
+// when the application implements the safe production-recovery contract.
+type RecoveryApplication interface {
+	RetryFailedStep(context.Context, string) error
+	RetryDNS(context.Context, string) error
+	RecheckRemnawave(context.Context, string) (string, error)
+	ViewSafeLogs(context.Context, string) ([]string, error)
+}

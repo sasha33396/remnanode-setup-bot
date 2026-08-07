@@ -4,36 +4,56 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	defaultHealthAddr     = ":8080"
-	defaultXraySNIRepoURL = "https://github.com/sasha33396/sni-external.git"
-	defaultXraySNIRef     = "v0.1.0-external"
+	defaultHealthAddr       = ":8080"
+	defaultXraySNIRepoURL   = "https://github.com/sasha33396/sni-external.git"
+	defaultXraySNIRef       = "v0.1.0-external"
+	defaultACMEDirectory    = "https://acme-v02.api.letsencrypt.org/directory"
+	defaultCertificateStore = "/var/lib/deployer/certificates"
 )
 
 // Config contains the deployer's startup configuration. Callers must not log
 // the complete value because it contains secrets.
 type Config struct {
-	TelegramBotToken     string
-	TelegramAllowedUsers []int64
-	RemnawaveURL         string
-	RemnawaveToken       string
-	DNSBalancerURL       string
-	DNSBalancerToken     string
-	CloudflareAPIToken   string
-	RemnaAPIIP           netip.Addr
-	MetricsIP            netip.Addr
-	DatabaseURL          string
-	DeploySSHPrivateKey  string
-	XraySNIRepoURL       string
-	XraySNIRef           string
-	HealthAddr           string
+	TelegramBotToken            string
+	TelegramAllowedUsers        []int64
+	RemnawaveURL                string
+	RemnawaveToken              string
+	DNSBalancerURL              string
+	DNSBalancerToken            string
+	CloudflareAPIToken          string
+	ACMEEmail                   string
+	ACMEDirectoryURL            string
+	CertificateStorePath        string
+	RemnaAPIIP                  netip.Addr
+	MetricsIP                   netip.Addr
+	DatabaseURL                 string
+	DeploySSHPrivateKey         string
+	XraySNIRepoURL              string
+	XraySNIRef                  string
+	HealthAddr                  string
+	HTTPTimeout                 time.Duration
+	SSHConnectTimeout           time.Duration
+	SSHCommandTimeout           time.Duration
+	NodeConnectTimeout          time.Duration
+	TelegramPollTimeout         time.Duration
+	TelegramSessionTTL          time.Duration
+	CertificateRenewBefore      time.Duration
+	CertificateRenewInterval    time.Duration
+	CertificateIssueTimeout     time.Duration
+	DNSPropagationTimeout       time.Duration
+	DNSPropagationInterval      time.Duration
+	MaxConcurrentDeployments    int
+	MaxCertificateDistributions int
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -55,17 +75,33 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 
 	cfg := Config{
-		TelegramBotToken:    required("TELEGRAM_BOT_TOKEN"),
-		RemnawaveURL:        required("REMNAWAVE_URL"),
-		RemnawaveToken:      required("REMNAWAVE_TOKEN"),
-		DNSBalancerURL:      required("DNS_BALANCER_URL"),
-		DNSBalancerToken:    required("DNS_BALANCER_TOKEN"),
-		CloudflareAPIToken:  required("CF_API_TOKEN"),
-		DatabaseURL:         required("DATABASE_URL"),
-		DeploySSHPrivateKey: required("DEPLOY_SSH_PRIVATE_KEY"),
-		XraySNIRepoURL:      defaultXraySNIRepoURL,
-		XraySNIRef:          defaultXraySNIRef,
-		HealthAddr:          defaultHealthAddr,
+		TelegramBotToken:            required("TELEGRAM_BOT_TOKEN"),
+		RemnawaveURL:                required("REMNAWAVE_URL"),
+		RemnawaveToken:              required("REMNAWAVE_TOKEN"),
+		DNSBalancerURL:              required("DNS_BALANCER_URL"),
+		DNSBalancerToken:            required("DNS_BALANCER_TOKEN"),
+		CloudflareAPIToken:          required("CF_API_TOKEN"),
+		ACMEEmail:                   required("ACME_EMAIL"),
+		DatabaseURL:                 required("DATABASE_URL"),
+		DeploySSHPrivateKey:         required("DEPLOY_SSH_PRIVATE_KEY"),
+		XraySNIRepoURL:              defaultXraySNIRepoURL,
+		XraySNIRef:                  defaultXraySNIRef,
+		HealthAddr:                  defaultHealthAddr,
+		ACMEDirectoryURL:            defaultACMEDirectory,
+		CertificateStorePath:        defaultCertificateStore,
+		HTTPTimeout:                 30 * time.Second,
+		SSHConnectTimeout:           20 * time.Second,
+		SSHCommandTimeout:           5 * time.Minute,
+		NodeConnectTimeout:          5 * time.Minute,
+		TelegramPollTimeout:         30 * time.Second,
+		TelegramSessionTTL:          15 * time.Minute,
+		CertificateRenewBefore:      30 * 24 * time.Hour,
+		CertificateRenewInterval:    12 * time.Hour,
+		CertificateIssueTimeout:     10 * time.Minute,
+		DNSPropagationTimeout:       5 * time.Minute,
+		DNSPropagationInterval:      5 * time.Second,
+		MaxConcurrentDeployments:    2,
+		MaxCertificateDistributions: 4,
 	}
 
 	if value, ok := lookup("HEALTH_ADDR"); ok && strings.TrimSpace(value) != "" {
@@ -76,6 +112,52 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 	if value, ok := lookup("XRAY_SNI_REF"); ok && strings.TrimSpace(value) != "" {
 		cfg.XraySNIRef = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("ACME_DIRECTORY_URL"); ok && strings.TrimSpace(value) != "" {
+		cfg.ACMEDirectoryURL = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("CERTIFICATE_STORE_PATH"); ok && strings.TrimSpace(value) != "" {
+		cfg.CertificateStorePath = strings.TrimSpace(value)
+	}
+
+	durations := []struct {
+		name   string
+		target *time.Duration
+	}{
+		{"HTTP_TIMEOUT", &cfg.HTTPTimeout}, {"SSH_CONNECT_TIMEOUT", &cfg.SSHConnectTimeout},
+		{"SSH_COMMAND_TIMEOUT", &cfg.SSHCommandTimeout}, {"NODE_CONNECT_TIMEOUT", &cfg.NodeConnectTimeout},
+		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
+		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
+		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
+		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
+	}
+	for _, item := range durations {
+		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
+			parsed, err := time.ParseDuration(strings.TrimSpace(value))
+			if err != nil || parsed <= 0 {
+				validationErrors = append(validationErrors, fmt.Errorf("%s must be a positive duration", item.name))
+			} else {
+				*item.target = parsed
+			}
+		}
+	}
+	integers := []struct {
+		name    string
+		target  *int
+		maximum int
+	}{
+		{"MAX_CONCURRENT_DEPLOYMENTS", &cfg.MaxConcurrentDeployments, 100},
+		{"MAX_CERTIFICATE_DISTRIBUTIONS", &cfg.MaxCertificateDistributions, 32},
+	}
+	for _, item := range integers {
+		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
+			parsed, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || parsed <= 0 || parsed > item.maximum {
+				validationErrors = append(validationErrors, fmt.Errorf("%s must be between 1 and %d", item.name, item.maximum))
+			} else {
+				*item.target = parsed
+			}
+		}
 	}
 
 	allowedUsers := required("TELEGRAM_ALLOWED_USERS")
@@ -93,14 +175,18 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 
 	for name, value := range map[string]string{
-		"REMNAWAVE_URL":     cfg.RemnawaveURL,
-		"DNS_BALANCER_URL":  cfg.DNSBalancerURL,
-		"XRAY_SNI_REPO_URL": cfg.XraySNIRepoURL,
-		"DATABASE_URL":      cfg.DatabaseURL,
+		"REMNAWAVE_URL":      cfg.RemnawaveURL,
+		"DNS_BALANCER_URL":   cfg.DNSBalancerURL,
+		"XRAY_SNI_REPO_URL":  cfg.XraySNIRepoURL,
+		"DATABASE_URL":       cfg.DatabaseURL,
+		"ACME_DIRECTORY_URL": cfg.ACMEDirectoryURL,
 	} {
 		if value != "" && !validURL(value, name == "DATABASE_URL") {
 			validationErrors = append(validationErrors, fmt.Errorf("%s must be a valid URL", name))
 		}
+	}
+	if address, err := mail.ParseAddress(cfg.ACMEEmail); err != nil || address.Address != cfg.ACMEEmail {
+		validationErrors = append(validationErrors, errors.New("ACME_EMAIL must be a valid email address"))
 	}
 	if !validXraySNIRepositoryURL(cfg.XraySNIRepoURL) {
 		validationErrors = append(validationErrors, errors.New("XRAY_SNI_REPO_URL must be a credential-free HTTPS URL"))

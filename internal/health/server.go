@@ -18,14 +18,23 @@ type Server struct {
 	server *http.Server
 	logger *slog.Logger
 	ready  atomic.Bool
+	check  func(context.Context) error
 }
 
 // NewServer creates a health server bound to addr.
 func NewServer(addr string, logger *slog.Logger) *Server {
-	s := &Server{logger: logger}
+	return NewServerWithOptions(addr, logger, nil, nil)
+}
+
+// NewServerWithOptions adds dependency readiness and a metrics endpoint.
+func NewServerWithOptions(addr string, logger *slog.Logger, check func(context.Context) error, metrics http.Handler) *Server {
+	s := &Server{logger: logger, check: check}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.liveness)
 	mux.HandleFunc("GET /readyz", s.readiness)
+	if metrics != nil {
+		mux.Handle("GET /metrics", metrics)
+	}
 	s.server = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -77,11 +86,19 @@ func (s *Server) liveness(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-func (s *Server) readiness(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) readiness(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if !s.ready.Load() {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
+	}
+	if s.check != nil {
+		checkCtx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.check(checkCtx); err != nil {
+			http.Error(w, "dependency unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ready\n"))

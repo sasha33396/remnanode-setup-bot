@@ -66,6 +66,22 @@ func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
+// CheckSchema verifies all runtime-critical migration objects before the
+// service reports readiness.
+func (r *Repository) CheckSchema(ctx context.Context) error {
+	var deployments, certificateRecords, certificateVersions *string
+	if err := r.pool.QueryRow(ctx, `
+        SELECT to_regclass('public.deployments')::text,
+               to_regclass('public.certificate_records')::text,
+               to_regclass('public.certificate_versions')::text`).Scan(&deployments, &certificateRecords, &certificateVersions); err != nil {
+		return errors.New("verify PostgreSQL schema failed")
+	}
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil {
+		return errors.New("required PostgreSQL migrations are not applied")
+	}
+	return nil
+}
+
 // CreateDeployment inserts a deployment in CREATED state.
 func (r *Repository) CreateDeployment(ctx context.Context, params repositorycontract.CreateDeploymentParams) (deployment.Deployment, error) {
 	if params.ID == "" {
@@ -140,7 +156,7 @@ func (r *Repository) UpdateDeploymentState(ctx context.Context, id string, param
                 ELSE started_at
             END,
             completed_at = CASE
-                WHEN $2 IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED')
+                WHEN $2 IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED', 'MANUAL_REVIEW')
                     THEN COALESCE(completed_at, now())
                 ELSE NULL
             END,
@@ -305,16 +321,17 @@ func (r *Repository) FindUnfinishedDeployments(ctx context.Context, limit int) (
 	return r.list(ctx, `
         SELECT `+deploymentColumns+`
         FROM deployments
-        WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED')
+        WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED', 'MANUAL_REVIEW')
         ORDER BY updated_at ASC, id ASC
         LIMIT $1`, limit, "find unfinished deployments")
 }
 
-func (r *Repository) list(ctx context.Context, query string, limit int, operation string) ([]deployment.Deployment, error) {
+func (r *Repository) list(ctx context.Context, query string, limit int, operation string, queryArgs ...any) ([]deployment.Deployment, error) {
 	if limit < 1 || limit > 100 {
 		return nil, invalid("list limit must be between 1 and 100")
 	}
-	rows, err := r.pool.Query(ctx, query, limit)
+	args := append([]any{limit}, queryArgs...)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", operation, err)
 	}

@@ -8,9 +8,8 @@ import (
 	"remnanode-setup-bot/internal/certificates"
 )
 
-// StaticCertificateProvider is a temporary in-memory implementation suitable
-// for operator-supplied certificate material until a certificate manager is
-// connected.
+// StaticCertificateProvider is an in-memory implementation retained for tests
+// and isolated development. Production runtime uses certmanager.Manager.
 type StaticCertificateProvider struct {
 	mu       sync.RWMutex
 	material map[string]certificates.Material

@@ -4,8 +4,9 @@ Production-oriented Go service for deploying Remnawave nodes through a Telegram
 operator workflow. Configuration, persistence, external API clients, SSH
 preflight, the idempotent VPS provisioner, and the Telegram presentation/state
 layer are implemented. The deployment orchestration layer connects those
-components through interfaces and persists every important workflow transition;
-runtime composition in `cmd/deployer` is intentionally not wired yet.
+components through interfaces and persists every important workflow transition.
+The executable wires PostgreSQL, certificate management, recovery, Telegram,
+health checks, and metrics into one runtime.
 
 ## Requirements
 
@@ -28,6 +29,10 @@ PostgreSQL URL.
 credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 `v0.1.0-external` tag; branch names such as `main` are rejected.
 
+`ACME_EMAIL` is the ACME account contact. `CF_API_TOKEN` is used only by the
+central DNS-01 client and is never copied to a Node. Certificate versions and
+the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
+
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.
 For Compose, `DATABASE_URL` must use `postgres` as the database hostname.
@@ -41,7 +46,8 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-The bootstrap validates the database URL but does not connect to PostgreSQL yet.
+Migrations `000001` through `000004` must be applied first. Startup verifies
+PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
 
@@ -53,8 +59,7 @@ history. It never imports or directly invokes SSH or concrete API clients.
 Temporary root passwords are deleted from Telegram when possible, retained only
 in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
-executable does not construct the runtime dependencies or start the polling
-loop yet.
+executable starts authorized Telegram long polling and graceful shutdown.
 
 ## Deployment orchestration
 
@@ -67,8 +72,13 @@ Node.
 Deployments are bounded by an in-process concurrency limit and honor context
 cancellation. A DNS failure preserves the healthy Remnawave Node, records
 `DNS_FAILED`, and can be resumed with the DNS-only retry operation. Certificate
-material is obtained only through the `CertificateProvider` interface; the
-included static provider is temporary until the certificate manager is ready.
+material is obtained only through the centralized Certificate Manager.
+
+The manager enforces one active certificate per normalized SNI, obtains and
+renews certificates with ACME DNS-01 through Cloudflare, stores protected
+immutable versions, and distributes renewed material to DNS-configured Nodes.
+Node activation follows the pinned xray-sni external contract and rolls back on
+reload or TLS health failure.
 
 ## Database migrations
 
@@ -77,12 +87,16 @@ Apply the migrations before using deployment persistence. With `psql` available:
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host_key.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.down.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host_key.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.down.sql
 ```
@@ -95,15 +109,16 @@ After creating `.env` and the SSH key file referenced by it:
 docker compose up --build
 ```
 
-The Compose stack starts the deployer and PostgreSQL, waits for PostgreSQL's
-healthcheck, and persists database data in the `postgres_data` volume. The health
-endpoint is bound to localhost on `HEALTH_PORT` (port `8080` by default).
+The Compose stack persists PostgreSQL in `postgres_data` and protected
+certificate versions/account key in `certificate_store`. The deployer runs as
+non-root with a read-only filesystem and dropped capabilities. Health and
+metrics are bound to localhost on `HEALTH_PORT`.
 
 ## Health probes
 
 - `GET /healthz` — process liveness
-- `GET /readyz` — readiness; returns success after the HTTP listener starts and
-  switches to unavailable during graceful shutdown
+- `GET /readyz` — PostgreSQL/schema readiness and graceful-shutdown state
+- `GET /metrics` — Prometheus-compatible operational metrics
 
 Example:
 
@@ -132,3 +147,7 @@ unit tests still run.
 
 The service handles `SIGINT` and `SIGTERM`, marks itself unready, and gracefully
 stops its HTTP server before exiting.
+
+See [Production operations](docs/OPERATIONS.md) for installation, configuration,
+backup, disaster recovery, upgrades, troubleshooting, the readiness checklist,
+and explicitly documented remaining risks.

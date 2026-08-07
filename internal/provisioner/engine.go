@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/repository"
@@ -51,10 +52,11 @@ type StepStore interface {
 // Report is a safe result suitable for an operator UI. It contains no remote
 // command output and no provisioning secrets.
 type Report struct {
-	Name    string
-	Status  deployment.StepStatus
-	Changed bool
-	Summary string
+	Name     string
+	Status   deployment.StepStatus
+	Changed  bool
+	Summary  string
+	Duration time.Duration
 }
 
 // Engine runs provisioning stages in their stable order.
@@ -118,7 +120,7 @@ func (e *Engine) RunWithProgress(ctx context.Context, deploymentID string, progr
 		if runErr != nil {
 			safeMessage := "stage failed; inspect protected service logs"
 			_, persistErr := e.record(ctx, deploymentID, stage.Name(), deployment.StepStatusFailed, report.Summary, safeMessage)
-			reports = append(reports, Report{Name: stage.Name(), Status: deployment.StepStatusFailed, Changed: report.Changed, Summary: report.Summary})
+			reports = append(reports, Report{Name: stage.Name(), Status: deployment.StepStatusFailed, Changed: report.Changed, Summary: report.Summary, Duration: report.Duration})
 			emitReport(progress, reports[len(reports)-1])
 			if persistErr != nil {
 				return reports, errors.Join(fmt.Errorf("provisioning stage %s failed: %w", stage.Name(), runErr), fmt.Errorf("record stage failure: %w", persistErr))
@@ -141,8 +143,10 @@ func emitReport(progress func(Report), report Report) {
 	}
 }
 
-func runStage(ctx context.Context, stage Stage) (Report, error) {
-	report := Report{Name: stage.Name()}
+func runStage(ctx context.Context, stage Stage) (report Report, resultErr error) {
+	started := time.Now()
+	report = Report{Name: stage.Name()}
+	defer func() { report.Duration = time.Since(started) }()
 	inspection, err := stage.Inspect(ctx)
 	if err != nil {
 		report.Summary = "inspection failed"
