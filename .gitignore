@@ -4,3 +4,5 @@ secrets/
 *.exe
 coverage.out
 .gocache/
+.gomodcache/
+.gopath/

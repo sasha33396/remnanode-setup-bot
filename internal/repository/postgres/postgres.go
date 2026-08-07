@@ -1,0 +1,395 @@
+// Package postgres implements deployment persistence in PostgreSQL.
+package postgres
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"remnanode-setup-bot/internal/deployment"
+	repositorycontract "remnanode-setup-bot/internal/repository"
+)
+
+const deploymentColumns = `
+    id::text,
+    telegram_operator_user_id,
+    selected_remnawave_host_uuid::text,
+    selected_host_remark,
+    sni_domain,
+    node_name,
+    host(target_vps_ip),
+    remnawave_node_uuid::text,
+    status,
+    current_step,
+    safe_error_code,
+    safe_error_message,
+    created_at,
+    updated_at,
+    started_at,
+    completed_at`
+
+// Repository persists deployment jobs using a pgx connection pool.
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+var _ repositorycontract.DeploymentRepository = (*Repository)(nil)
+
+// Open creates and verifies a PostgreSQL connection pool. The caller controls
+// connection timeout through ctx and must close the returned pool.
+func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, errors.New("create PostgreSQL pool: invalid database configuration")
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, errors.New("create PostgreSQL pool: initialization failed")
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, errors.New("ping PostgreSQL: connection failed")
+	}
+	return pool, nil
+}
+
+// New creates a PostgreSQL deployment repository.
+func New(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
+}
+
+// CreateDeployment inserts a deployment in CREATED state.
+func (r *Repository) CreateDeployment(ctx context.Context, params repositorycontract.CreateDeploymentParams) (deployment.Deployment, error) {
+	if params.ID == "" {
+		var err error
+		params.ID, err = deployment.NewID()
+		if err != nil {
+			return deployment.Deployment{}, err
+		}
+	}
+	if err := validateCreate(params); err != nil {
+		return deployment.Deployment{}, err
+	}
+
+	row := r.pool.QueryRow(ctx, `
+        INSERT INTO deployments (
+            id, telegram_operator_user_id, selected_remnawave_host_uuid,
+            selected_host_remark, sni_domain, node_name, target_vps_ip,
+            status, current_step
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING `+deploymentColumns,
+		params.ID,
+		params.TelegramOperatorUserID,
+		params.SelectedRemnawaveHostUUID,
+		params.SelectedHostRemark,
+		params.SNIDomain,
+		params.NodeName,
+		params.TargetVPSIP.String(),
+		deployment.StatusCreated,
+		"created",
+	)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, fmt.Errorf("create deployment: %w", err)
+	}
+	return result, nil
+}
+
+// GetDeployment returns a deployment by UUID.
+func (r *Repository) GetDeployment(ctx context.Context, id string) (deployment.Deployment, error) {
+	if !validUUID(id) {
+		return deployment.Deployment{}, invalid("deployment ID")
+	}
+	row := r.pool.QueryRow(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE id = $1`, id)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("get deployment", err)
+	}
+	return result, nil
+}
+
+// UpdateDeploymentState atomically updates state, safe error details, and job
+// lifecycle timestamps.
+func (r *Repository) UpdateDeploymentState(ctx context.Context, id string, params repositorycontract.UpdateDeploymentStateParams) (deployment.Deployment, error) {
+	if !validUUID(id) {
+		return deployment.Deployment{}, invalid("deployment ID")
+	}
+	if !params.Status.Valid() {
+		return deployment.Deployment{}, invalid("deployment status")
+	}
+	if strings.TrimSpace(params.CurrentStep) == "" {
+		return deployment.Deployment{}, invalid("current step")
+	}
+
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET status = $2,
+            current_step = $3,
+            safe_error_code = $4,
+            safe_error_message = $5,
+            started_at = CASE
+                WHEN $2 <> 'CREATED' THEN COALESCE(started_at, now())
+                ELSE started_at
+            END,
+            completed_at = CASE
+                WHEN $2 IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED')
+                    THEN COALESCE(completed_at, now())
+                ELSE NULL
+            END,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns,
+		id,
+		params.Status,
+		params.CurrentStep,
+		params.SafeErrorCode,
+		params.SafeErrorMessage,
+	)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("update deployment state", err)
+	}
+	return result, nil
+}
+
+// SetRemnawaveNodeUUID records the UUID assigned after successful node creation.
+func (r *Repository) SetRemnawaveNodeUUID(ctx context.Context, id, nodeUUID string) (deployment.Deployment, error) {
+	if !validUUID(id) {
+		return deployment.Deployment{}, invalid("deployment ID")
+	}
+	if !validUUID(nodeUUID) {
+		return deployment.Deployment{}, invalid("Remnawave Node UUID")
+	}
+
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET remnawave_node_uuid = $2, updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns,
+		id,
+		nodeUUID,
+	)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("set Remnawave Node UUID", err)
+	}
+	return result, nil
+}
+
+// RecordDeploymentStep inserts or updates one named step. Updating the step and
+// deployment timestamp/current step is one transaction.
+func (r *Repository) RecordDeploymentStep(ctx context.Context, params repositorycontract.RecordStepParams) (deployment.Step, error) {
+	if !validUUID(params.DeploymentID) {
+		return deployment.Step{}, invalid("deployment ID")
+	}
+	if strings.TrimSpace(params.Name) == "" {
+		return deployment.Step{}, invalid("step name")
+	}
+	if !params.Status.Valid() {
+		return deployment.Step{}, invalid("step status")
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return deployment.Step{}, fmt.Errorf("begin deployment step transaction: %w", err)
+	}
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+
+	commandTag, err := tx.Exec(ctx, `
+        UPDATE deployments
+        SET current_step = CASE WHEN $2 = 'RUNNING' THEN $3 ELSE current_step END,
+            updated_at = now()
+        WHERE id = $1`, params.DeploymentID, params.Status, params.Name)
+	if err != nil {
+		return deployment.Step{}, fmt.Errorf("touch deployment for step: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		return deployment.Step{}, fmt.Errorf("record deployment step: %w", repositorycontract.ErrNotFound)
+	}
+
+	row := tx.QueryRow(ctx, `
+        INSERT INTO deployment_steps (
+            deployment_id, step_name, status, safe_output_summary,
+            error_message, started_at, completed_at
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            CASE WHEN $3 = 'PENDING' THEN NULL ELSE now() END,
+            CASE WHEN $3 IN ('COMPLETED', 'FAILED', 'SKIPPED') THEN now() ELSE NULL END
+        )
+        ON CONFLICT (deployment_id, step_name) DO UPDATE
+        SET status = EXCLUDED.status,
+            safe_output_summary = EXCLUDED.safe_output_summary,
+            error_message = EXCLUDED.error_message,
+            started_at = CASE
+                WHEN EXCLUDED.status = 'PENDING' THEN deployment_steps.started_at
+                ELSE COALESCE(deployment_steps.started_at, now())
+            END,
+            completed_at = CASE
+                WHEN EXCLUDED.status IN ('COMPLETED', 'FAILED', 'SKIPPED')
+                    THEN COALESCE(deployment_steps.completed_at, now())
+                ELSE NULL
+            END
+        RETURNING deployment_id::text, step_name, status, safe_output_summary,
+                  error_message, started_at, completed_at`,
+		params.DeploymentID,
+		params.Name,
+		params.Status,
+		params.SafeSummary,
+		params.ErrorMessage,
+	)
+	step, err := scanStep(row)
+	if err != nil {
+		return deployment.Step{}, fmt.Errorf("record deployment step: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return deployment.Step{}, fmt.Errorf("commit deployment step: %w", err)
+	}
+	return step, nil
+}
+
+// ListRecentDeployments returns newest deployments first.
+func (r *Repository) ListRecentDeployments(ctx context.Context, limit int) ([]deployment.Deployment, error) {
+	return r.list(ctx, `
+        SELECT `+deploymentColumns+`
+        FROM deployments
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1`, limit, "list recent deployments")
+}
+
+// FindUnfinishedDeployments returns non-terminal deployments, oldest updates
+// first, for future recovery handling. It does not resume them.
+func (r *Repository) FindUnfinishedDeployments(ctx context.Context, limit int) ([]deployment.Deployment, error) {
+	return r.list(ctx, `
+        SELECT `+deploymentColumns+`
+        FROM deployments
+        WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED')
+        ORDER BY updated_at ASC, id ASC
+        LIMIT $1`, limit, "find unfinished deployments")
+}
+
+func (r *Repository) list(ctx context.Context, query string, limit int, operation string) ([]deployment.Deployment, error) {
+	if limit < 1 || limit > 100 {
+		return nil, invalid("list limit must be between 1 and 100")
+	}
+	rows, err := r.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", operation, err)
+	}
+	defer rows.Close()
+
+	results := make([]deployment.Deployment, 0)
+	for rows.Next() {
+		item, err := scanDeployment(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", operation, err)
+		}
+		results = append(results, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: iterate: %w", operation, err)
+	}
+	return results, nil
+}
+
+type scanner interface {
+	Scan(...any) error
+}
+
+func scanDeployment(row scanner) (deployment.Deployment, error) {
+	var result deployment.Deployment
+	var ip string
+	err := row.Scan(
+		&result.ID,
+		&result.TelegramOperatorUserID,
+		&result.SelectedRemnawaveHostUUID,
+		&result.SelectedHostRemark,
+		&result.SNIDomain,
+		&result.NodeName,
+		&ip,
+		&result.RemnawaveNodeUUID,
+		&result.Status,
+		&result.CurrentStep,
+		&result.SafeErrorCode,
+		&result.SafeErrorMessage,
+		&result.CreatedAt,
+		&result.UpdatedAt,
+		&result.StartedAt,
+		&result.CompletedAt,
+	)
+	if err != nil {
+		return deployment.Deployment{}, err
+	}
+	result.TargetVPSIP, err = netip.ParseAddr(ip)
+	if err != nil {
+		return deployment.Deployment{}, fmt.Errorf("parse persisted target VPS IP: %w", err)
+	}
+	return result, nil
+}
+
+func scanStep(row scanner) (deployment.Step, error) {
+	var result deployment.Step
+	err := row.Scan(
+		&result.DeploymentID,
+		&result.Name,
+		&result.Status,
+		&result.SafeSummary,
+		&result.ErrorMessage,
+		&result.StartedAt,
+		&result.CompletedAt,
+	)
+	return result, err
+}
+
+func validateCreate(params repositorycontract.CreateDeploymentParams) error {
+	if !validUUID(params.ID) {
+		return invalid("deployment ID")
+	}
+	if params.TelegramOperatorUserID <= 0 {
+		return invalid("Telegram operator user ID")
+	}
+	if !validUUID(params.SelectedRemnawaveHostUUID) {
+		return invalid("selected Remnawave Host UUID")
+	}
+	if strings.TrimSpace(params.SNIDomain) == "" {
+		return invalid("SNI domain")
+	}
+	if strings.TrimSpace(params.NodeName) == "" {
+		return invalid("Node name")
+	}
+	if !params.TargetVPSIP.IsValid() {
+		return invalid("target VPS IP")
+	}
+	return nil
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	compact := strings.ReplaceAll(value, "-", "")
+	decoded := make([]byte, 16)
+	_, err := hex.Decode(decoded, []byte(compact))
+	return err == nil
+}
+
+func invalid(field string) error {
+	return fmt.Errorf("%s: %w", field, repositorycontract.ErrInvalidArgument)
+}
+
+func mapNotFound(operation string, err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%s: %w", operation, repositorycontract.ErrNotFound)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}

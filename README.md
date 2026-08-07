@@ -37,6 +37,21 @@ go run ./cmd/deployer
 
 The bootstrap validates the database URL but does not connect to PostgreSQL yet.
 
+## Database migrations
+
+Apply the migrations before using deployment persistence. With `psql` available:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.up.sql
+```
+
+The down migration is provided for controlled rollback. It drops deployment
+tables and must only be run intentionally:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.down.sql
+```
+
 ## Run with Docker Compose
 
 After creating `.env` and the SSH key file referenced by it:
@@ -68,6 +83,17 @@ go fmt ./...
 go test ./...
 go vet ./...
 ```
+
+Repository integration tests require a reachable disposable PostgreSQL database.
+They create and remove an isolated schema inside it:
+
+```sh
+TEST_DATABASE_URL="postgres://user:password@localhost:5432/testdb?sslmode=disable" \
+  go test -v ./internal/repository/postgres
+```
+
+Without `TEST_DATABASE_URL`, the PostgreSQL integration test is skipped while
+unit tests still run.
 
 The service handles `SIGINT` and `SIGTERM`, marks itself unready, and gracefully
 stops its HTTP server before exiting.
