@@ -3,7 +3,9 @@ package certificates
 import "log/slog"
 
 // Material is certificate data supplied by a centralized certificate source.
-// It is intentionally transport-neutral and must never be logged or persisted.
+// It is intentionally transport-neutral and must never be logged or returned
+// through normal application APIs. Persistence is permitted only in the
+// protected certificate store.
 type Material struct {
 	FullchainPEM  []byte
 	PrivateKeyPEM []byte

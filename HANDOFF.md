@@ -163,44 +163,43 @@ Business-critical rules:
   pinned Git/ref behavior, runtime failures, rollback safety, and secret
   transport.
 
-Certificate Manager and certificate issuance/renewal remain outside this stage.
+The centralized Certificate Manager and production recovery layer are now part
+of the runtime.
 
 ## Current stage
 
-### PROMPT 8 — Deployment Orchestrator
+### PROMPT 9–10 — Certificate Manager and production hardening
 
 Current branch:
 
 ```text
-feature/deployment-orchestrator
+feature/certificate-manager-hardening
 ```
 
-PROMPT 7 was merged through PR #4 (`8d80962`). PROMPT 8 adds:
+PROMPT 8 was merged through PR #5 (`e257ea6`). This branch adds:
 
-- `DeploymentService` with persisted transitions for `PREFLIGHT`,
-  `PREPARING_CERTIFICATE`, `PROVISIONING`, `CREATING_REMNAWAVE_NODE`,
-  `WAITING_REMNAWAVE`, `ADDING_TO_DNS`, and `COMPLETED`.
-- Host validation and repeated Node name/address uniqueness checks before side
-  effects.
-- Certificate acquisition behind `CertificateProvider`, with a temporary static
-  in-memory implementation.
-- SSH/provisioner adapter using the existing preflight, deployment-key bootstrap,
-  idempotent provisioning engine, and external-certificate xray-sni adapter.
-- Remnawave Node creation only after provisioning succeeds; generated
-  `SECRET_KEY`, port `2222`, Host-derived inbound/profile, immediate UUID
-  persistence, and timeout/backoff connection polling.
-- DNS update only after Remnawave reports the Node connected. DNS failures keep
-  the healthy Node, persist `DNS_FAILED`, and support a DNS-only retry.
-- In-process bounded deployment concurrency, per-deployment duplicate-run
-  protection, resumability, and context cancellation.
-- A Telegram `Application` adapter that keeps the Telegram package dependent on
-  interfaces rather than SSH/API implementations.
-- Integration-style fake tests for full success, provisioning and Remnawave
-  failures, connection failure/timeout, DNS failure/retry, duplicate invocation,
-  concurrency limits, and cancellation.
-
-Runtime dependency construction and Telegram polling startup in `cmd/deployer`
-remain outside this stage.
+- One protected, versioned central certificate store per normalized SNI with
+  PostgreSQL fingerprint, serial, issuance/expiry, renewal, status, active
+  version, and per-Node distribution metadata.
+- ACME RFC 8555 DNS-01 issuance using a central Cloudflare client and protected
+  persisted ACME account key. Cloudflare credentials never reach Nodes.
+- In-process and PostgreSQL advisory locking prevents concurrent issuance for
+  the same SNI.
+- Renewal scheduling, expiry metrics, DNS-config-derived Node targets, bounded
+  SSH distribution, and central activation only after complete distribution.
+- Finalized xray-sni certificate-only activation: temporary uploads through SSH
+  stdin, atomic file switch, Caddy reload, local TLS health validation, and
+  automatic Node rollback.
+- Startup classification of unfinished deployments without blind external
+  retries; exact Remnawave/DNS inspection and `MANUAL_REVIEW` for ambiguity.
+- Safe operator recovery commands for retry step, retry DNS, Remnawave recheck,
+  cancellation, and persisted safe logs.
+- Runtime dependency wiring in `cmd/deployer`, graceful shutdown, dependency
+  readiness, Prometheus metrics, secret-redacting structured logging, and
+  hardened Docker/Compose settings.
+- Tests cover cache hit, initial/concurrent issuance, renewal, invalid and
+  mismatched material, partial distribution, rollback, recovery, metrics, and
+  redaction in addition to the existing deployment suite.
 
 ## Local checks
 
@@ -213,7 +212,7 @@ $env:GOPATH = Join-Path (Get-Location) '.gopath'
 
 go test -count=1 ./...
 go vet ./...
-gofmt -l cmd internal migrations
+# Run gofmt -l on the Go files changed by the current branch.
 git diff --check
 ```
 
@@ -227,16 +226,18 @@ go test -count=1 -v ./internal/repository/postgres
 The integration test creates and removes an isolated schema. Do not point it at
 a database where schema creation is prohibited.
 
-## Remaining work after PROMPT 8
+## Remaining work after PROMPT 10
 
 - Validate SSH and every provisioning stage against a disposable Ubuntu/Debian
   VPS before production use. Specifically smoke-test Docker builds on supported
   architectures, tag checkout, Caddy validation/reload, file ownership and
   modes, local TLS SNI routing, `/health` status 200, and failure recovery.
-- Implement the centralized Certificate Manager and pass its in-memory
-  certificate material through `CertificateProvider`.
-- Construct the repository, Remnawave, DNS, certificate, SSH/provisioner,
-  orchestrator, and Telegram dependencies in `cmd/deployer`, then start the Bot
-  API polling transport.
-- Add startup recovery for resumable non-terminal deployments if automated
-  recovery is desired; the service can already resume them when invoked.
+- Complete a real Cloudflare staging ACME issuance/renewal and disposable VPS
+  distribution/rollback smoke test.
+- Complete an encrypted PostgreSQL + certificate-store backup/restore exercise.
+- Add production monitoring dashboards and alert rules.
+- Run only one deployer replica until deployment execution locking is moved from
+  process memory to a cross-instance primitive. Certificate issuance already
+  uses PostgreSQL locking.
+- Review the full checklist and remaining risks in `docs/OPERATIONS.md` before
+  production use.

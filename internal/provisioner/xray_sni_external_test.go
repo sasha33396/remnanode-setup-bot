@@ -31,6 +31,7 @@ type fakeXrayRunner struct {
 	composeBuildCount int
 	composeUpCount    int
 	reloadCount       int
+	rollbackCount     int
 	managedWriteCount int
 	activeCertificate string
 }
@@ -68,6 +69,11 @@ func (r *fakeXrayRunner) Run(_ context.Context, request sshclient.CommandRequest
 		r.state.FullchainMatches = true
 		r.state.PrivateKeyMatches = true
 		r.state.PermissionsMatch = true
+	case strings.Contains(request.Command, "# xray-sni:rollback-certificates"):
+		r.rollbackCount++
+		r.activeCertificate = "old"
+		r.state.FullchainMatches = false
+		r.state.PrivateKeyMatches = false
 	case strings.Contains(request.Command, "# xray-sni:certificate-permissions"):
 		r.state.PermissionsMatch = true
 	case strings.Contains(request.Command, "# xray-sni:compose-build"):
@@ -276,6 +282,33 @@ func TestExternalXraySNIFailureBeforeActivationKeepsOldCertificate(t *testing.T)
 	}
 	if strings.Contains(err.Error(), "top-secret-private-key") {
 		t.Fatal("private key leaked through returned error")
+	}
+}
+
+func TestExternalXraySNICertificateHealthFailureRollsBack(t *testing.T) {
+	state := readyXrayState()
+	state.FullchainMatches = false
+	state.PrivateKeyMatches = false
+	runner := &fakeXrayRunner{state: state, activeCertificate: "old", failMarker: "# xray-sni:healthcheck"}
+	adapter := newTestXrayAdapter(t, runner, makeCertificateMaterial(t, testSNIDomain, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)))
+	err := adapter.UpdateCertificate(context.Background())
+	if !errors.Is(err, ErrXraySNIValidationFailed) {
+		t.Fatalf("UpdateCertificate() error = %v", err)
+	}
+	if runner.activeCertificate != "old" || runner.rollbackCount != 1 || runner.reloadCount != 2 {
+		t.Fatalf("active=%q rollback=%d reload=%d", runner.activeCertificate, runner.rollbackCount, runner.reloadCount)
+	}
+}
+
+func TestExternalXraySNICertificateUpdateResumesAfterFileSwitch(t *testing.T) {
+	state := readyXrayState()
+	runner := &fakeXrayRunner{state: state, activeCertificate: "new"}
+	adapter := newTestXrayAdapter(t, runner, makeCertificateMaterial(t, testSNIDomain, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)))
+	if err := adapter.UpdateCertificate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.activationCount != 0 || runner.reloadCount != 1 || runner.rollbackCount != 0 {
+		t.Fatalf("activation=%d reload=%d rollback=%d", runner.activationCount, runner.reloadCount, runner.rollbackCount)
 	}
 }
 

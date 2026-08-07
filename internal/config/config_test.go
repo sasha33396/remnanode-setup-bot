@@ -84,6 +84,7 @@ func validValues() map[string]string {
 		"DNS_BALANCER_URL":       "https://dns.example.com",
 		"DNS_BALANCER_TOKEN":     "dns-secret",
 		"CF_API_TOKEN":           "cloudflare-secret",
+		"ACME_EMAIL":             "ops@example.com",
 		"REMNA_API_IP":           "192.0.2.10",
 		"METRICS_IP":             "192.0.2.11",
 		"DATABASE_URL":           "postgres://user:pass@localhost:5432/deployer?sslmode=disable",

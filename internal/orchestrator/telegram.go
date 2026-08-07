@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -13,7 +14,17 @@ import (
 // TelegramApplication adapts DeploymentService to the presentation-only
 // Telegram application port.
 type TelegramApplication struct {
-	service *DeploymentService
+	service  *DeploymentService
+	recovery *recovery.Service
+}
+
+func NewTelegramApplicationWithRecovery(service *DeploymentService, recoveryService *recovery.Service) (*TelegramApplication, error) {
+	application, err := NewTelegramApplication(service)
+	if err != nil {
+		return nil, err
+	}
+	application.recovery = recoveryService
+	return application, nil
 }
 
 func NewTelegramApplication(service *DeploymentService) (*TelegramApplication, error) {
@@ -111,6 +122,41 @@ func (a *TelegramApplication) StartDeployment(ctx context.Context, input telegra
 
 func (a *TelegramApplication) CancelDeployment(ctx context.Context, deploymentID string) error {
 	return a.service.Cancel(ctx, deploymentID)
+}
+
+func (a *TelegramApplication) RetryFailedStep(ctx context.Context, deploymentID string) error {
+	return a.service.RetryFailedStep(ctx, deploymentID, nil)
+}
+
+func (a *TelegramApplication) RetryDNS(ctx context.Context, deploymentID string) error {
+	return a.service.RetryDNS(ctx, deploymentID, nil)
+}
+
+func (a *TelegramApplication) RecheckRemnawave(ctx context.Context, deploymentID string) (string, error) {
+	if a.recovery == nil {
+		return "", errors.New("recovery service is unavailable")
+	}
+	result, err := a.recovery.RecheckRemnawave(ctx, deploymentID)
+	if err != nil {
+		return "", err
+	}
+	return result.SafeMessage, nil
+}
+
+func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID string) ([]string, error) {
+	entries, err := a.service.SafeLogs(ctx, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		line := entry.Step + " [" + entry.Status + "]"
+		if entry.Summary != "" {
+			line += ": " + entry.Summary
+		}
+		result = append(result, line)
+	}
+	return result, nil
 }
 
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {

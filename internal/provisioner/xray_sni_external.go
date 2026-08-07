@@ -170,6 +170,61 @@ func (a *ExternalXraySNIInstaller) Validate(ctx context.Context) error {
 	return a.cleanupPreviousCertificates(ctx)
 }
 
+// UpdateCertificate applies only the finalized external-certificate contract:
+// stage both files, atomically activate, reload Caddy, validate local TLS health,
+// and restore the previous pair if reload or validation fails.
+func (a *ExternalXraySNIInstaller) UpdateCertificate(ctx context.Context) error {
+	if err := validateCertificateMaterial(a.material, a.config.SNIDomain, a.now()); err != nil {
+		return err
+	}
+	state, err := a.inspectState(ctx)
+	if err != nil {
+		return err
+	}
+	if !state.RepositoryExists || !state.RemoteMatches || !state.RefMatches || !state.WorktreeClean || !state.ComposeExists || !state.DeployedCommitMatches || !state.EnvironmentMatches || !state.ContainerExists || !state.ContainerRunning {
+		return ErrXraySNIValidationFailed
+	}
+	if state.FullchainMatches && state.PrivateKeyMatches {
+		if !state.PermissionsMatch {
+			if err := a.ensureCertificatePermissions(ctx); err != nil {
+				return err
+			}
+		}
+		// A restart may occur after the files were switched but before reload or
+		// cleanup. Reloading is idempotent and makes that state safely resumable.
+		if err := a.reload(ctx); err == nil {
+			if err := a.validateRuntime(ctx); err == nil {
+				return a.cleanupPreviousCertificates(ctx)
+			}
+		}
+		return a.rollbackFailedCertificateActivation(ctx)
+	}
+	if err := a.stageAndActivateCertificates(ctx); err != nil {
+		return err
+	}
+	if err := a.reload(ctx); err == nil {
+		if err := a.validateRuntime(ctx); err == nil {
+			return a.cleanupPreviousCertificates(ctx)
+		}
+	}
+	return a.rollbackFailedCertificateActivation(ctx)
+}
+
+func (a *ExternalXraySNIInstaller) rollbackFailedCertificateActivation(ctx context.Context) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.config.Timeout)
+	defer cancel()
+	if rollbackErr := a.rollbackCertificates(rollbackCtx); rollbackErr != nil {
+		return ErrXraySNIValidationFailed
+	}
+	if rollbackErr := a.reload(rollbackCtx); rollbackErr != nil {
+		return ErrXraySNIValidationFailed
+	}
+	if rollbackErr := a.validateRuntime(rollbackCtx); rollbackErr != nil {
+		return ErrXraySNIValidationFailed
+	}
+	return ErrXraySNIValidationFailed
+}
+
 func (a *ExternalXraySNIInstaller) environment() []byte {
 	return []byte(fmt.Sprintf("TLS_MODE=external\nSNI_DOMAIN=%s\nSNI_PORT=%d\n", a.config.SNIDomain, xraySNIPort))
 }
@@ -361,6 +416,24 @@ if [ -d "$directory" ]; then
     rm -f "$directory/fullchain.pem" "$directory/privkey.pem"
     rmdir "$directory"
 fi`
+	return a.runSafe(ctx, command, ErrXraySNIValidationFailed)
+}
+
+func (a *ExternalXraySNIInstaller) rollbackCertificates(ctx context.Context) error {
+	command := `# xray-sni:rollback-certificates
+set -eu
+cd /opt/xray-sni/certs
+backup=.certificate-previous
+test -d "$backup"
+test -f "$backup/fullchain.pem"
+test -f "$backup/privkey.pem"
+rm -f fullchain.pem privkey.pem fullchain.pem.new privkey.pem.new
+mv "$backup/fullchain.pem" fullchain.pem
+mv "$backup/privkey.pem" privkey.pem
+chown root:root fullchain.pem privkey.pem
+chmod 0644 fullchain.pem
+chmod 0600 privkey.pem
+rmdir "$backup"`
 	return a.runSafe(ctx, command, ErrXraySNIValidationFailed)
 }
 

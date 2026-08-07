@@ -24,6 +24,7 @@ const (
 	StatusFailed               Status = "FAILED"
 	StatusCancelled            Status = "CANCELLED"
 	StatusDNSFailed            Status = "DNS_FAILED"
+	StatusManualReview         Status = "MANUAL_REVIEW"
 )
 
 // Valid reports whether s is a supported deployment state.
@@ -32,7 +33,7 @@ func (s Status) Valid() bool {
 	case StatusCreated, StatusPreflight, StatusPreparingCertificate,
 		StatusProvisioning, StatusCreatingRemnawave, StatusWaitingRemnawave,
 		StatusAddingToDNS, StatusCompleted, StatusFailed, StatusCancelled,
-		StatusDNSFailed:
+		StatusDNSFailed, StatusManualReview:
 		return true
 	default:
 		return false
@@ -42,7 +43,7 @@ func (s Status) Valid() bool {
 // Terminal reports whether a deployment has no automatic work left to run.
 func (s Status) Terminal() bool {
 	switch s {
-	case StatusCompleted, StatusFailed, StatusCancelled, StatusDNSFailed:
+	case StatusCompleted, StatusFailed, StatusCancelled, StatusDNSFailed, StatusManualReview:
 		return true
 	default:
 		return false

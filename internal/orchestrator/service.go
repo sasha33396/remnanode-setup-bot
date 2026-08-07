@@ -109,6 +109,9 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 		}
 		return PreparedDeployment{}, safeError("PERSISTENCE_CREATE_FAILED", "Could not create deployment state", ErrPersistenceFailed)
 	}
+	if s.config.Observer != nil {
+		s.config.Observer.DeploymentCreated()
+	}
 	runCtx, release, err := s.beginExecution(ctx, created.ID)
 	if err != nil {
 		return PreparedDeployment{}, err
@@ -175,6 +178,12 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 // Deploy resumes a prepared deployment. Completed deployments are a no-op;
 // DNS_FAILED deployments require RetryDNS.
 func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progress ProgressSink) error {
+	started := time.Now()
+	defer func() {
+		if s.config.Observer != nil {
+			s.config.Observer.DeploymentDuration(time.Since(started))
+		}
+	}()
 	if strings.TrimSpace(input.DeploymentID) == "" {
 		return ErrInvalidInput
 	}
@@ -307,6 +316,9 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		RemnanodeSecretKey: secretBytes,
 		Certificate:        material,
 	}, func(report provisioner.Report) {
+		if s.config.Observer != nil {
+			s.config.Observer.ProvisioningStepDuration(report.Name, report.Duration)
+		}
 		emit(progress, Progress{Step: "provisioning/" + safeText(report.Name, "stage"), Completed: 2, Total: workflowStepCount, SafeMessage: safeText(report.Summary, "Provisioning stage updated")})
 	})
 	if ctx.Err() != nil {
@@ -459,6 +471,69 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 	}
 	current.Status = deployment.StatusAddingToDNS
 	return s.addDNS(runCtx, &current, progress)
+}
+
+// RetryFailedStep retries only stages whose side effects have an idempotent
+// inspection/recovery contract. Preflight cannot be retried because its
+// temporary password is intentionally not persisted.
+func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID string, progress ProgressSink) error {
+	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
+	}
+	if current.Status != deployment.StatusFailed {
+		return ErrDeploymentNotRunnable
+	}
+	var resume deployment.Status
+	switch current.CurrentStep {
+	case stepPrepareCertificate:
+		resume = deployment.StatusPreflight
+	case stepProvisioning:
+		resume = deployment.StatusProvisioning
+	case stepCreateNode:
+		resume = deployment.StatusCreatingRemnawave
+	case stepWaitNode:
+		resume = deployment.StatusWaitingRemnawave
+	case stepAddDNS:
+		if err := s.setState(ctx, current.ID, deployment.StatusDNSFailed, stepAddDNS, "DNS_RETRY_REQUIRED", "DNS retry requires a healthy Node"); err != nil {
+			return err
+		}
+		return s.RetryDNS(ctx, current.ID, progress)
+	default:
+		return ErrDeploymentNotRunnable
+	}
+	if err := s.setState(ctx, current.ID, resume, current.CurrentStep, "", ""); err != nil {
+		return err
+	}
+	return s.Deploy(ctx, StartInput{DeploymentID: current.ID, OperatorUserID: current.TelegramOperatorUserID, HostID: current.SelectedRemnawaveHostUUID, NodeName: current.NodeName, VPSIP: current.TargetVPSIP}, progress)
+}
+
+// SafeLogs returns persisted summaries only. Raw SSH/API output and secrets are
+// never part of the repository contract.
+func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) ([]SafeLogEntry, error) {
+	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
+	}
+	steps, err := s.repository.ListDeploymentSteps(ctx, deploymentID)
+	if err != nil {
+		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load safe deployment logs", ErrPersistenceFailed)
+	}
+	result := make([]SafeLogEntry, 0, len(steps)+1)
+	for _, step := range steps {
+		summary := ""
+		if step.SafeSummary != nil {
+			summary = safeText(*step.SafeSummary, "")
+		}
+		if step.ErrorMessage != nil {
+			summary = safeText(*step.ErrorMessage, summary)
+		}
+		result = append(result, SafeLogEntry{Step: safeText(step.Name, "step"), Status: string(step.Status), Summary: summary})
+	}
+	if current.SafeErrorMessage != nil {
+		result = append(result, SafeLogEntry{Step: safeText(current.CurrentStep, "workflow"), Status: string(current.Status), Summary: safeText(*current.SafeErrorMessage, "")})
+	}
+	return result, nil
 }
 
 // Cancel marks a deployment cancelled and signals an in-process active run.
@@ -643,6 +718,9 @@ func (s *DeploymentService) failStage(ctx context.Context, deploymentID, step st
 		return err
 	}
 	message = safeText(message, "Deployment step failed")
+	if s.config.Observer != nil {
+		s.config.Observer.DeploymentFailed()
+	}
 	var persistErr error
 	if strings.TrimSpace(step) != "" {
 		if _, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: deploymentID, Name: step, Status: deployment.StepStatusFailed, SafeSummary: stringPtr("failed"), ErrorMessage: stringPtr(message)}); err != nil {
@@ -707,13 +785,21 @@ func (s *DeploymentService) beginExecution(parent context.Context, deploymentID 
 func (s *DeploymentService) acquire(ctx context.Context) error {
 	select {
 	case s.semaphore <- struct{}{}:
+		if s.config.Observer != nil {
+			s.config.Observer.ActiveDeployment(1)
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (s *DeploymentService) releaseSlot() { <-s.semaphore }
+func (s *DeploymentService) releaseSlot() {
+	<-s.semaphore
+	if s.config.Observer != nil {
+		s.config.Observer.ActiveDeployment(-1)
+	}
+}
 
 func matchesStartInput(current deployment.Deployment, input StartInput) bool {
 	return current.ID == input.DeploymentID && current.TelegramOperatorUserID == input.OperatorUserID &&

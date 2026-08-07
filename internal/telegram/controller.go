@@ -107,6 +107,9 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	text := strings.TrimSpace(message.Text)
+	if handled, err := c.handleRecoveryCommand(ctx, message, text); handled {
+		return err
+	}
 	switch text {
 	case "/start", "/menu":
 		c.cancelExisting(ctx, message.FromUserID)
@@ -151,6 +154,83 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
+}
+
+func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message, text string) (bool, error) {
+	commands := []string{"/retry_step", "/retry_dns", "/recheck", "/logs", "/cancel_deployment"}
+	var command, deploymentID string
+	for _, candidate := range commands {
+		if text == candidate || strings.HasPrefix(text, candidate+" ") {
+			command = candidate
+			deploymentID = strings.TrimSpace(strings.TrimPrefix(text, candidate))
+			break
+		}
+	}
+	if command == "" {
+		return false, nil
+	}
+	if !validDeploymentID(deploymentID) {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Provide a valid deployment UUID.", mainKeyboard())
+		return true, err
+	}
+	if command == "/cancel_deployment" {
+		err := c.app.CancelDeployment(ctx, deploymentID)
+		return true, c.sendActionResult(ctx, message.ChatID, err, "Deployment cancelled.")
+	}
+	recoveryApp, ok := c.app.(RecoveryApplication)
+	if !ok {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Recovery actions are unavailable.", mainKeyboard())
+		return true, err
+	}
+	switch command {
+	case "/retry_step":
+		return true, c.sendActionResult(ctx, message.ChatID, recoveryApp.RetryFailedStep(ctx, deploymentID), "Failed step retry completed.")
+	case "/retry_dns":
+		return true, c.sendActionResult(ctx, message.ChatID, recoveryApp.RetryDNS(ctx, deploymentID), "DNS retry completed.")
+	case "/recheck":
+		result, err := recoveryApp.RecheckRemnawave(ctx, deploymentID)
+		if err != nil {
+			return true, c.sendActionResult(ctx, message.ChatID, err, "")
+		}
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 300), mainKeyboard())
+		return true, err
+	case "/logs":
+		lines, err := recoveryApp.ViewSafeLogs(ctx, deploymentID)
+		if err != nil {
+			return true, c.sendActionResult(ctx, message.ChatID, err, "")
+		}
+		if len(lines) == 0 {
+			lines = []string{"No safe log entries."}
+		}
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, truncateUTF8(strings.Join(lines, "\n"), maxMessageBytes), mainKeyboard())
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+func (c *Controller) sendActionResult(ctx context.Context, chatID int64, actionErr error, success string) error {
+	message := success
+	if actionErr != nil {
+		message = "Operation could not be completed safely. Check deployment logs."
+	}
+	_, err := c.messenger.SendMessage(ctx, chatID, message, mainKeyboard())
+	return err
+}
+
+func validDeploymentID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') && !(character >= 'A' && character <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery) error {

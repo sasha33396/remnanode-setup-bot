@@ -12,6 +12,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/deploye
 FROM alpine:3.22
 RUN addgroup -S deployer && adduser -S -G deployer deployer
 
+RUN install -d -o deployer -g deployer -m 0700 /var/lib/deployer/certificates
+
 COPY --from=build /out/deployer /usr/local/bin/deployer
 
 USER deployer

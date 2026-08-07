@@ -12,6 +12,9 @@ services:
       DNS_BALANCER_URL: ${DNS_BALANCER_URL:?DNS_BALANCER_URL is required}
       DNS_BALANCER_TOKEN: ${DNS_BALANCER_TOKEN:?DNS_BALANCER_TOKEN is required}
       CF_API_TOKEN: ${CF_API_TOKEN:?CF_API_TOKEN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+      ACME_DIRECTORY_URL: ${ACME_DIRECTORY_URL:-https://acme-v02.api.letsencrypt.org/directory}
+      CERTIFICATE_STORE_PATH: /var/lib/deployer/certificates
       REMNA_API_IP: ${REMNA_API_IP:?REMNA_API_IP is required}
       METRICS_IP: ${METRICS_IP:?METRICS_IP is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -19,13 +22,37 @@ services:
       XRAY_SNI_REPO_URL: ${XRAY_SNI_REPO_URL:-https://github.com/sasha33396/sni-external.git}
       XRAY_SNI_REF: ${XRAY_SNI_REF:-v0.1.0-external}
       HEALTH_ADDR: :8080
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-30s}
+      SSH_CONNECT_TIMEOUT: ${SSH_CONNECT_TIMEOUT:-20s}
+      SSH_COMMAND_TIMEOUT: ${SSH_COMMAND_TIMEOUT:-5m}
+      NODE_CONNECT_TIMEOUT: ${NODE_CONNECT_TIMEOUT:-5m}
+      TELEGRAM_POLL_TIMEOUT: ${TELEGRAM_POLL_TIMEOUT:-30s}
+      TELEGRAM_SESSION_TTL: ${TELEGRAM_SESSION_TTL:-15m}
+      CERTIFICATE_RENEW_BEFORE: ${CERTIFICATE_RENEW_BEFORE:-720h}
+      CERTIFICATE_RENEW_INTERVAL: ${CERTIFICATE_RENEW_INTERVAL:-12h}
+      CERTIFICATE_ISSUE_TIMEOUT: ${CERTIFICATE_ISSUE_TIMEOUT:-10m}
+      DNS_PROPAGATION_TIMEOUT: ${DNS_PROPAGATION_TIMEOUT:-5m}
+      DNS_PROPAGATION_INTERVAL: ${DNS_PROPAGATION_INTERVAL:-5s}
+      MAX_CONCURRENT_DEPLOYMENTS: ${MAX_CONCURRENT_DEPLOYMENTS:-2}
+      MAX_CERTIFICATE_DISTRIBUTIONS: ${MAX_CERTIFICATE_DISTRIBUTIONS:-4}
     secrets:
       - deploy_ssh_private_key
+    volumes:
+      - certificate_store:/var/lib/deployer/certificates
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/readyz"]
       interval: 10s
@@ -42,6 +69,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -50,6 +81,7 @@ services:
 
 volumes:
   postgres_data:
+  certificate_store:
 
 secrets:
   deploy_ssh_private_key:
