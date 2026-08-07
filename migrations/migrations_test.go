@@ -29,3 +29,17 @@ func TestInitialMigrationContainsRequiredPersistence(t *testing.T) {
 		t.Fatal("migration must not persist root_password")
 	}
 }
+
+func TestSSHHostKeyMigrationPersistsFingerprintWithoutPassword(t *testing.T) {
+	contents, err := Files.ReadFile("000002_deployment_ssh_host_key.up.sql")
+	if err != nil {
+		t.Fatalf("read SSH host key migration: %v", err)
+	}
+	sql := strings.ToLower(string(contents))
+	if !strings.Contains(sql, "ssh_host_key_fingerprint") {
+		t.Fatal("migration does not contain SSH host key fingerprint")
+	}
+	if strings.Contains(sql, "password") {
+		t.Fatal("SSH host key migration must not contain a password column")
+	}
+}

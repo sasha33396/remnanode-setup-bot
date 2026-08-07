@@ -60,24 +60,43 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	upSQL, err := migrations.Files.ReadFile("000001_deployments.up.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(upSQL)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql"} {
+		upSQL, err := migrations.Files.ReadFile(migration)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", migration, err)
+		}
+		if _, err := pool.Exec(ctx, string(upSQL)); err != nil {
+			t.Fatalf("apply migration %s: %v", migration, err)
+		}
 	}
 
 	assertNoRootPasswordColumn(t, ctx, pool)
 	repo := New(pool)
 
 	first := createTestDeployment(t, ctx, repo, "node-1", "192.0.2.10")
+	fingerprint := "SHA256:deployment-host-key"
+	trusted, stored, err := repo.StoreIfAbsent(ctx, first.ID, fingerprint)
+	if err != nil || !stored || trusted != fingerprint {
+		t.Fatalf("StoreIfAbsent() = %q, %t, %v", trusted, stored, err)
+	}
+	trusted, found, err := repo.Get(ctx, first.ID)
+	if err != nil || !found || trusted != fingerprint {
+		t.Fatalf("Get(host key) = %q, %t, %v", trusted, found, err)
+	}
+	otherFingerprint := "SHA256:different-host-key"
+	trusted, stored, err = repo.StoreIfAbsent(ctx, first.ID, otherFingerprint)
+	if err != nil || stored || trusted != fingerprint {
+		t.Fatalf("StoreIfAbsent(existing) = %q, %t, %v", trusted, stored, err)
+	}
 	loaded, err := repo.GetDeployment(ctx, first.ID)
 	if err != nil {
 		t.Fatalf("GetDeployment() error = %v", err)
 	}
 	if loaded.NodeName != "node-1" || loaded.Status != deployment.StatusCreated {
 		t.Fatalf("GetDeployment() = %#v", loaded)
+	}
+	if loaded.SSHHostKeyFingerprint == nil || *loaded.SSHHostKeyFingerprint != fingerprint {
+		t.Fatalf("persisted SSH fingerprint = %v", loaded.SSHHostKeyFingerprint)
 	}
 
 	running, err := repo.UpdateDeploymentState(ctx, first.ID, repositorycontract.UpdateDeploymentStateParams{
