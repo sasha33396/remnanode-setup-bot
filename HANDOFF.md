@@ -163,49 +163,44 @@ Business-critical rules:
   pinned Git/ref behavior, runtime failures, rollback safety, and secret
   transport.
 
-Certificate Manager, certificate issuance/renewal, and deployment orchestration
-remain outside this stage.
+Certificate Manager and certificate issuance/renewal remain outside this stage.
 
 ## Current stage
 
-### PROMPT 7 — Telegram Bot UI
+### PROMPT 8 — Deployment Orchestrator
 
 Current branch:
 
 ```text
-feature/telegram-bot-ui
+feature/deployment-orchestrator
 ```
 
-Implemented but not yet merged at the time this handoff was written:
+PROMPT 7 was merged through PR #4 (`8d80962`). PROMPT 8 adds:
 
-- Standard-library Telegram Bot API long-polling transport with token-safe
-  errors and inline/reply keyboard support.
-- `TELEGRAM_ALLOWED_USERS` authorization enforced before application calls.
-- Main menu for Add Node, Nodes, and Deployments.
-- Expiring, concurrency-safe Add Node wizard with Host inline buttons, manual
-  Node name validation, duplicate name checks, public VPS IP validation,
-  duplicate address checks, password capture, preflight, and confirmation.
-- Password messages are deleted immediately when possible. Password bytes live
-  only in clearable transient session memory, are actively cleared on expiry,
-  cancellation, replacement, failure, shutdown, or deployment completion, and
-  never enter callback data.
-- Callback data contains only an action, random nonce, and Host list index; Host
-  IDs, deployment IDs, IPs, and passwords are not embedded.
-- Confirmation renders only safe Host remark, `host.address` SNI, Node name, VPS
-  IP, resolved DNS zone, certificate readiness, config profile readiness, and
-  explicitly safe warnings.
-- Deploy edits the confirmation message in place for every safe progress update
-  and the terminal result.
-- Telegram depends only on an `Application` interface for Hosts, checks,
-  preflight, deployment, cancellation, Nodes, and deployment history. It does
-  not import SSH, provisioner, PostgreSQL, Remnawave, or DNS implementations.
-- Tests cover wizard transitions, duplicate validation, unauthorized users,
-  public IP policy, password-message deletion, callback secrecy, expiry cleanup,
-  single-message progress, Bot API keyboard serialization, and token-safe
-  transport errors.
+- `DeploymentService` with persisted transitions for `PREFLIGHT`,
+  `PREPARING_CERTIFICATE`, `PROVISIONING`, `CREATING_REMNAWAVE_NODE`,
+  `WAITING_REMNAWAVE`, `ADDING_TO_DNS`, and `COMPLETED`.
+- Host validation and repeated Node name/address uniqueness checks before side
+  effects.
+- Certificate acquisition behind `CertificateProvider`, with a temporary static
+  in-memory implementation.
+- SSH/provisioner adapter using the existing preflight, deployment-key bootstrap,
+  idempotent provisioning engine, and external-certificate xray-sni adapter.
+- Remnawave Node creation only after provisioning succeeds; generated
+  `SECRET_KEY`, port `2222`, Host-derived inbound/profile, immediate UUID
+  persistence, and timeout/backoff connection polling.
+- DNS update only after Remnawave reports the Node connected. DNS failures keep
+  the healthy Node, persist `DNS_FAILED`, and support a DNS-only retry.
+- In-process bounded deployment concurrency, per-deployment duplicate-run
+  protection, resumability, and context cancellation.
+- A Telegram `Application` adapter that keeps the Telegram package dependent on
+  interfaces rather than SSH/API implementations.
+- Integration-style fake tests for full success, provisioning and Remnawave
+  failures, connection failure/timeout, DNS failure/retry, duplicate invocation,
+  concurrency limits, and cancellation.
 
-Application orchestration and runtime wiring in `cmd/deployer` remain outside
-this stage.
+Runtime dependency construction and Telegram polling startup in `cmd/deployer`
+remain outside this stage.
 
 ## Local checks
 
@@ -232,18 +227,16 @@ go test -count=1 -v ./internal/repository/postgres
 The integration test creates and removes an isolated schema. Do not point it at
 a database where schema creation is prohibited.
 
-## Remaining work after PROMPT 7
+## Remaining work after PROMPT 8
 
 - Validate SSH and every provisioning stage against a disposable Ubuntu/Debian
   VPS before production use. Specifically smoke-test Docker builds on supported
   architectures, tag checkout, Caddy validation/reload, file ownership and
   modes, local TLS SNI routing, `/health` status 200, and failure recovery.
 - Implement the centralized Certificate Manager and pass its in-memory
-  certificate material into the adapter when orchestration is requested.
-- Wire preflight, certificates, provisioner, Remnawave, and DNS into deployment
-  orchestration and implement the Telegram `Application` interface only when a
-  later prompt explicitly requests it.
-- Start the Bot API polling transport from `cmd/deployer` only after the
-  application implementation is available.
-- Preserve the persistent deployment state machine and safe error fields during
-  future orchestration work.
+  certificate material through `CertificateProvider`.
+- Construct the repository, Remnawave, DNS, certificate, SSH/provisioner,
+  orchestrator, and Telegram dependencies in `cmd/deployer`, then start the Bot
+  API polling transport.
+- Add startup recovery for resumable non-terminal deployments if automated
+  recovery is desired; the service can already resume them when invoked.
