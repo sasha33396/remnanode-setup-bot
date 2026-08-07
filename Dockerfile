@@ -10,12 +10,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/deployer ./cmd/deployer
 
 FROM alpine:3.22
-RUN addgroup -S deployer && adduser -S -G deployer deployer
-
-RUN install -d -o deployer -g deployer -m 0700 /var/lib/deployer/certificates
+RUN install -d -o root -g root -m 0700 /var/lib/deployer/certificates
 
 COPY --from=build /out/deployer /usr/local/bin/deployer
 
-USER deployer
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/deployer"]
