@@ -111,8 +111,11 @@ docker compose up --build
 
 The Compose stack persists PostgreSQL in `postgres_data` and protected
 certificate versions/account key in `certificate_store`. The deployer runs as
-non-root with a read-only filesystem and dropped capabilities. Health and
-metrics are bound to localhost on `HEALTH_PORT`.
+root so a root-owned `0600` file-backed Compose secret works without host UID
+coordination. Its root filesystem remains read-only; all capabilities are
+dropped except `DAC_OVERRIDE` and `FOWNER`, which also permit reuse of volumes
+created by the earlier non-root image. Health and metrics are bound to localhost
+on `HEALTH_PORT`.
 
 ## Health probes
 

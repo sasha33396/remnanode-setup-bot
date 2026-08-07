@@ -155,3 +155,7 @@ Do not run destructive down migrations merely to roll back an application image.
 - Migrations are operator-applied; startup detects but does not apply them.
 - ACME propagation uses the host resolver and may need split-DNS tuning.
 - `/metrics` has no application authentication; keep it local/protected.
+- The deployer container runs as UID 0 to consume ordinary root-owned `0600`
+  file-backed Compose secrets. Its filesystem is read-only and capabilities are
+  restricted, but access to the Docker host and secret source paths remains a
+  security boundary.

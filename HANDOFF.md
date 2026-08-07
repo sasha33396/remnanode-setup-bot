@@ -197,6 +197,10 @@ PROMPT 8 was merged through PR #5 (`e257ea6`). This branch adds:
 - Runtime dependency wiring in `cmd/deployer`, graceful shutdown, dependency
   readiness, Prometheus metrics, secret-redacting structured logging, and
   hardened Docker/Compose settings.
+- The deployer container intentionally runs as UID 0 because local Compose
+  file-backed secrets retain host ownership. The root filesystem is read-only;
+  capabilities are dropped except `DAC_OVERRIDE` and `FOWNER` for protected
+  secret/certificate-volume access.
 - Tests cover cache hit, initial/concurrent issuance, renewal, invalid and
   mismatched material, partial distribution, rollback, recovery, metrics, and
   redaction in addition to the existing deployment suite.

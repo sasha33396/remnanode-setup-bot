@@ -2,6 +2,9 @@ services:
   deployer:
     build:
       context: .
+    # File-backed Compose secrets retain root ownership. Run explicitly as
+    # root so a normal root-owned 0600 deployment key works after clone.
+    user: "0:0"
     restart: unless-stopped
     init: true
     environment:
@@ -49,6 +52,10 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=32m
     cap_drop:
       - ALL
+    cap_add:
+      # Required for certificate volumes created by an older non-root image.
+      - DAC_OVERRIDE
+      - FOWNER
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
