@@ -1,9 +1,9 @@
 # Remnanode Setup Bot
 
-Production-oriented Go service that will deploy Remnawave nodes through a
-Telegram-controlled workflow. This bootstrap contains configuration, structured
-logging, process lifecycle management, health probes, and package boundaries.
-Deployment business logic is intentionally not implemented yet.
+Production-oriented Go service for deploying Remnawave nodes through a future
+Telegram-controlled workflow. Configuration, persistence, external API clients,
+SSH preflight, and the idempotent VPS provisioner are implemented; end-to-end
+deployment orchestration is intentionally not wired yet.
 
 ## Requirements
 
@@ -21,6 +21,10 @@ or the `secrets/` directory.
 Telegram user IDs. `REMNA_API_IP` and `METRICS_IP` must be literal IPv4 or IPv6
 addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
 PostgreSQL URL.
+
+`XRAY_SNI_REPO_URL` defaults to the external-certificate fork and must be a
+credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
+`v0.1.0-external` tag; branch names such as `main` are rejected.
 
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.

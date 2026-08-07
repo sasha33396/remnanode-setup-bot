@@ -1,2 +1,2 @@
-// Package certificates will manage centralized certificate retrieval.
+// Package certificates defines transport-neutral centralized certificate data.
 package certificates

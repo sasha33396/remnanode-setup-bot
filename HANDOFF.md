@@ -101,38 +101,78 @@ Business-critical rules:
 - Per-FQDN `ZoneLocker` abstraction with in-memory keyed locking.
 - Concurrency tests proving simultaneous additions do not lose updates.
 
+### PROMPT 5 — SSH client and VPS preflight
+
+- Merged to `main` through pull request #2.
+- Password and deployment-key authentication, idempotent `authorized_keys`
+  installation, PostgreSQL-backed TOFU host-key verification, bounded SSH
+  commands, and typed VPS preflight.
+
 ## Current stage
 
-### PROMPT 5 — SSH client and VPS preflight
+### PROMPT 6 — Idempotent VPS Provisioner
 
 Current branch:
 
 ```text
-feature/ssh-preflight
+feature/idempotent-provisioner
 ```
 
 Implemented but not yet merged at the time this handoff was written:
 
-- Initial password SSH authentication with a redacted, clearable in-memory
-  credential type.
-- Backend deployment-key authentication.
-- Idempotent installation of the backend public key into root
-  `authorized_keys`.
-- TOFU host-key verification. First fingerprints are committed only after a
-  successful SSH handshake; subsequent changes fail with `ErrHostKeyChanged`.
-- PostgreSQL-backed fingerprint persistence through migration
-  `000002_deployment_ssh_host_key` and the repository `HostKeyStore` adapter.
-- Bounded SSH command execution with cancellation, timeout, exit status, and
-  stdout/stderr limits.
-- Typed VPS preflight for root identity, Ubuntu/Debian version, architecture,
-  CPU, available RAM, free disk, Docker, existing Remnanode/xray-sni artifacts,
-  and TCP ports `22`, `443`, `2222`, `9100`, `9200`, `9443`.
-- Separate warning and fatal-failure collections.
-- Unit tests for credential redaction, host-key verification, output bounds,
-  parsing, and preflight policy.
+- Stable stage engine for `system`, `docker`, `sysctl`, `limits`, `firewall`,
+  `fail2ban`, `remnanode`, `node_exporter`, `speedtest_exporter`, `logrotate`,
+  `xray_sni`, and `healthcheck`.
+- Persistent `RUNNING`/`COMPLETED`/`FAILED` progress and restart-safe resume
+  using `ListDeploymentSteps`; completed stages are not repeated.
+- Atomic managed-file updates over SSH. File contents, including Remnanode
+  `SECRET_KEY`, travel through stdin and never appear in the command string.
+- Managed sysctl, limits, systemd, fail2ban, Docker Compose, and logrotate files
+  replace only deployer-owned files and do not append duplicate entries.
+- UFW rules have stable comments and are added only when missing. Panel access
+  to `2222` and metrics access to `9100`/`9200` come from typed IP config.
+- Remnanode runs with host networking and `NODE_PORT=2222`; its only volume is
+  the log directory, with no certificate mounts.
+- Node Exporter downloads are checked against the release checksum manifest.
+- The real external-certificate xray-sni adapter uses
+  `https://github.com/sasha33396/sni-external`. `XRAY_SNI_REPO_URL` is
+  configurable and defaults to that URL. `XRAY_SNI_REF` defaults to the pinned
+  `v0.1.0-external` tag; `main`, `master`, and `HEAD` are rejected.
+- The pinned tag exists and currently resolves to commit `7702d9f025fb`. The
+  adapter clones without checkout, fetches only the configured tag/commit, and
+  deploys a detached revision rather than an implicit branch HEAD.
+- `.deployed-commit` is written atomically only after a successful Compose
+  build. If checkout succeeds but the build fails, resume detects the missing
+  marker and retries the pinned build instead of accepting an older container.
+- xray-sni is installed in `/opt/xray-sni` as Compose service `caddy`, container
+  `snisite`, with host networking.
+- The adapter writes only `TLS_MODE=external`, `SNI_DOMAIN=host.address`, and
+  `SNI_PORT=9443` to `/opt/xray-sni/.env`. It never writes `CF_API_TOKEN` or
+  performs ACME, Let's Encrypt, Cloudflare, or DNS-01 operations.
+- Centrally supplied certificate material is validated in Go before upload:
+  PEM/leaf parsing, key parsing, public-key match, SAN hostname, NotBefore, and
+  NotAfter. No caller-side filesystem paths are required.
+- Host certificate paths are `/opt/xray-sni/certs/fullchain.pem` and
+  `/opt/xray-sni/certs/privkey.pem`; container paths are
+  `/certs/fullchain.pem` and `/certs/privkey.pem`. The directory is mounted as
+  `./certs:/certs:ro` by the fork.
+- Certificate files are uploaded as temporary files through SSH stdin and then
+  activated with rollback copies retained until validation succeeds. Modes are
+  `0644` for fullchain and `0600` for the private key, owned by `root:root`.
+- Certificate-only changes use
+  `docker exec snisite caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`.
+  Validation includes Compose config, running-container state, Caddy config,
+  and a local TLS request to `https://<SNI_DOMAIN>:9443/health` with expected
+  HTTP status `200` and explicit SNI resolution to `127.0.0.1`.
+- Remnanode remains VLESS Reality and receives no Caddy certificates, `/certs`
+  mounts, or Cloudflare credentials.
+- Unit tests cover stage order, resume, second-run idempotency, failure
+  propagation, safe persistence, Remnanode invariants, certificate validation,
+  pinned Git/ref behavior, runtime failures, rollback safety, and secret
+  transport.
 
-Full provisioning and deployment orchestration are intentionally not part of
-this stage.
+Certificate Manager, certificate issuance/renewal, and deployment orchestration
+remain outside this stage.
 
 ## Local checks
 
@@ -159,12 +199,16 @@ go test -count=1 -v ./internal/repository/postgres
 The integration test creates and removes an isolated schema. Do not point it at
 a database where schema creation is prohibited.
 
-## Remaining work after PROMPT 5
+## Remaining work after PROMPT 6
 
-- Validate SSH behavior against a disposable real VPS.
-- Wire repository, SSH, and preflight into deployment orchestration when a later
-  prompt explicitly requests it.
-- Implement provisioning stages only when requested.
+- Validate SSH and every provisioning stage against a disposable Ubuntu/Debian
+  VPS before production use. Specifically smoke-test Docker builds on supported
+  architectures, tag checkout, Caddy validation/reload, file ownership and
+  modes, local TLS SNI routing, `/health` status 200, and failure recovery.
+- Implement the centralized Certificate Manager and pass its in-memory
+  certificate material into the adapter when orchestration is requested.
+- Wire preflight, certificates, provisioner, Remnawave, and DNS into deployment
+  orchestration only when a later prompt explicitly requests it.
 - Implement Telegram flow only when requested.
 - Preserve the persistent deployment state machine and safe error fields during
   future orchestration work.

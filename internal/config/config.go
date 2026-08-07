@@ -11,7 +11,11 @@ import (
 	"strings"
 )
 
-const defaultHealthAddr = ":8080"
+const (
+	defaultHealthAddr     = ":8080"
+	defaultXraySNIRepoURL = "https://github.com/sasha33396/sni-external.git"
+	defaultXraySNIRef     = "v0.1.0-external"
+)
 
 // Config contains the deployer's startup configuration. Callers must not log
 // the complete value because it contains secrets.
@@ -27,6 +31,8 @@ type Config struct {
 	MetricsIP            netip.Addr
 	DatabaseURL          string
 	DeploySSHPrivateKey  string
+	XraySNIRepoURL       string
+	XraySNIRef           string
 	HealthAddr           string
 }
 
@@ -57,11 +63,19 @@ func load(lookup lookupFunc) (Config, error) {
 		CloudflareAPIToken:  required("CF_API_TOKEN"),
 		DatabaseURL:         required("DATABASE_URL"),
 		DeploySSHPrivateKey: required("DEPLOY_SSH_PRIVATE_KEY"),
+		XraySNIRepoURL:      defaultXraySNIRepoURL,
+		XraySNIRef:          defaultXraySNIRef,
 		HealthAddr:          defaultHealthAddr,
 	}
 
 	if value, ok := lookup("HEALTH_ADDR"); ok && strings.TrimSpace(value) != "" {
 		cfg.HealthAddr = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("XRAY_SNI_REPO_URL"); ok && strings.TrimSpace(value) != "" {
+		cfg.XraySNIRepoURL = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("XRAY_SNI_REF"); ok && strings.TrimSpace(value) != "" {
+		cfg.XraySNIRef = strings.TrimSpace(value)
 	}
 
 	allowedUsers := required("TELEGRAM_ALLOWED_USERS")
@@ -79,19 +93,47 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 
 	for name, value := range map[string]string{
-		"REMNAWAVE_URL":    cfg.RemnawaveURL,
-		"DNS_BALANCER_URL": cfg.DNSBalancerURL,
-		"DATABASE_URL":     cfg.DatabaseURL,
+		"REMNAWAVE_URL":     cfg.RemnawaveURL,
+		"DNS_BALANCER_URL":  cfg.DNSBalancerURL,
+		"XRAY_SNI_REPO_URL": cfg.XraySNIRepoURL,
+		"DATABASE_URL":      cfg.DatabaseURL,
 	} {
 		if value != "" && !validURL(value, name == "DATABASE_URL") {
 			validationErrors = append(validationErrors, fmt.Errorf("%s must be a valid URL", name))
 		}
+	}
+	if !validXraySNIRepositoryURL(cfg.XraySNIRepoURL) {
+		validationErrors = append(validationErrors, errors.New("XRAY_SNI_REPO_URL must be a credential-free HTTPS URL"))
+	}
+	if !validPinnedRef(cfg.XraySNIRef) {
+		validationErrors = append(validationErrors, errors.New("XRAY_SNI_REF must be a pinned tag or commit, not a branch HEAD"))
 	}
 
 	if len(validationErrors) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(validationErrors...))
 	}
 	return cfg, nil
+}
+
+func validXraySNIRepositoryURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validPinnedRef(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "main") || strings.EqualFold(value, "master") || strings.EqualFold(value, "HEAD") {
+		return false
+	}
+	if strings.Contains(value, "..") || strings.Contains(value, "@{") || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') && !(char >= '0' && char <= '9') && !strings.ContainsRune("._/-", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseAllowedUsers(value string, validationErrors []error) ([]int64, []error) {
