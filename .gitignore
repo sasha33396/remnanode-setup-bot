@@ -1,0 +1,6 @@
+.env
+PROJECT.md
+secrets/
+*.exe
+coverage.out
+.gocache/

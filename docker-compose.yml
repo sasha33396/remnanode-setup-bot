@@ -1,0 +1,54 @@
+services:
+  deployer:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:?TELEGRAM_ALLOWED_USERS is required}
+      REMNAWAVE_URL: ${REMNAWAVE_URL:?REMNAWAVE_URL is required}
+      REMNAWAVE_TOKEN: ${REMNAWAVE_TOKEN:?REMNAWAVE_TOKEN is required}
+      DNS_BALANCER_URL: ${DNS_BALANCER_URL:?DNS_BALANCER_URL is required}
+      DNS_BALANCER_TOKEN: ${DNS_BALANCER_TOKEN:?DNS_BALANCER_TOKEN is required}
+      CF_API_TOKEN: ${CF_API_TOKEN:?CF_API_TOKEN is required}
+      REMNA_API_IP: ${REMNA_API_IP:?REMNA_API_IP is required}
+      METRICS_IP: ${METRICS_IP:?METRICS_IP is required}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DEPLOY_SSH_PRIVATE_KEY: /run/secrets/deploy_ssh_private_key
+      HEALTH_ADDR: :8080
+    secrets:
+      - deploy_ssh_private_key
+    ports:
+      - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+
+secrets:
+  deploy_ssh_private_key:
+    file: ${DEPLOY_SSH_PRIVATE_KEY:?DEPLOY_SSH_PRIVATE_KEY is required}
