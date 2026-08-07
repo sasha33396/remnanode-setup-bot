@@ -144,6 +144,13 @@ func TestRepositoryIntegration(t *testing.T) {
 	if step.CompletedAt == nil || step.SafeSummary == nil || *step.SafeSummary != summary {
 		t.Fatalf("completed step = %#v", step)
 	}
+	steps, err := repo.ListDeploymentSteps(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("ListDeploymentSteps() error = %v", err)
+	}
+	if len(steps) != 1 || steps[0].Name != "docker" || steps[0].Status != deployment.StepStatusCompleted {
+		t.Fatalf("ListDeploymentSteps() = %#v", steps)
+	}
 
 	second := createTestDeployment(t, ctx, repo, "node-2", "192.0.2.11")
 	if _, err := repo.UpdateDeploymentState(ctx, second.ID, repositorycontract.UpdateDeploymentStateParams{

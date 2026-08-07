@@ -51,6 +51,7 @@ type DeploymentRepository interface {
 	UpdateDeploymentState(context.Context, string, UpdateDeploymentStateParams) (deployment.Deployment, error)
 	SetRemnawaveNodeUUID(context.Context, string, string) (deployment.Deployment, error)
 	RecordDeploymentStep(context.Context, RecordStepParams) (deployment.Step, error)
+	ListDeploymentSteps(context.Context, string) ([]deployment.Step, error)
 	ListRecentDeployments(context.Context, int) ([]deployment.Deployment, error)
 	FindUnfinishedDeployments(context.Context, int) ([]deployment.Deployment, error)
 }

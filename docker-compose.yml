@@ -16,6 +16,8 @@ services:
       METRICS_IP: ${METRICS_IP:?METRICS_IP is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DEPLOY_SSH_PRIVATE_KEY: /run/secrets/deploy_ssh_private_key
+      XRAY_SNI_REPO_URL: ${XRAY_SNI_REPO_URL:-https://github.com/sasha33396/sni-external.git}
+      XRAY_SNI_REF: ${XRAY_SNI_REF:-v0.1.0-external}
       HEALTH_ADDR: :8080
     secrets:
       - deploy_ssh_private_key

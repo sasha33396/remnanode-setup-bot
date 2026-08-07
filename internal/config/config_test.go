@@ -17,6 +17,32 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if got, want := cfg.HealthAddr, defaultHealthAddr; got != want {
 		t.Errorf("health address = %q, want %q", got, want)
 	}
+	if cfg.XraySNIRepoURL != defaultXraySNIRepoURL || cfg.XraySNIRef != defaultXraySNIRef {
+		t.Fatalf("xray-sni defaults = %q %q", cfg.XraySNIRepoURL, cfg.XraySNIRef)
+	}
+}
+
+func TestLoadXraySNIConfiguration(t *testing.T) {
+	values := validValues()
+	values["XRAY_SNI_REPO_URL"] = "https://git.example.com/xray-sni.git"
+	values["XRAY_SNI_REF"] = "v2.0.0"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.XraySNIRepoURL != values["XRAY_SNI_REPO_URL"] || cfg.XraySNIRef != values["XRAY_SNI_REF"] {
+		t.Fatalf("xray-sni config = %q %q", cfg.XraySNIRepoURL, cfg.XraySNIRef)
+	}
+
+	values["XRAY_SNI_REF"] = "main"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "XRAY_SNI_REF") {
+		t.Fatalf("main ref error = %v", err)
+	}
+	values["XRAY_SNI_REF"] = "v2.0.0"
+	values["XRAY_SNI_REPO_URL"] = "http://user:password@git.example.com/xray-sni.git"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "XRAY_SNI_REPO_URL") {
+		t.Fatalf("unsafe repository URL error = %v", err)
+	}
 }
 
 func TestLoadReportsMissingVariablesWithoutValues(t *testing.T) {

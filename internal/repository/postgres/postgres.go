@@ -259,6 +259,37 @@ func (r *Repository) RecordDeploymentStep(ctx context.Context, params repository
 	return step, nil
 }
 
+// ListDeploymentSteps returns the persisted step snapshots for one deployment.
+// Ordering is deterministic and follows the time a step was first started.
+func (r *Repository) ListDeploymentSteps(ctx context.Context, deploymentID string) ([]deployment.Step, error) {
+	if !validUUID(deploymentID) {
+		return nil, invalid("deployment ID")
+	}
+	rows, err := r.pool.Query(ctx, `
+        SELECT deployment_id::text, step_name, status, safe_output_summary,
+               error_message, started_at, completed_at
+        FROM deployment_steps
+        WHERE deployment_id = $1
+        ORDER BY started_at NULLS FIRST, step_name`, deploymentID)
+	if err != nil {
+		return nil, fmt.Errorf("list deployment steps: %w", err)
+	}
+	defer rows.Close()
+
+	steps := make([]deployment.Step, 0)
+	for rows.Next() {
+		step, err := scanStep(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list deployment steps: scan: %w", err)
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list deployment steps: iterate: %w", err)
+	}
+	return steps, nil
+}
+
 // ListRecentDeployments returns newest deployments first.
 func (r *Repository) ListRecentDeployments(ctx context.Context, limit int) ([]deployment.Deployment, error) {
 	return r.list(ctx, `
