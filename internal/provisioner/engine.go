@@ -81,6 +81,12 @@ func NewEngine(store StepStore, stages []Stage) (*Engine, error) {
 // Run resumes a deployment. Previously completed stages are trusted and
 // skipped; a failed/running stage is safely retried from its inspection phase.
 func (e *Engine) Run(ctx context.Context, deploymentID string) ([]Report, error) {
+	return e.RunWithProgress(ctx, deploymentID, nil)
+}
+
+// RunWithProgress is Run with a safe callback emitted after each stage. The
+// callback is observational and cannot interrupt provisioning.
+func (e *Engine) RunWithProgress(ctx context.Context, deploymentID string, progress func(Report)) ([]Report, error) {
 	if strings.TrimSpace(deploymentID) == "" {
 		return nil, errors.New("deployment ID is required")
 	}
@@ -96,7 +102,9 @@ func (e *Engine) Run(ctx context.Context, deploymentID string) ([]Report, error)
 	reports := make([]Report, 0, len(e.stages))
 	for _, stage := range e.stages {
 		if completed[stage.Name()] {
-			reports = append(reports, Report{Name: stage.Name(), Status: deployment.StepStatusSkipped, Summary: "already completed"})
+			report := Report{Name: stage.Name(), Status: deployment.StepStatusSkipped, Summary: "already completed"}
+			reports = append(reports, report)
+			emitReport(progress, report)
 			continue
 		}
 		if ctx.Err() != nil {
@@ -111,6 +119,7 @@ func (e *Engine) Run(ctx context.Context, deploymentID string) ([]Report, error)
 			safeMessage := "stage failed; inspect protected service logs"
 			_, persistErr := e.record(ctx, deploymentID, stage.Name(), deployment.StepStatusFailed, report.Summary, safeMessage)
 			reports = append(reports, Report{Name: stage.Name(), Status: deployment.StepStatusFailed, Changed: report.Changed, Summary: report.Summary})
+			emitReport(progress, reports[len(reports)-1])
 			if persistErr != nil {
 				return reports, errors.Join(fmt.Errorf("provisioning stage %s failed: %w", stage.Name(), runErr), fmt.Errorf("record stage failure: %w", persistErr))
 			}
@@ -121,8 +130,15 @@ func (e *Engine) Run(ctx context.Context, deploymentID string) ([]Report, error)
 		}
 		report.Status = deployment.StepStatusCompleted
 		reports = append(reports, report)
+		emitReport(progress, report)
 	}
 	return reports, nil
+}
+
+func emitReport(progress func(Report), report Report) {
+	if progress != nil {
+		progress(report)
+	}
 }
 
 func runStage(ctx context.Context, stage Stage) (Report, error) {

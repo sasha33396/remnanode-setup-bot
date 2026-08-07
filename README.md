@@ -3,8 +3,9 @@
 Production-oriented Go service for deploying Remnawave nodes through a Telegram
 operator workflow. Configuration, persistence, external API clients, SSH
 preflight, the idempotent VPS provisioner, and the Telegram presentation/state
-layer are implemented; end-to-end deployment orchestration is intentionally not
-wired yet.
+layer are implemented. The deployment orchestration layer connects those
+components through interfaces and persists every important workflow transition;
+runtime composition in `cmd/deployer` is intentionally not wired yet.
 
 ## Requirements
 
@@ -51,8 +52,23 @@ history. It never imports or directly invokes SSH or concrete API clients.
 
 Temporary root passwords are deleted from Telegram when possible, retained only
 in clearable in-memory wizard state, and never placed in callback data. The
-current executable does not construct the application implementation or start
-the Telegram polling loop; that remains part of end-to-end orchestration.
+orchestration package supplies the Telegram `Application` adapter. The current
+executable does not construct the runtime dependencies or start the polling
+loop yet.
+
+## Deployment orchestration
+
+`internal/orchestrator` implements the resumable deployment workflow from
+preflight through certificate preparation, VPS provisioning, Remnawave Node
+creation and connection polling, DNS update, and completion. Remnawave Node
+creation is gated on successful provisioning, and DNS is gated on a connected
+Node.
+
+Deployments are bounded by an in-process concurrency limit and honor context
+cancellation. A DNS failure preserves the healthy Remnawave Node, records
+`DNS_FAILED`, and can be resumed with the DNS-only retry operation. Certificate
+material is obtained only through the `CertificateProvider` interface; the
+included static provider is temporary until the certificate manager is ready.
 
 ## Database migrations
 

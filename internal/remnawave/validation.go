@@ -68,7 +68,7 @@ func DeploymentProfileFromHost(host Host) (DeploymentProfile, error) {
 // Node snapshot returned by GetNodes.
 func CheckNodeDuplicates(nodes []Node, name string, address netip.Addr) error {
 	trimmedName := strings.TrimSpace(name)
-	if !validNodeName(trimmedName) || !address.IsValid() {
+	if ValidateNodeName(trimmedName) != nil || !address.IsValid() {
 		return fmt.Errorf("Node name or address: %w", ErrInvalidInput)
 	}
 	duplicate := &DuplicateError{}
@@ -83,6 +83,15 @@ func CheckNodeDuplicates(nodes []Node, name string, address netip.Addr) error {
 	}
 	if duplicate.Name || duplicate.Address {
 		return duplicate
+	}
+	return nil
+}
+
+// ValidateNodeName applies the Remnawave Node name policy without performing
+// an API call.
+func ValidateNodeName(name string) error {
+	if !validNodeName(strings.TrimSpace(name)) {
+		return fmt.Errorf("Node name: %w", ErrInvalidInput)
 	}
 	return nil
 }
