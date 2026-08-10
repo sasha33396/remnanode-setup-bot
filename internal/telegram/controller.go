@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,6 +124,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case MenuDeployments:
 		c.cancelExisting(ctx, message.FromUserID)
 		return c.showDeployments(ctx, message.ChatID)
+	case MenuChangeIP:
+		return c.beginIPChange(ctx, message)
 	}
 
 	session, found, expired := c.loadSession(message.FromUserID)
@@ -152,32 +153,19 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case stateAwaitingConfirmation:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Use Deploy or Cancel on the confirmation message.", Keyboard{})
 		return err
+	case stateAwaitingIPChangeQuery:
+		return c.acceptIPChangeQuery(ctx, message, session)
+	case stateAwaitingIPChangeConfirmation:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Используйте кнопки «Сменить» или «Отменить» под карточкой ноды.", Keyboard{})
+		return err
+	case stateAwaitingNewIP:
+		return c.acceptNewNodeIP(ctx, message, session)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
 }
 
 func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message, text string) (bool, error) {
-	if text == "/replace_ip" || strings.HasPrefix(text, "/replace_ip ") {
-		fields := strings.Fields(text)
-		if len(fields) != 4 || !validDeploymentID(fields[1]) || !strings.EqualFold(fields[3], "CONFIRM") {
-			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Usage: /replace_ip <deployment-uuid> <new-ip> CONFIRM", mainKeyboard())
-			return true, err
-		}
-		newIP, parseErr := netip.ParseAddr(fields[2])
-		recoveryApp, ok := c.app.(RecoveryApplication)
-		if parseErr != nil || !ok {
-			_, err := c.messenger.SendMessage(ctx, message.ChatID, "IP replacement request is invalid or unavailable.", mainKeyboard())
-			return true, err
-		}
-		result, actionErr := recoveryApp.ReplaceNodeIP(ctx, fields[1], newIP)
-		if actionErr != nil {
-			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Node IP replacement could not be completed safely. Retry the same command after checking APIs.", mainKeyboard())
-			return true, err
-		}
-		_, err := c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 300), mainKeyboard())
-		return true, err
-	}
 	if text == "/bootstrap_certificate" || strings.HasPrefix(text, "/bootstrap_certificate ") {
 		fields := strings.Fields(text)
 		if len(fields) != 3 || !strings.EqualFold(fields[2], "CONFIRM") {
@@ -315,6 +303,26 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		return c.startDeployment(ctx, callback, session)
 	case "cancel":
 		return c.cancelFromCallback(ctx, callback, session)
+	case "ip_change":
+		if session.state != stateAwaitingIPChangeConfirmation || session.statusMsgID != callback.Message.ID {
+			return c.expiredCallback(ctx, callback)
+		}
+		if !c.updateSession(callback.FromUserID, nonce, stateAwaitingIPChangeConfirmation, func(current *wizard) {
+			current.state = stateAwaitingNewIP
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, renderIPChangeTarget(session.ipTarget)+"\n\nВведите новый публичный IP-адрес.", Keyboard{})
+	case "ip_cancel":
+		if session.state != stateAwaitingIPChangeConfirmation || session.statusMsgID != callback.Message.ID {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed := c.takeSession(callback.FromUserID, nonce, stateAwaitingIPChangeConfirmation)
+		if removed == nil {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed.clear()
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Смена IP отменена.", Keyboard{})
 	default:
 		return c.expiredCallback(ctx, callback)
 	}
@@ -362,6 +370,64 @@ func (c *Controller) beginAddNode(ctx context.Context, message *Message) error {
 	}
 	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Select a Remnawave Host:", Keyboard{Inline: rows})
 	return err
+}
+
+func (c *Controller) beginIPChange(ctx context.Context, message *Message) error {
+	c.cancelExisting(ctx, message.FromUserID)
+	if _, ok := c.app.(NodeIPApplication); !ok {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Смена IP сейчас недоступна.", mainKeyboard())
+		return err
+	}
+	nonce, err := c.nonce()
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось начать смену IP. Повторите позже.", mainKeyboard())
+		return errors.Join(err, sendErr)
+	}
+	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateAwaitingIPChangeQuery, expiresAt: c.now().Add(c.ttl)})
+	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+	return err
+}
+
+func (c *Controller) acceptIPChangeQuery(ctx context.Context, message *Message, session *wizard) error {
+	target, err := c.app.(NodeIPApplication).FindNodeForIPChange(ctx, strings.TrimSpace(message.Text))
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Нода не найдена или запрос неоднозначен. Проверьте имя/IP и повторите.", Keyboard{})
+		return sendErr
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingIPChangeQuery, func(current *wizard) {
+		current.ipTarget = target
+		current.state = stateAwaitingIPChangeConfirmation
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	sent, err := c.messenger.SendMessage(ctx, message.ChatID, renderIPChangeTarget(target), ipChangeKeyboard(session.nonce))
+	if err != nil {
+		return err
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingIPChangeConfirmation, func(current *wizard) { current.statusMsgID = sent.ID }) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	return nil
+}
+
+func (c *Controller) acceptNewNodeIP(ctx context.Context, message *Message, session *wizard) error {
+	newIP, valid := parsePublicIP(message.Text)
+	if !valid {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Неверный IP. Введите публичный IPv4 или IPv6.", Keyboard{})
+		return err
+	}
+	active := c.takeSession(message.FromUserID, session.nonce, stateAwaitingNewIP)
+	if active == nil {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	defer active.clear()
+	result, err := c.app.(NodeIPApplication).ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: active.ipTarget.UUID, ExpectedIP: active.ipTarget.Address, NewIP: newIP})
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось безопасно сменить IP. Данные ноды могли измениться; запустите смену IP заново.", mainKeyboard())
+		return sendErr
+	}
+	_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "✅ "+safeLine(result, 400), mainKeyboard())
+	return sendErr
 }
 
 func (c *Controller) acceptNodeName(ctx context.Context, message *Message, session *wizard) error {
@@ -780,7 +846,30 @@ func (c *Controller) sendExpired(ctx context.Context, chatID int64) error {
 }
 
 func mainKeyboard() Keyboard {
-	return Keyboard{Reply: [][]string{{MenuAddNode}, {MenuNodes, MenuDeployments}}}
+	return Keyboard{Reply: [][]string{{MenuAddNode, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
+}
+
+func ipChangeKeyboard(nonce string) Keyboard {
+	return Keyboard{Inline: [][]Button{{
+		{Text: "🔄 Сменить", CallbackData: "ip:change:" + nonce},
+		{Text: "❌ Отменить", CallbackData: "ip:cancel:" + nonce},
+	}}}
+}
+
+func renderIPChangeTarget(target NodeIPChangeTarget) string {
+	status := "не подключена"
+	if target.Connected {
+		status = "подключена"
+	}
+	kind := "legacy"
+	if target.IsManaged {
+		kind = "создана этим ботом"
+	}
+	zones := "не найдены"
+	if len(target.DNSZones) > 0 {
+		zones = strings.Join(target.DNSZones, ", ")
+	}
+	return fmt.Sprintf("Нода: %s\nТекущий IP: %s\nСтатус: %s\nТип: %s\nDNS-зоны: %s", safeLine(target.Name, 80), target.Address, status, kind, safeLine(zones, 800))
 }
 
 func confirmationKeyboard(nonce string) Keyboard {
@@ -851,7 +940,18 @@ func validReadiness(value Readiness) bool {
 
 func parseCallbackData(data string) (action, nonce string, index int, valid bool) {
 	parts := strings.Split(data, ":")
-	if len(parts) < 3 || parts[0] != "add" || parts[2] == "" {
+	if len(parts) < 3 || parts[2] == "" {
+		return "", "", 0, false
+	}
+	if parts[0] == "ip" && len(parts) == 3 {
+		switch parts[1] {
+		case "change":
+			return "ip_change", parts[2], 0, true
+		case "cancel":
+			return "ip_cancel", parts[2], 0, true
+		}
+	}
+	if parts[0] != "add" {
 		return "", "", 0, false
 	}
 	switch parts[1] {

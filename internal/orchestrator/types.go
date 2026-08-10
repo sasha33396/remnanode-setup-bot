@@ -87,6 +87,7 @@ type RemnawaveAPI interface {
 
 type DNSAPI interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 }

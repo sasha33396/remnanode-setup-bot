@@ -162,6 +162,7 @@ func (c *RemnawaveClient) observe(err error) {
 type DNSClient struct {
 	next interface {
 		FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+		FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 		AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 		ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 	}
@@ -170,6 +171,7 @@ type DNSClient struct {
 
 func ObserveDNS(next interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 }, registry *Registry) *DNSClient {
@@ -178,6 +180,11 @@ func ObserveDNS(next interface {
 
 func (c *DNSClient) FindZone(ctx context.Context, sni string) (dnsbalancer.ZoneMatch, error) {
 	value, err := c.next.FindZone(ctx, sni)
+	c.observe(err)
+	return value, err
+}
+func (c *DNSClient) FindZonesByIP(ctx context.Context, ip netip.Addr) ([]dnsbalancer.ZoneMatch, error) {
+	value, err := c.next.FindZonesByIP(ctx, ip)
 	c.observe(err)
 	return value, err
 }

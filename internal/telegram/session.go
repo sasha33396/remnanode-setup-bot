@@ -15,6 +15,9 @@ const (
 	statePreflighting
 	stateAwaitingConfirmation
 	stateDeploying
+	stateAwaitingIPChangeQuery
+	stateAwaitingIPChangeConfirmation
+	stateAwaitingNewIP
 )
 
 type wizard struct {
@@ -30,6 +33,7 @@ type wizard struct {
 	password    []byte
 	preflight   PreflightResult
 	statusMsgID int
+	ipTarget    NodeIPChangeTarget
 	expiryTimer *time.Timer
 }
 
@@ -43,6 +47,7 @@ func (w *wizard) clone() *wizard {
 	result.password = nil
 	result.expiryTimer = nil
 	result.preflight.SafeWarnings = append([]string(nil), w.preflight.SafeWarnings...)
+	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
 	return &result
 }
 

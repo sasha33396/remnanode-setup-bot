@@ -11,6 +11,7 @@ const (
 	MenuAddNode     = "➕ Add Node"
 	MenuNodes       = "📡 Nodes"
 	MenuDeployments = "📜 Deployments"
+	MenuChangeIP    = "🔄 Сменить IP"
 )
 
 var (
@@ -84,6 +85,23 @@ type NodeSummary struct {
 	Connected bool
 }
 
+// NodeIPChangeTarget is an operator-safe projection used by the IP-change
+// wizard. UUID is retained only in transient server-side state.
+type NodeIPChangeTarget struct {
+	UUID      string
+	Name      string
+	Address   netip.Addr
+	Connected bool
+	DNSZones  []string
+	IsManaged bool
+}
+
+type NodeIPChangeInput struct {
+	NodeUUID   string
+	ExpectedIP netip.Addr
+	NewIP      netip.Addr
+}
+
 type DeploymentSummary struct {
 	ID        string
 	NodeName  string
@@ -153,5 +171,11 @@ type RecoveryApplication interface {
 	RecheckRemnawave(context.Context, string) (string, error)
 	ViewSafeLogs(context.Context, string) ([]string, error)
 	BootstrapCertificate(context.Context, string, int64) (string, error)
-	ReplaceNodeIP(context.Context, string, netip.Addr) (string, error)
+}
+
+// NodeIPApplication is optional. It powers the button-based IP replacement
+// wizard for both managed and legacy Remnawave Nodes.
+type NodeIPApplication interface {
+	FindNodeForIPChange(context.Context, string) (NodeIPChangeTarget, error)
+	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
 }

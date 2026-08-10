@@ -62,18 +62,26 @@ func TestCertificateBootstrapRequiresExplicitConfirmation(t *testing.T) {
 	}
 }
 
-func TestReplaceIPRequiresExplicitConfirmation(t *testing.T) {
-	application := &fakeRecoveryApplication{fakeApplication: &fakeApplication{}}
+func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
+	application := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{},
+		target:          NodeIPChangeTarget{UUID: "internal-uuid", Name: "legacy-node", Address: netip.MustParseAddr("8.8.8.8"), Connected: true, DNSZones: []string{"edge.example.com"}},
+	}
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
-	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	handleMessage(t, controller, 1, "/replace_ip "+id+" 1.1.1.1")
-	if application.replaceIPCalls != 0 || !strings.Contains(messenger.lastSent().text, "CONFIRM") {
-		t.Fatalf("replacement without confirmation was not rejected")
+	handleMessage(t, controller, 1, MenuChangeIP)
+	handleMessage(t, controller, 2, "legacy-node")
+	card := messenger.lastSent()
+	if !strings.Contains(card.text, "legacy-node") || !strings.Contains(card.text, "8.8.8.8") || !strings.Contains(card.text, "legacy") {
+		t.Fatalf("card = %q", card.text)
 	}
-	handleMessage(t, controller, 2, "/replace_ip "+id+" 1.1.1.1 CONFIRM")
-	if application.replaceIPCalls != 1 || application.replaceIPDeployment != id || application.replaceIP.String() != "1.1.1.1" {
-		t.Fatalf("replacement call = %d, %q, %s", application.replaceIPCalls, application.replaceIPDeployment, application.replaceIP)
+	if strings.Contains(card.text, "internal-uuid") || len(card.keyboard.Inline) != 1 {
+		t.Fatalf("unsafe card = %#v", card)
+	}
+	handleCallback(t, controller, "change", card.keyboard.Inline[0][0].CallbackData, card.message)
+	handleMessage(t, controller, 3, "1.1.1.1")
+	if application.replaceCalls != 1 || application.input.NodeUUID != "internal-uuid" || application.input.ExpectedIP.String() != "8.8.8.8" || application.input.NewIP.String() != "1.1.1.1" {
+		t.Fatalf("replace input = %#v", application.input)
 	}
 }
 
@@ -300,27 +308,36 @@ type fakeApplication struct {
 
 type fakeRecoveryApplication struct {
 	*fakeApplication
-	bootstrapCalls      int
-	bootstrapSNI        string
-	bootstrapOperator   int64
-	bootstrapResult     string
-	bootstrapErr        error
-	replaceIPCalls      int
-	replaceIPDeployment string
-	replaceIP           netip.Addr
+	bootstrapCalls    int
+	bootstrapSNI      string
+	bootstrapOperator int64
+	bootstrapResult   string
+	bootstrapErr      error
 }
 
 func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
 func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error        { return nil }
 
-func (f *fakeRecoveryApplication) ReplaceNodeIP(_ context.Context, deploymentID string, address netip.Addr) (string, error) {
-	f.replaceIPCalls++
-	f.replaceIPDeployment = deploymentID
-	f.replaceIP = address
-	return "Node IP changed", nil
-}
 func (f *fakeRecoveryApplication) RecheckRemnawave(context.Context, string) (string, error) {
 	return "checked", nil
+}
+
+type fakeNodeIPApplication struct {
+	*fakeApplication
+	target       NodeIPChangeTarget
+	findErr      error
+	replaceErr   error
+	replaceCalls int
+	input        NodeIPChangeInput
+}
+
+func (f *fakeNodeIPApplication) FindNodeForIPChange(context.Context, string) (NodeIPChangeTarget, error) {
+	return f.target, f.findErr
+}
+func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
+	f.replaceCalls++
+	f.input = input
+	return "IP изменён", f.replaceErr
 }
 func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]string, error) {
 	return nil, nil

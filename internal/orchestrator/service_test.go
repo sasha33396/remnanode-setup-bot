@@ -67,17 +67,43 @@ func TestReplaceNodeIPUpdatesPanelThenDNSAndPersistence(t *testing.T) {
 	fixture := newFixture(t)
 	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
 	fixture.repo.items[item.ID] = item
-	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Address: "8.8.8.8", IsConnected: true}}
-	fixture.remnawave.pollStates = []remnawave.Node{
-		{UUID: testNodeUUID, Address: "8.8.8.8", IsConnected: true},
-		{UUID: testNodeUUID, Address: "1.1.1.1", IsConnected: true},
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "8.8.8.8", IsConnected: true}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}}}
+	target, err := fixture.service.FindNodeForIPChange(context.Background(), "node")
+	if err != nil || !target.Managed || len(target.DNSZones) != 1 {
+		t.Fatalf("FindNodeForIPChange() = %#v, %v", target, err)
 	}
-	message, err := fixture.service.ReplaceNodeIP(context.Background(), item.ID, netip.MustParseAddr("1.1.1.1"))
+	message, err := fixture.service.ReplaceNodeIP(context.Background(), NodeIPChangeInput{NodeUUID: testNodeUUID, ExpectedIP: netip.MustParseAddr("8.8.8.8"), NewIP: netip.MustParseAddr("1.1.1.1")})
 	if err != nil || message == "" {
 		t.Fatalf("ReplaceNodeIP() = %q, %v", message, err)
 	}
 	if got := fixture.repo.mustGet(item.ID).TargetVPSIP.String(); got != "1.1.1.1" {
 		t.Fatalf("persisted IP = %s", got)
+	}
+}
+
+func TestReplaceNodeIPSupportsLegacyNodeAndAllMatchingZones(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy-node", Address: "8.8.8.8"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{
+		{FQDN: "one.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8", "9.9.9.9"}}},
+		{FQDN: "two.example.net", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}},
+	}
+	target, err := fixture.service.FindNodeForIPChange(context.Background(), "8.8.8.8")
+	if err != nil || target.Managed || len(target.DNSZones) != 2 {
+		t.Fatalf("legacy target = %#v, %v", target, err)
+	}
+	_, err = fixture.service.ReplaceNodeIP(context.Background(), NodeIPChangeInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address, NewIP: netip.MustParseAddr("1.1.1.1")})
+	if err != nil {
+		t.Fatalf("ReplaceNodeIP() error = %v", err)
+	}
+	if fixture.remnawave.nodes[0].Address != "1.1.1.1" {
+		t.Fatalf("panel address = %s", fixture.remnawave.nodes[0].Address)
+	}
+	for _, zone := range fixture.dns.zones {
+		if zone.Zone.IPs[0] != "1.1.1.1" {
+			t.Fatalf("zone %s = %v", zone.FQDN, zone.Zone.IPs)
+		}
 	}
 }
 
@@ -669,6 +695,23 @@ type fakeDNS struct {
 	events   *eventLog
 	addErr   error
 	addCalls int
+	zones    []dnsbalancer.ZoneMatch
+}
+
+func (f *fakeDNS) FindZonesByIP(_ context.Context, ip netip.Addr) ([]dnsbalancer.ZoneMatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var result []dnsbalancer.ZoneMatch
+	for _, zone := range f.zones {
+		for _, value := range zone.Zone.IPs {
+			parsed, err := netip.ParseAddr(value)
+			if err == nil && parsed.Unmap() == ip.Unmap() {
+				result = append(result, zone)
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func (f *fakeDNS) FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error) {
@@ -683,8 +726,20 @@ func (f *fakeDNS) AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPR
 	return dnsbalancer.AddIPResult{}, f.addErr
 }
 
-func (f *fakeDNS) ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error) {
+func (f *fakeDNS) ReplaceIP(_ context.Context, fqdn string, oldIP, newIP netip.Addr) (dnsbalancer.ReplaceIPResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events.add("dns.replace")
+	for zoneIndex := range f.zones {
+		if f.zones[zoneIndex].FQDN != fqdn {
+			continue
+		}
+		for ipIndex, value := range f.zones[zoneIndex].Zone.IPs {
+			if value == oldIP.String() {
+				f.zones[zoneIndex].Zone.IPs[ipIndex] = newIP.String()
+			}
+		}
+	}
 	return dnsbalancer.ReplaceIPResult{Changed: true}, f.addErr
 }
 
