@@ -126,6 +126,16 @@ systemctl enable --now docker`
 
 	firewallInspect, firewallApply, firewallValidate := firewallCommands(config.RemnawaveAPIIP.String(), config.MetricsIP.String())
 	nodeInspect := fmt.Sprintf(`if command -v node_exporter >/dev/null 2>&1 && node_exporter --version 2>&1 | grep -Fq 'version %s' && systemctl is-active --quiet node_exporter; then printf ready; else printf pending; fi`, config.NodeExporterVersion)
+	remnanodeValidate := `attempt=0
+while [ "$attempt" -lt 30 ]; do
+    if docker inspect -f '{{.State.Running}}' remnanode 2>/dev/null | grep -qx true && ss -lnt | awk '{print $4}' | grep -Eq '(^|:)2222$'; then
+        printf ready
+        exit 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+done
+printf pending`
 	nodeApply := fmt.Sprintf(`set -eu
 arch=$(uname -m)
 case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 2 ;; esac
@@ -162,7 +172,7 @@ systemctl enable --now fail2ban`, `if systemctl is-active --quiet fail2ban && fa
 			managedFile{path: "/etc/fail2ban/jail.d/remnanode-sshd.local", mode: "0644", content: []byte(fail2banConfig)}),
 		remote("remnanode", `if docker inspect -f '{{.State.Running}}' remnanode 2>/dev/null | grep -qx true; then printf ready; else printf pending; fi`, `set -eu
 install -d -m 0755 /var/log/remnanode
-docker compose -f /opt/remnanode/docker-compose.yml up -d --remove-orphans`, `if docker inspect -f '{{.State.Running}}' remnanode 2>/dev/null | grep -qx true && ss -lnt | awk '{print $4}' | grep -Eq '(^|:)2222$'; then printf ready; else printf pending; fi`,
+docker compose -f /opt/remnanode/docker-compose.yml up -d --remove-orphans`, remnanodeValidate,
 			managedFile{path: "/opt/remnanode/docker-compose.yml", mode: "0600", content: remnanodeCompose}),
 		remote("node_exporter", nodeInspect, nodeApply, `if systemctl is-active --quiet node_exporter && ss -lnt | awk '{print $4}' | grep -Eq '(^|:)9100$'; then printf ready; else printf pending; fi`,
 			managedFile{path: "/etc/systemd/system/node_exporter.service", mode: "0644", content: []byte(nodeExporterService)}),
