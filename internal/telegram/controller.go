@@ -157,6 +157,29 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 }
 
 func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message, text string) (bool, error) {
+	if text == "/bootstrap_certificate" || strings.HasPrefix(text, "/bootstrap_certificate ") {
+		fields := strings.Fields(text)
+		if len(fields) != 3 || !strings.EqualFold(fields[2], "CONFIRM") {
+			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Usage: /bootstrap_certificate <sni-domain> CONFIRM", mainKeyboard())
+			return true, err
+		}
+		recoveryApp, ok := c.app.(RecoveryApplication)
+		if !ok {
+			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Recovery actions are unavailable.", mainKeyboard())
+			return true, err
+		}
+		result, err := recoveryApp.BootstrapCertificate(ctx, fields[1], message.FromUserID)
+		if err != nil {
+			failure := "Certificate bootstrap could not be completed safely."
+			if detail := safeLine(result, 300); detail != "" {
+				failure += " " + detail
+			}
+			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, failure, mainKeyboard())
+			return true, sendErr
+		}
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 500), mainKeyboard())
+		return true, err
+	}
 	commands := []string{"/retry_step", "/retry_dns", "/recheck", "/logs", "/cancel_deployment"}
 	var command, deploymentID string
 	for _, candidate := range commands {

@@ -69,14 +69,15 @@ func New(pool *pgxpool.Pool) *Repository {
 // CheckSchema verifies all runtime-critical migration objects before the
 // service reports readiness.
 func (r *Repository) CheckSchema(ctx context.Context) error {
-	var deployments, certificateRecords, certificateVersions *string
+	var deployments, certificateRecords, certificateVersions, certificateTargetReviews *string
 	if err := r.pool.QueryRow(ctx, `
         SELECT to_regclass('public.deployments')::text,
                to_regclass('public.certificate_records')::text,
-               to_regclass('public.certificate_versions')::text`).Scan(&deployments, &certificateRecords, &certificateVersions); err != nil {
+               to_regclass('public.certificate_versions')::text,
+               to_regclass('public.certificate_target_reviews')::text`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews); err != nil {
 		return errors.New("verify PostgreSQL schema failed")
 	}
-	if deployments == nil || certificateRecords == nil || certificateVersions == nil {
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil {
 		return errors.New("required PostgreSQL migrations are not applied")
 	}
 	return nil

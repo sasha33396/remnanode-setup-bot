@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -154,6 +155,70 @@ func (r *Repository) RecordDistribution(ctx context.Context, record certmanager.
 		return fmt.Errorf("record certificate distribution: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) RecordTargetReview(ctx context.Context, review certmanager.TargetReview) error {
+	if strings.TrimSpace(review.SNI) == "" || !review.IP.IsValid() || strings.TrimSpace(review.Reason) == "" {
+		return certmanager.ErrInvalidInput
+	}
+	if review.State != certmanager.TargetManualReview && review.State != certmanager.TargetLegacyAcknowledged {
+		return certmanager.ErrInvalidInput
+	}
+	if review.State == certmanager.TargetLegacyAcknowledged && (review.AcknowledgedBy == nil || *review.AcknowledgedBy <= 0) {
+		return certmanager.ErrInvalidInput
+	}
+	if review.State == certmanager.TargetManualReview {
+		review.AcknowledgedBy = nil
+	}
+	_, err := r.pool.Exec(ctx, `
+        INSERT INTO certificate_target_reviews (
+            sni_domain, node_ip, state, reason, acknowledged_by,
+            acknowledged_at
+        ) VALUES (
+            lower(btrim($1)), $2, $3, $4, $5,
+            CASE WHEN $3 = 'LEGACY_ACKNOWLEDGED' THEN now() ELSE NULL END
+        )
+        ON CONFLICT (sni_domain, node_ip) DO UPDATE
+        SET state = EXCLUDED.state,
+            reason = EXCLUDED.reason,
+            acknowledged_by = EXCLUDED.acknowledged_by,
+            acknowledged_at = EXCLUDED.acknowledged_at,
+            updated_at = now()`,
+		review.SNI, review.IP.Unmap().String(), review.State, strings.TrimSpace(review.Reason), review.AcknowledgedBy)
+	if err != nil {
+		return fmt.Errorf("record certificate target review: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListTargetReviews(ctx context.Context, sni string) ([]certmanager.TargetReview, error) {
+	rows, err := r.pool.Query(ctx, `
+        SELECT sni_domain, node_ip::text, state, reason, acknowledged_by,
+               created_at, updated_at, acknowledged_at
+        FROM certificate_target_reviews
+        WHERE sni_domain = lower(btrim($1))
+        ORDER BY node_ip, created_at`, sni)
+	if err != nil {
+		return nil, fmt.Errorf("list certificate target reviews: %w", err)
+	}
+	defer rows.Close()
+	result := make([]certmanager.TargetReview, 0)
+	for rows.Next() {
+		var item certmanager.TargetReview
+		var ip string
+		if err := rows.Scan(&item.SNI, &ip, &item.State, &item.Reason, &item.AcknowledgedBy, &item.CreatedAt, &item.UpdatedAt, &item.AcknowledgedAt); err != nil {
+			return nil, fmt.Errorf("scan certificate target review: %w", err)
+		}
+		item.IP, err = netip.ParseAddr(ip)
+		if err != nil {
+			return nil, fmt.Errorf("parse certificate target review IP: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list certificate target reviews: %w", err)
+	}
+	return result, nil
 }
 
 func (r *Repository) ListExpiring(ctx context.Context, before time.Time, limit int) ([]certmanager.Record, error) {

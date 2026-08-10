@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"remnanode-setup-bot/internal/certificates"
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/provisioner"
@@ -47,6 +48,10 @@ const (
 type CertificateProvider interface {
 	Readiness(context.Context, string) (CertificateReadiness, error)
 	Prepare(context.Context, string) (certificates.Material, error)
+}
+
+type CertificateBootstrapper interface {
+	Bootstrap(context.Context, string, int64) (certmanager.BootstrapResult, error)
 }
 
 // VPSOperator hides SSH connectivity and provisioner construction from the

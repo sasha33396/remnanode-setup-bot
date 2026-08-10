@@ -88,6 +88,26 @@ func TestDefaultStagesHaveStableOrder(t *testing.T) {
 	}
 }
 
+func TestRemnanodeValidationWaitsForAPIReadiness(t *testing.T) {
+	config, err := NewConfig(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), []byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages, err := NewDefaultStages(&captureRunner{}, config, successfulXrayAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage, ok := stages[6].(*remoteStage)
+	if !ok || stage.Name() != "remnanode" {
+		t.Fatalf("stage 6 = %T %q, want remnanode remote stage", stages[6], stages[6].Name())
+	}
+	for _, required := range []string{`while [ "$attempt" -lt 30 ]`, "sleep 1", "2222"} {
+		if !strings.Contains(stage.validateCommand, required) {
+			t.Fatalf("remnanode validation does not contain %q", required)
+		}
+	}
+}
+
 func TestFirewallUsesConfiguredSourcesAndReplacesStaleManagedRules(t *testing.T) {
 	inspect, apply, _ := firewallCommands("192.0.2.10", "198.51.100.20")
 	for _, required := range []string{"192.0.2.10", "198.51.100.20", "2222", "9100", "9200"} {

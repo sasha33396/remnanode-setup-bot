@@ -35,6 +35,9 @@ func TestTOFUHostKeyFirstUseAndSubsequentVerification(t *testing.T) {
 	if err := subsequent.callback("host", nil, firstKey); err != nil {
 		t.Fatalf("subsequent callback error = %v", err)
 	}
+	if err := subsequent.commit(); err != nil {
+		t.Fatalf("subsequent commit error = %v", err)
+	}
 }
 
 func TestTOFUHostKeyRejectsChangedFingerprint(t *testing.T) {

@@ -159,6 +159,10 @@ func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID str
 	return result, nil
 }
 
+func (a *TelegramApplication) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {
+	return a.service.BootstrapCertificate(ctx, sni, operatorUserID)
+}
+
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {
 	nodes, err := a.service.remnawave.GetNodes(ctx)
 	if err != nil {

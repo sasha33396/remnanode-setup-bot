@@ -134,6 +134,91 @@ func (m *Manager) Renew(ctx context.Context, sni string) error {
 	return err
 }
 
+// Bootstrap activates the newest valid staged certificate for an SNI after an
+// authorized operator explicitly acknowledges DNS targets that are not yet
+// managed by this deployer. Managed targets must still accept the certificate
+// before activation. No new ACME order is created.
+func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int64) (BootstrapResult, error) {
+	domain, err := canonicalSNI(sni)
+	if err != nil || operatorUserID <= 0 {
+		return BootstrapResult{}, ErrInvalidInput
+	}
+	if m.resolver == nil {
+		return BootstrapResult{}, safe("Certificate target resolver is unavailable", ErrDistributionFailed)
+	}
+	unlock, err := m.locker.Lock(ctx, domain)
+	if err != nil {
+		return BootstrapResult{}, safe("Certificate bootstrap lock is unavailable", ErrPersistenceFailed)
+	}
+	defer unlock()
+	if _, material, activeErr := m.loadActive(ctx, domain, true); activeErr == nil {
+		material.Destroy()
+		return BootstrapResult{}, safe("Certificate is already active", ErrActivationFailed)
+	} else if !errors.Is(activeErr, ErrNotFound) && !errors.Is(activeErr, certificates.ErrInvalidMaterial) {
+		return BootstrapResult{}, safe("Active certificate state could not be checked", ErrPersistenceFailed)
+	}
+
+	versions, err := m.repository.ListVersions(ctx, domain)
+	if err != nil {
+		return BootstrapResult{}, safe("Certificate versions could not be loaded", ErrPersistenceFailed)
+	}
+	var candidate Version
+	var material certificates.Material
+	for _, version := range versions {
+		if version.Status != VersionDistribution && version.Status != VersionPending {
+			continue
+		}
+		loaded, loadErr := m.store.Load(ctx, domain, version.Version)
+		if loadErr != nil {
+			continue
+		}
+		info, validationErr := certificates.Validate(loaded, domain, m.now())
+		if validationErr != nil || info.Fingerprint != version.Fingerprint {
+			loaded.Destroy()
+			continue
+		}
+		candidate, material = version, loaded
+		break
+	}
+	if candidate.Version == "" {
+		return BootstrapResult{}, safe("No valid staged certificate is available", ErrNotFound)
+	}
+	defer material.Destroy()
+
+	resolution, err := m.resolver.Resolve(ctx, domain)
+	if err != nil {
+		return BootstrapResult{}, safe("Certificate distribution targets are unavailable", ErrDistributionFailed)
+	}
+	for _, ip := range resolution.Unmanaged {
+		operator := operatorUserID
+		if err := m.repository.RecordTargetReview(ctx, TargetReview{
+			SNI: domain, IP: ip, State: TargetLegacyAcknowledged,
+			Reason:         "Legacy DNS target explicitly acknowledged during certificate bootstrap",
+			AcknowledgedBy: &operator,
+		}); err != nil {
+			return BootstrapResult{}, safe("Legacy target acknowledgement could not be saved", ErrPersistenceFailed)
+		}
+	}
+	if err := m.distributeTargets(ctx, domain, candidate.Version, material, resolution.Managed); err != nil {
+		return BootstrapResult{}, err
+	}
+	previousMarker, _ := m.store.ActiveVersion(ctx, domain)
+	if err := m.store.Activate(ctx, domain, candidate.Version); err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := m.repository.ActivateVersion(ctx, domain, candidate.Version, false); err != nil {
+		if previousMarker != "" {
+			_ = m.store.Activate(context.WithoutCancel(ctx), domain, previousMarker)
+		}
+		return BootstrapResult{}, safe("Bootstrap certificate metadata could not be activated", ErrPersistenceFailed)
+	}
+	m.observeExpiry(Record{SNI: domain, ExpiresAt: candidate.ExpiresAt})
+	return BootstrapResult{
+		SNI: domain, Version: candidate.Version, ManagedTargets: len(resolution.Managed),
+		AcknowledgedLegacyIPs: len(resolution.Unmanaged) + len(resolution.LegacyAcknowledged),
+	}, nil
+}
+
 // Rollback redistributes and activates a previously stored valid version. The
 // existing central active marker is restored if metadata activation fails.
 func (m *Manager) Rollback(ctx context.Context, sni, version string) error {
@@ -251,10 +336,25 @@ func (m *Manager) distribute(ctx context.Context, domain, version string, materi
 	if m.resolver == nil {
 		return nil
 	}
-	targets, err := m.resolver.Targets(ctx, domain)
+	resolution, err := m.resolver.Resolve(ctx, domain)
 	if err != nil {
 		return safe("Certificate distribution targets are unavailable", ErrDistributionFailed)
 	}
+	if len(resolution.Unmanaged) > 0 {
+		for _, ip := range resolution.Unmanaged {
+			if err := m.repository.RecordTargetReview(ctx, TargetReview{
+				SNI: domain, IP: ip, State: TargetManualReview,
+				Reason: "DNS target has no verified deployment SSH identity",
+			}); err != nil {
+				return safe("Certificate target review could not be saved", ErrPersistenceFailed)
+			}
+		}
+		return safe("Certificate distribution requires review of unmanaged DNS targets", ErrDistributionFailed)
+	}
+	return m.distributeTargets(ctx, domain, version, material, resolution.Managed)
+}
+
+func (m *Manager) distributeTargets(ctx context.Context, domain, version string, material certificates.Material, targets []Target) error {
 	if len(targets) == 0 {
 		return nil
 	}
