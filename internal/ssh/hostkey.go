@@ -91,7 +91,6 @@ func (s *hostKeySession) callback(_ string, _ net.Addr, key gossh.PublicKey) err
 		if trusted != fingerprint {
 			return &HostKeyChangedError{Expected: trusted, Actual: fingerprint}
 		}
-		return nil
 	}
 
 	s.mu.Lock()
