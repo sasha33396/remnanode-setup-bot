@@ -49,6 +49,13 @@ const (
 	DistributionFailed    DistributionStatus = "FAILED"
 )
 
+type TargetReviewState string
+
+const (
+	TargetManualReview       TargetReviewState = "MANUAL_REVIEW"
+	TargetLegacyAcknowledged TargetReviewState = "LEGACY_ACKNOWLEDGED"
+)
+
 type Record struct {
 	SNI           string
 	Fingerprint   string
@@ -82,6 +89,17 @@ type DistributionRecord struct {
 	AttemptedAt      time.Time
 }
 
+type TargetReview struct {
+	SNI            string
+	IP             netip.Addr
+	State          TargetReviewState
+	Reason         string
+	AcknowledgedBy *int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	AcknowledgedAt *time.Time
+}
+
 type Repository interface {
 	GetActive(context.Context, string) (Record, error)
 	SaveVersion(context.Context, Version) error
@@ -91,6 +109,8 @@ type Repository interface {
 	RecordDistribution(context.Context, DistributionRecord) error
 	ListExpiring(context.Context, time.Time, int) ([]Record, error)
 	ListVersions(context.Context, string) ([]Version, error)
+	RecordTargetReview(context.Context, TargetReview) error
+	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
 type Locker interface {
@@ -113,8 +133,14 @@ type Target struct {
 	IP           netip.Addr
 }
 
+type TargetResolution struct {
+	Managed            []Target
+	Unmanaged          []netip.Addr
+	LegacyAcknowledged []netip.Addr
+}
+
 type TargetResolver interface {
-	Targets(context.Context, string) ([]Target, error)
+	Resolve(context.Context, string) (TargetResolution, error)
 }
 
 type DistributionResult struct {
@@ -137,6 +163,13 @@ type Config struct {
 	IssueTimeout   time.Duration
 	RenewInterval  time.Duration
 	RenewBatchSize int
+}
+
+type BootstrapResult struct {
+	SNI                   string
+	Version               string
+	ManagedTargets        int
+	AcknowledgedLegacyIPs int
 }
 
 type safeError struct {

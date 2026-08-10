@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -506,6 +507,20 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 		return err
 	}
 	return s.Deploy(ctx, StartInput{DeploymentID: current.ID, OperatorUserID: current.TelegramOperatorUserID, HostID: current.SelectedRemnawaveHostUUID, NodeName: current.NodeName, VPSIP: current.TargetVPSIP}, progress)
+}
+
+func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {
+	bootstrapper, ok := s.certificates.(CertificateBootstrapper)
+	if !ok {
+		return "", safeError("CERTIFICATE_BOOTSTRAP_UNAVAILABLE", "Certificate bootstrap is unavailable", ErrCertificateUnavailable)
+	}
+	result, err := bootstrapper.Bootstrap(ctx, sni, operatorUserID)
+	if err != nil {
+		return "", safeError("CERTIFICATE_BOOTSTRAP_FAILED", "Certificate bootstrap could not be completed", ErrCertificateUnavailable)
+	}
+	return "Certificate " + result.Version + " activated for " + result.SNI +
+		"; managed targets: " + strconv.Itoa(result.ManagedTargets) +
+		"; acknowledged legacy targets: " + strconv.Itoa(result.AcknowledgedLegacyIPs), nil
 }
 
 // SafeLogs returns persisted summaries only. Raw SSH/API output and secrets are

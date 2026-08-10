@@ -61,7 +61,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql"} {
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql"} {
 		upSQL, err := migrations.Files.ReadFile(migration)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", migration, err)
@@ -201,6 +201,15 @@ func TestRepositoryIntegration(t *testing.T) {
 	versions, err := repo.ListVersions(ctx, version.SNI)
 	if err != nil || len(versions) != 1 || versions[0].Status != certmanager.VersionActive {
 		t.Fatalf("ListVersions() = %#v, %v", versions, err)
+	}
+	operator := int64(123456)
+	legacyIP := netip.MustParseAddr("203.0.113.99")
+	if err := repo.RecordTargetReview(ctx, certmanager.TargetReview{SNI: version.SNI, IP: legacyIP, State: certmanager.TargetLegacyAcknowledged, Reason: "integration bootstrap", AcknowledgedBy: &operator}); err != nil {
+		t.Fatalf("RecordTargetReview() error = %v", err)
+	}
+	reviews, err := repo.ListTargetReviews(ctx, version.SNI)
+	if err != nil || len(reviews) != 1 || reviews[0].IP != legacyIP || reviews[0].AcknowledgedBy == nil || *reviews[0].AcknowledgedBy != operator {
+		t.Fatalf("ListTargetReviews() = %#v, %v", reviews, err)
 	}
 }
 

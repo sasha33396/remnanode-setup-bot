@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"net/netip"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,12 +242,52 @@ func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material
 }
 
 type fakeResolver struct {
-	targets []Target
-	err     error
+	targets   []Target
+	unmanaged []netip.Addr
+	legacy    []netip.Addr
+	err       error
 }
 
-func (r *fakeResolver) Targets(context.Context, string) ([]Target, error) {
-	return append([]Target(nil), r.targets...), r.err
+func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	legacyIP := netip.MustParseAddr("203.0.113.50")
+	fixture.resolver.unmanaged = []netip.Addr{legacyIP}
+
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("Prepare() error = %v, want distribution failure", err)
+	}
+	if fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("issuer calls = %d, want 1", fixture.issuer.calls.Load())
+	}
+
+	result, err := fixture.manager.Bootstrap(context.Background(), testSNI, 42)
+	if err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+	if result.AcknowledgedLegacyIPs != 1 || result.Version == "" {
+		t.Fatalf("Bootstrap() result = %#v", result)
+	}
+	if fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("bootstrap created a new ACME order; issuer calls = %d", fixture.issuer.calls.Load())
+	}
+	active, err := fixture.repository.GetActive(context.Background(), testSNI)
+	if err != nil || active.ActiveVersion != result.Version || active.Status != StatusActive {
+		t.Fatalf("active certificate = %#v, %v", active, err)
+	}
+	reviews, _ := fixture.repository.ListTargetReviews(context.Background(), testSNI)
+	if len(reviews) != 1 || reviews[0].State != TargetLegacyAcknowledged || reviews[0].AcknowledgedBy == nil || *reviews[0].AcknowledgedBy != 42 {
+		t.Fatalf("target reviews = %#v", reviews)
+	}
+}
+
+func (r *fakeResolver) Resolve(context.Context, string) (TargetResolution, error) {
+	return TargetResolution{
+		Managed:            append([]Target(nil), r.targets...),
+		Unmanaged:          append([]netip.Addr(nil), r.unmanaged...),
+		LegacyAcknowledged: append([]netip.Addr(nil), r.legacy...),
+	}, r.err
 }
 
 type fakeDistributor struct {
@@ -276,10 +317,11 @@ type memoryCertificateRepository struct {
 	records       map[string]Record
 	versions      map[string]map[string]Version
 	distributions []DistributionRecord
+	reviews       map[string]map[netip.Addr]TargetReview
 }
 
 func newMemoryCertificateRepository() *memoryCertificateRepository {
-	return &memoryCertificateRepository{records: make(map[string]Record), versions: make(map[string]map[string]Version)}
+	return &memoryCertificateRepository{records: make(map[string]Record), versions: make(map[string]map[string]Version), reviews: make(map[string]map[netip.Addr]TargetReview)}
 }
 func (r *memoryCertificateRepository) GetActive(_ context.Context, sni string) (Record, error) {
 	r.mu.Lock()
@@ -372,6 +414,25 @@ func (r *memoryCertificateRepository) ListVersions(_ context.Context, sni string
 	var result []Version
 	for _, version := range r.versions[sni] {
 		result = append(result, version)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	return result, nil
+}
+func (r *memoryCertificateRepository) RecordTargetReview(_ context.Context, review TargetReview) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reviews[review.SNI] == nil {
+		r.reviews[review.SNI] = make(map[netip.Addr]TargetReview)
+	}
+	r.reviews[review.SNI][review.IP.Unmap()] = review
+	return nil
+}
+func (r *memoryCertificateRepository) ListTargetReviews(_ context.Context, sni string) ([]TargetReview, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]TargetReview, 0, len(r.reviews[sni]))
+	for _, review := range r.reviews[sni] {
+		result = append(result, review)
 	}
 	return result, nil
 }

@@ -1,0 +1,1 @@
+DROP TABLE certificate_target_reviews;

@@ -8,7 +8,7 @@
 3. Generate a dedicated Ed25519 deployment SSH key and set the host path in
    `DEPLOY_SSH_PRIVATE_KEY`.
 4. Grant the Cloudflare token only DNS record read/edit access to SNI zones.
-5. Apply migrations `000001` through `000004` in numeric order.
+5. Apply migrations `000001` through `000005` in numeric order.
 6. Run `docker compose up -d --build`; verify `/healthz`, `/readyz`, `/metrics`,
    container health, and Telegram `/start`.
 
@@ -54,11 +54,21 @@ Authorized Telegram users can use:
 /recheck <deployment-uuid>
 /cancel_deployment <deployment-uuid>
 /logs <deployment-uuid>
+/bootstrap_certificate <sni-domain> CONFIRM
 ```
 
 `/retry_step` is allowed only for stages with an idempotent recovery contract.
 Preflight cannot be retried because its temporary root password is not persisted.
 `/logs` returns only safe persisted summaries, never raw SSH/API output.
+
+`/bootstrap_certificate` is an explicit one-time transition for an SNI whose
+DNS pool contains legacy Nodes that do not yet have a verified deployer SSH
+identity. It activates the newest valid staged certificate without creating a
+new ACME order, requires every already-managed target to accept the candidate,
+and records each unknown DNS IP as `LEGACY_ACKNOWLEDGED` with the authorizing
+Telegram user ID. Acknowledged legacy targets are excluded from later central
+distribution until they are imported; managed target failures still block
+activation. Use this command only after comparing the DNS pool with Remnawave.
 
 At startup, unfinished jobs are inspected without repeating external effects.
 Existing Remnawave Nodes are matched by exact name and IP, DNS is read before a
@@ -109,7 +119,7 @@ Do not run destructive down migrations merely to roll back an application image.
 
 ## Troubleshooting
 
-- `readyz` is 503: check PostgreSQL and migrations `000001`–`000004`.
+- `readyz` is 503: check PostgreSQL and migrations `000001`–`000005`.
 - ACME fails: check email, directory, Cloudflare scope, zone discovery, TXT
   propagation, CAA, and clock.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni

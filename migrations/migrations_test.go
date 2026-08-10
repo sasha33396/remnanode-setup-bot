@@ -71,3 +71,16 @@ func TestRecoveryMigrationAddsManualReview(t *testing.T) {
 		t.Fatal("recovery migration does not contain MANUAL_REVIEW")
 	}
 }
+
+func TestLegacyTargetMigrationRequiresExplicitAcknowledgement(t *testing.T) {
+	contents, err := Files.ReadFile("000005_certificate_legacy_targets.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"certificate_target_reviews", "manual_review", "legacy_acknowledged", "acknowledged_by", "node_ip"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("legacy target migration does not contain %q", required)
+		}
+	}
+}

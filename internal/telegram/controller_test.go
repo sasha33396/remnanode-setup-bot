@@ -37,6 +37,24 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 	}
 }
 
+func TestCertificateBootstrapRequiresExplicitConfirmation(t *testing.T) {
+	application := &fakeRecoveryApplication{fakeApplication: &fakeApplication{}, bootstrapResult: "Certificate staged-version activated"}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, "/bootstrap_certificate edge.example.com")
+	if application.bootstrapCalls != 0 || !strings.Contains(messenger.lastSent().text, "CONFIRM") {
+		t.Fatalf("bootstrap without confirmation was not rejected: calls=%d response=%q", application.bootstrapCalls, messenger.lastSent().text)
+	}
+	handleMessage(t, controller, 2, "/bootstrap_certificate edge.example.com CONFIRM")
+	if application.bootstrapCalls != 1 || application.bootstrapSNI != "edge.example.com" || application.bootstrapOperator != testAllowedUser {
+		t.Fatalf("bootstrap call = %d, %q, %d", application.bootstrapCalls, application.bootstrapSNI, application.bootstrapOperator)
+	}
+	if !strings.Contains(messenger.lastSent().text, "activated") {
+		t.Fatalf("bootstrap response = %q", messenger.lastSent().text)
+	}
+}
+
 func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	profileReady := ReadinessReady
 	application := &fakeApplication{
@@ -209,7 +227,7 @@ func TestPublicIPValidation(t *testing.T) {
 	}
 }
 
-func testController(t *testing.T, app *fakeApplication, messenger *fakeMessenger, now func() time.Time) *Controller {
+func testController(t *testing.T, app Application, messenger *fakeMessenger, now func() time.Time) *Controller {
 	t.Helper()
 	controller, err := newController([]int64{testAllowedUser}, app, messenger, 15*time.Minute, now, func() (string, error) { return "fixed-nonce", nil })
 	if err != nil {
@@ -256,6 +274,29 @@ type fakeApplication struct {
 	preflightPassword   []byte
 	deploymentPassword  []byte
 	deploymentInput     DeploymentInput
+}
+
+type fakeRecoveryApplication struct {
+	*fakeApplication
+	bootstrapCalls    int
+	bootstrapSNI      string
+	bootstrapOperator int64
+	bootstrapResult   string
+}
+
+func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
+func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error        { return nil }
+func (f *fakeRecoveryApplication) RecheckRemnawave(context.Context, string) (string, error) {
+	return "checked", nil
+}
+func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni string, operatorUserID int64) (string, error) {
+	f.bootstrapCalls++
+	f.bootstrapSNI = sni
+	f.bootstrapOperator = operatorUserID
+	return f.bootstrapResult, nil
 }
 
 func (f *fakeApplication) ListHosts(context.Context) ([]Host, error) {

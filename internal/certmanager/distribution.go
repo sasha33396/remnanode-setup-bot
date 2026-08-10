@@ -21,6 +21,7 @@ type DNSConfigAPI interface {
 
 type DeploymentLookup interface {
 	FindDeploymentsBySNI(context.Context, string, int) ([]deployment.Deployment, error)
+	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
 type DNSDeploymentResolver struct {
@@ -35,35 +36,45 @@ func NewDNSDeploymentResolver(dns DNSConfigAPI, deployments DeploymentLookup) (*
 	return &DNSDeploymentResolver{dns: dns, deployments: deployments}, nil
 }
 
-// Targets uses the DNS-balancer configuration as the authority for which Node
-// IPs belong to an SNI, then resolves each IP to its persisted deployment SSH
-// identity. Unknown IPs require manual review and are never TOFU-pinned anew.
-func (r *DNSDeploymentResolver) Targets(ctx context.Context, sni string) ([]Target, error) {
+// Resolve uses the DNS-balancer configuration as the authority for which Node
+// IPs belong to an SNI, then separates verified deployment SSH identities,
+// explicitly acknowledged legacy IPs, and unknown IPs requiring manual review.
+func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (TargetResolution, error) {
 	match, err := r.dns.FindZone(ctx, sni)
 	if err != nil {
-		return nil, ErrDistributionFailed
+		return TargetResolution{}, ErrDistributionFailed
 	}
 	ipSet := make(map[netip.Addr]struct{})
 	for _, value := range match.Zone.IPs {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(value)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return nil, ErrDistributionFailed
+			return TargetResolution{}, ErrDistributionFailed
 		}
 	}
 	for _, node := range match.Zone.Nodes {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(node.IP)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return nil, ErrDistributionFailed
+			return TargetResolution{}, ErrDistributionFailed
 		}
 	}
 	if len(ipSet) == 0 {
-		return nil, nil
+		return TargetResolution{}, nil
 	}
 	items, err := r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
 	if err != nil {
-		return nil, ErrDistributionFailed
+		return TargetResolution{}, ErrDistributionFailed
+	}
+	reviews, err := r.deployments.ListTargetReviews(ctx, sni)
+	if err != nil {
+		return TargetResolution{}, ErrDistributionFailed
+	}
+	reviewByIP := make(map[netip.Addr]TargetReviewState, len(reviews))
+	for _, review := range reviews {
+		if review.IP.IsValid() {
+			reviewByIP[review.IP.Unmap()] = review.State
+		}
 	}
 	byIP := make(map[netip.Addr]deployment.Deployment)
 	for _, item := range items {
@@ -74,16 +85,27 @@ func (r *DNSDeploymentResolver) Targets(ctx context.Context, sni string) ([]Targ
 			}
 		}
 	}
-	targets := make([]Target, 0, len(ipSet))
+	resolution := TargetResolution{Managed: make([]Target, 0, len(ipSet))}
 	for ip := range ipSet {
 		item, found := byIP[ip]
-		if !found {
-			return nil, ErrDistributionFailed
+		if found {
+			resolution.Managed = append(resolution.Managed, Target{DeploymentID: item.ID, IP: ip})
+			continue
 		}
-		targets = append(targets, Target{DeploymentID: item.ID, IP: ip})
+		if reviewByIP[ip] == TargetLegacyAcknowledged {
+			resolution.LegacyAcknowledged = append(resolution.LegacyAcknowledged, ip)
+			continue
+		}
+		resolution.Unmanaged = append(resolution.Unmanaged, ip)
 	}
-	sort.Slice(targets, func(left, right int) bool { return targets[left].IP.Compare(targets[right].IP) < 0 })
-	return targets, nil
+	sort.Slice(resolution.Managed, func(left, right int) bool {
+		return resolution.Managed[left].IP.Compare(resolution.Managed[right].IP) < 0
+	})
+	sort.Slice(resolution.Unmanaged, func(left, right int) bool { return resolution.Unmanaged[left].Compare(resolution.Unmanaged[right]) < 0 })
+	sort.Slice(resolution.LegacyAcknowledged, func(left, right int) bool {
+		return resolution.LegacyAcknowledged[left].Compare(resolution.LegacyAcknowledged[right]) < 0
+	})
+	return resolution, nil
 }
 
 type SSHDistributorConfig struct {

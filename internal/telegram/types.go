@@ -152,4 +152,5 @@ type RecoveryApplication interface {
 	RetryDNS(context.Context, string) error
 	RecheckRemnawave(context.Context, string) (string, error)
 	ViewSafeLogs(context.Context, string) ([]string, error)
+	BootstrapCertificate(context.Context, string, int64) (string, error)
 }
