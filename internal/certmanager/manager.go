@@ -148,14 +148,14 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 	}
 	unlock, err := m.locker.Lock(ctx, domain)
 	if err != nil {
-		return BootstrapResult{}, err
+		return BootstrapResult{}, safe("Certificate bootstrap lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
 	if _, material, activeErr := m.loadActive(ctx, domain, true); activeErr == nil {
 		material.Destroy()
 		return BootstrapResult{}, safe("Certificate is already active", ErrActivationFailed)
 	} else if !errors.Is(activeErr, ErrNotFound) && !errors.Is(activeErr, certificates.ErrInvalidMaterial) {
-		return BootstrapResult{}, activeErr
+		return BootstrapResult{}, safe("Active certificate state could not be checked", ErrPersistenceFailed)
 	}
 
 	versions, err := m.repository.ListVersions(ctx, domain)

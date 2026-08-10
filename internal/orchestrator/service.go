@@ -516,7 +516,8 @@ func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string
 	}
 	result, err := bootstrapper.Bootstrap(ctx, sni, operatorUserID)
 	if err != nil {
-		return "", safeError("CERTIFICATE_BOOTSTRAP_FAILED", "Certificate bootstrap could not be completed", ErrCertificateUnavailable)
+		message := safeText(err.Error(), "Certificate bootstrap could not be completed")
+		return message, safeError("CERTIFICATE_BOOTSTRAP_FAILED", message, ErrCertificateUnavailable)
 	}
 	return "Certificate " + result.Version + " activated for " + result.SNI +
 		"; managed targets: " + strconv.Itoa(result.ManagedTargets) +

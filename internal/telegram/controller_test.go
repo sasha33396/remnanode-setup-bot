@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"strings"
 	"sync"
@@ -52,6 +53,12 @@ func TestCertificateBootstrapRequiresExplicitConfirmation(t *testing.T) {
 	}
 	if !strings.Contains(messenger.lastSent().text, "activated") {
 		t.Fatalf("bootstrap response = %q", messenger.lastSent().text)
+	}
+	application.bootstrapResult = "No valid staged certificate is available"
+	application.bootstrapErr = errors.New("bootstrap failed")
+	handleMessage(t, controller, 3, "/bootstrap_certificate edge.example.com CONFIRM")
+	if !strings.Contains(messenger.lastSent().text, application.bootstrapResult) {
+		t.Fatalf("safe bootstrap failure = %q", messenger.lastSent().text)
 	}
 }
 
@@ -282,6 +289,7 @@ type fakeRecoveryApplication struct {
 	bootstrapSNI      string
 	bootstrapOperator int64
 	bootstrapResult   string
+	bootstrapErr      error
 }
 
 func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
@@ -296,7 +304,7 @@ func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni st
 	f.bootstrapCalls++
 	f.bootstrapSNI = sni
 	f.bootstrapOperator = operatorUserID
-	return f.bootstrapResult, nil
+	return f.bootstrapResult, f.bootstrapErr
 }
 
 func (f *fakeApplication) ListHosts(context.Context) ([]Host, error) {

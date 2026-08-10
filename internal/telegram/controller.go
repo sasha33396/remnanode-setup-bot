@@ -170,7 +170,11 @@ func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message
 		}
 		result, err := recoveryApp.BootstrapCertificate(ctx, fields[1], message.FromUserID)
 		if err != nil {
-			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Certificate bootstrap could not be completed safely.", mainKeyboard())
+			failure := "Certificate bootstrap could not be completed safely."
+			if detail := safeLine(result, 300); detail != "" {
+				failure += " " + detail
+			}
+			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, failure, mainKeyboard())
 			return true, sendErr
 		}
 		_, err = c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 500), mainKeyboard())
