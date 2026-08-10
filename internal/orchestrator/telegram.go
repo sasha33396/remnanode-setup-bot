@@ -163,6 +163,10 @@ func (a *TelegramApplication) BootstrapCertificate(ctx context.Context, sni stri
 	return a.service.BootstrapCertificate(ctx, sni, operatorUserID)
 }
 
+func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, deploymentID string, newIP netip.Addr) (string, error) {
+	return a.service.ReplaceNodeIP(ctx, deploymentID, newIP)
+}
+
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {
 	nodes, err := a.service.remnawave.GetNodes(ctx)
 	if err != nil {

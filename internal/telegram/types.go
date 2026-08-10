@@ -153,4 +153,5 @@ type RecoveryApplication interface {
 	RecheckRemnawave(context.Context, string) (string, error)
 	ViewSafeLogs(context.Context, string) ([]string, error)
 	BootstrapCertificate(context.Context, string, int64) (string, error)
+	ReplaceNodeIP(context.Context, string, netip.Addr) (string, error)
 }

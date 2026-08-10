@@ -33,6 +33,7 @@ type API interface {
 	GetNodes(context.Context) ([]Node, error)
 	GetNode(context.Context, string) (Node, error)
 	CreateNode(context.Context, CreateNodeInput) (Node, error)
+	UpdateNodeAddress(context.Context, UpdateNodeAddressInput) (Node, error)
 	DeleteNode(context.Context, string) (bool, error)
 }
 
@@ -179,6 +180,28 @@ func (c *Client) CreateNode(ctx context.Context, input CreateNodeInput) (Node, e
 	node, err := envelope.Response.model()
 	if err != nil {
 		return Node{}, invalidResponse("created node response is incomplete")
+	}
+	return node, nil
+}
+
+// UpdateNodeAddress calls NodesController_updateNode (PATCH /api/nodes) and
+// sends only the UUID plus the new address, as allowed by UpdateNodeRequestDto.
+func (c *Client) UpdateNodeAddress(ctx context.Context, input UpdateNodeAddressInput) (Node, error) {
+	uuid := strings.TrimSpace(input.UUID)
+	if !validUUID(uuid) || !input.Address.IsValid() {
+		return Node{}, fmt.Errorf("Node UUID or address: %w", ErrInvalidInput)
+	}
+	var envelope nodeEnvelope
+	request := updateNodeAddressRequest{UUID: uuid, Address: input.Address.Unmap().String()}
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/nodes", request, http.StatusOK, &envelope); err != nil {
+		return Node{}, err
+	}
+	if envelope.Response == nil {
+		return Node{}, invalidResponse("updated node response field is missing")
+	}
+	node, err := envelope.Response.model()
+	if err != nil {
+		return Node{}, invalidResponse("updated node response is incomplete")
 	}
 	return node, nil
 }

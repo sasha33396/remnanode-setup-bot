@@ -80,6 +80,31 @@ func TestAddIPPreservesCompleteList(t *testing.T) {
 	}
 }
 
+func TestReplaceIPPreservesOtherAddresses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, domainsJSON([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}))
+			return
+		}
+		var request patchZoneRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"192.0.2.1", "192.0.2.3", "198.51.100.8"}
+		if strings.Join(request.IPs, ",") != strings.Join(want, ",") {
+			t.Errorf("replacement IPs = %v, want %v", request.IPs, want)
+		}
+		fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	result, err := client.ReplaceIP(context.Background(), "de.example.com", netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("198.51.100.8"))
+	if err != nil || !result.Changed {
+		t.Fatalf("ReplaceIP() = %#v, %v", result, err)
+	}
+}
+
 func TestAddIPApexUsesEncodedZoneAndSkipsExistingIP(t *testing.T) {
 	var patchRequestURI string
 	var patchCalls atomic.Int32

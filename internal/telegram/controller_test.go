@@ -62,6 +62,21 @@ func TestCertificateBootstrapRequiresExplicitConfirmation(t *testing.T) {
 	}
 }
 
+func TestReplaceIPRequiresExplicitConfirmation(t *testing.T) {
+	application := &fakeRecoveryApplication{fakeApplication: &fakeApplication{}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	handleMessage(t, controller, 1, "/replace_ip "+id+" 1.1.1.1")
+	if application.replaceIPCalls != 0 || !strings.Contains(messenger.lastSent().text, "CONFIRM") {
+		t.Fatalf("replacement without confirmation was not rejected")
+	}
+	handleMessage(t, controller, 2, "/replace_ip "+id+" 1.1.1.1 CONFIRM")
+	if application.replaceIPCalls != 1 || application.replaceIPDeployment != id || application.replaceIP.String() != "1.1.1.1" {
+		t.Fatalf("replacement call = %d, %q, %s", application.replaceIPCalls, application.replaceIPDeployment, application.replaceIP)
+	}
+}
+
 func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	profileReady := ReadinessReady
 	application := &fakeApplication{
@@ -285,15 +300,25 @@ type fakeApplication struct {
 
 type fakeRecoveryApplication struct {
 	*fakeApplication
-	bootstrapCalls    int
-	bootstrapSNI      string
-	bootstrapOperator int64
-	bootstrapResult   string
-	bootstrapErr      error
+	bootstrapCalls      int
+	bootstrapSNI        string
+	bootstrapOperator   int64
+	bootstrapResult     string
+	bootstrapErr        error
+	replaceIPCalls      int
+	replaceIPDeployment string
+	replaceIP           netip.Addr
 }
 
 func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
 func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error        { return nil }
+
+func (f *fakeRecoveryApplication) ReplaceNodeIP(_ context.Context, deploymentID string, address netip.Addr) (string, error) {
+	f.replaceIPCalls++
+	f.replaceIPDeployment = deploymentID
+	f.replaceIP = address
+	return "Node IP changed", nil
+}
 func (f *fakeRecoveryApplication) RecheckRemnawave(context.Context, string) (string, error) {
 	return "checked", nil
 }

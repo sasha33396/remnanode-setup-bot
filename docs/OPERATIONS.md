@@ -55,6 +55,7 @@ Authorized Telegram users can use:
 /cancel_deployment <deployment-uuid>
 /logs <deployment-uuid>
 /bootstrap_certificate <sni-domain> CONFIRM
+/replace_ip <deployment-uuid> <new-public-ip> CONFIRM
 ```
 
 `/retry_step` is allowed only for stages with an idempotent recovery contract.
@@ -69,6 +70,13 @@ and records each unknown DNS IP as `LEGACY_ACKNOWLEDGED` with the authorizing
 Telegram user ID. Acknowledged legacy targets are excluded from later central
 distribution until they are imported; managed target failures still block
 activation. Use this command only after comparing the DNS pool with Remnawave.
+
+`/replace_ip` is allowed only for a completed deployment with a persisted
+Remnawave Node UUID. It updates the Node address, waits for reconnection,
+replaces the old simple IP in the matching DNS-balancer zone without changing
+other IPs, and only then updates the deployment's canonical VPS address. The
+same command safely resumes partial completion. Advanced `nodes:` zones are
+rejected for manual review rather than rewritten as simple `ips:`.
 
 At startup, unfinished jobs are inspected without repeating external effects.
 Existing Remnawave Nodes are matched by exact name and IP, DNS is read before a

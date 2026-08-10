@@ -201,6 +201,24 @@ func (r *Repository) SetRemnawaveNodeUUID(ctx context.Context, id, nodeUUID stri
 	return result, nil
 }
 
+// SetTargetVPSIP updates the canonical address after the panel and DNS have
+// both completed an idempotent Node IP replacement.
+func (r *Repository) SetTargetVPSIP(ctx context.Context, id string, address netip.Addr) (deployment.Deployment, error) {
+	if !validUUID(id) || !address.IsValid() {
+		return deployment.Deployment{}, invalid("deployment ID or VPS IP")
+	}
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET target_vps_ip = $2, updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns, id, address.Unmap().String())
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("set target VPS IP", err)
+	}
+	return result, nil
+}
+
 // RecordDeploymentStep inserts or updates one named step. Updating the step and
 // deployment timestamp/current step is one transaction.
 func (r *Repository) RecordDeploymentStep(ctx context.Context, params repositorycontract.RecordStepParams) (deployment.Step, error) {

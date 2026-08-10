@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,6 +158,26 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 }
 
 func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message, text string) (bool, error) {
+	if text == "/replace_ip" || strings.HasPrefix(text, "/replace_ip ") {
+		fields := strings.Fields(text)
+		if len(fields) != 4 || !validDeploymentID(fields[1]) || !strings.EqualFold(fields[3], "CONFIRM") {
+			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Usage: /replace_ip <deployment-uuid> <new-ip> CONFIRM", mainKeyboard())
+			return true, err
+		}
+		newIP, parseErr := netip.ParseAddr(fields[2])
+		recoveryApp, ok := c.app.(RecoveryApplication)
+		if parseErr != nil || !ok {
+			_, err := c.messenger.SendMessage(ctx, message.ChatID, "IP replacement request is invalid or unavailable.", mainKeyboard())
+			return true, err
+		}
+		result, actionErr := recoveryApp.ReplaceNodeIP(ctx, fields[1], newIP)
+		if actionErr != nil {
+			_, err := c.messenger.SendMessage(ctx, message.ChatID, "Node IP replacement could not be completed safely. Retry the same command after checking APIs.", mainKeyboard())
+			return true, err
+		}
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 300), mainKeyboard())
+		return true, err
+	}
 	if text == "/bootstrap_certificate" || strings.HasPrefix(text, "/bootstrap_certificate ") {
 		fields := strings.Fields(text)
 		if len(fields) != 3 || !strings.EqualFold(fields[2], "CONFIRM") {

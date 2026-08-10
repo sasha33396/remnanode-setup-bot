@@ -63,6 +63,24 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 	}
 }
 
+func TestReplaceNodeIPUpdatesPanelThenDNSAndPersistence(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Address: "8.8.8.8", IsConnected: true}}
+	fixture.remnawave.pollStates = []remnawave.Node{
+		{UUID: testNodeUUID, Address: "8.8.8.8", IsConnected: true},
+		{UUID: testNodeUUID, Address: "1.1.1.1", IsConnected: true},
+	}
+	message, err := fixture.service.ReplaceNodeIP(context.Background(), item.ID, netip.MustParseAddr("1.1.1.1"))
+	if err != nil || message == "" {
+		t.Fatalf("ReplaceNodeIP() = %q, %v", message, err)
+	}
+	if got := fixture.repo.mustGet(item.ID).TargetVPSIP.String(); got != "1.1.1.1" {
+		t.Fatalf("persisted IP = %s", got)
+	}
+}
+
 func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.vps.provisionErr = errors.New("protected provisioner details")
@@ -393,6 +411,18 @@ func (r *memoryRepository) SetRemnawaveNodeUUID(_ context.Context, id, uuid stri
 	return item, nil
 }
 
+func (r *memoryRepository) SetTargetVPSIP(_ context.Context, id string, address netip.Addr) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[id]
+	if !found {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.TargetVPSIP = address.Unmap()
+	r.items[id] = item
+	return item, nil
+}
+
 func (r *memoryRepository) RecordDeploymentStep(_ context.Context, params repository.RecordStepParams) (deployment.Step, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -526,6 +556,19 @@ func (f *fakeRemnawave) CreateNode(_ context.Context, input remnawave.CreateNode
 	return node, nil
 }
 
+func (f *fakeRemnawave) UpdateNodeAddress(_ context.Context, input remnawave.UpdateNodeAddressInput) (remnawave.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := range f.nodes {
+		if f.nodes[index].UUID == input.UUID {
+			f.events.add("remnawave.update-address")
+			f.nodes[index].Address = input.Address.String()
+			return f.nodes[index], nil
+		}
+	}
+	return remnawave.Node{}, errors.New("Node not found")
+}
+
 type fakeVPS struct {
 	mu sync.Mutex
 
@@ -638,6 +681,11 @@ func (f *fakeDNS) AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPR
 	f.addCalls++
 	f.events.add("dns.add")
 	return dnsbalancer.AddIPResult{}, f.addErr
+}
+
+func (f *fakeDNS) ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error) {
+	f.events.add("dns.replace")
+	return dnsbalancer.ReplaceIPResult{Changed: true}, f.addErr
 }
 
 var _ DeploymentRepository = (*memoryRepository)(nil)
