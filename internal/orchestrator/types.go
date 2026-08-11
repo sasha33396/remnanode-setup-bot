@@ -97,6 +97,8 @@ type DeploymentRepository interface {
 }
 
 type Config struct {
+	PanelID                  string
+	DNSDisabled              bool
 	MaxConcurrentDeployments int
 	NodeConnectTimeout       time.Duration
 	InitialPollBackoff       time.Duration
@@ -113,6 +115,7 @@ type Observer interface {
 }
 
 type PrepareInput struct {
+	PanelID        string
 	OperatorUserID int64
 	HostID         string
 	NodeName       string

@@ -49,6 +49,9 @@ func NewDeploymentService(repository DeploymentRepository, remnawaveAPI Remnawav
 	if repository == nil || remnawaveAPI == nil || dns == nil || certificateProvider == nil || vps == nil {
 		return nil, errors.New("deployment service dependencies are required")
 	}
+	if strings.TrimSpace(config.PanelID) == "" {
+		config.PanelID = "default"
+	}
 	if config.MaxConcurrentDeployments <= 0 {
 		config.MaxConcurrentDeployments = 2
 	}
@@ -79,7 +82,7 @@ func NewDeploymentService(repository DeploymentRepository, remnawaveAPI Remnawav
 // Prepare validates immutable operator input, creates the durable deployment,
 // and performs preflight before confirmation is shown.
 func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (PreparedDeployment, error) {
-	if input.OperatorUserID <= 0 || strings.TrimSpace(input.HostID) == "" || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.VPSIP) || len(input.Password) == 0 {
+	if (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || strings.TrimSpace(input.HostID) == "" || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.VPSIP) || len(input.Password) == 0 {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	host, profile, err := s.selectedHost(ctx, input.HostID)
@@ -97,6 +100,7 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	}
 
 	created, err := s.repository.CreateDeployment(ctx, repository.CreateDeploymentParams{
+		PanelID:                   s.config.PanelID,
 		TelegramOperatorUserID:    input.OperatorUserID,
 		SelectedRemnawaveHostUUID: host.UUID,
 		SelectedHostRemark:        host.Remark,
@@ -154,7 +158,9 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 		return PreparedDeployment{}, safeError("PERSISTENCE_READ_FAILED", "Could not load prepared deployment", ErrPersistenceFailed)
 	}
 	prepared := PreparedDeployment{Deployment: created, ConfigProfileReadiness: true}
-	if match, zoneErr := s.dns.FindZone(runCtx, profile.SNIDomain); zoneErr == nil {
+	if s.config.DNSDisabled {
+		prepared.SafeWarnings = append(prepared.SafeWarnings, "DNS balancing is disabled for this panel")
+	} else if match, zoneErr := s.dns.FindZone(runCtx, profile.SNIDomain); zoneErr == nil {
 		prepared.DNSZone = match.FQDN
 	}
 	if runCtx.Err() != nil {
@@ -198,7 +204,7 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 	}
 	defer s.releaseSlot()
 
-	current, err := s.repository.GetDeployment(runCtx, input.DeploymentID)
+	current, err := s.deploymentForPanel(runCtx, input.DeploymentID)
 	if err != nil {
 		if runCtx.Err() != nil {
 			return runCtx.Err()
@@ -419,6 +425,17 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 			return err
 		}
 	}
+	if s.config.DNSDisabled {
+		summary := "DNS balancing is disabled for this panel"
+		if _, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: current.ID, Name: stepAddDNS, Status: deployment.StepStatusSkipped, SafeSummary: &summary}); err != nil {
+			return safeError("DNS_SKIP_PERSIST_FAILED", "Could not persist skipped DNS step", ErrPersistenceFailed)
+		}
+		if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
+			return err
+		}
+		emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "Deployment completed without DNS balancing"})
+		return nil
+	}
 	node, err := s.remnawave.GetNode(ctx, *current.RemnawaveNodeUUID)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -454,7 +471,7 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 		return err
 	}
 	defer s.releaseSlot()
-	current, err := s.repository.GetDeployment(runCtx, deploymentID)
+	current, err := s.deploymentForPanel(runCtx, deploymentID)
 	if err != nil {
 		if runCtx.Err() != nil {
 			return runCtx.Err()
@@ -478,7 +495,7 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 // inspection/recovery contract. Preflight cannot be retried because its
 // temporary password is intentionally not persisted.
 func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID string, progress ProgressSink) error {
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
@@ -527,7 +544,7 @@ func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string
 // SafeLogs returns persisted summaries only. Raw SSH/API output and secrets are
 // never part of the repository contract.
 func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) ([]SafeLogEntry, error) {
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
@@ -563,7 +580,7 @@ func (s *DeploymentService) Cancel(ctx context.Context, deploymentID string) err
 		active.cancel()
 	}
 	s.mu.Unlock()
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -773,6 +790,17 @@ func (s *DeploymentService) setState(ctx context.Context, deploymentID string, s
 		return safeError("STATE_PERSIST_FAILED", "Could not persist deployment state", ErrPersistenceFailed)
 	}
 	return nil
+}
+
+func (s *DeploymentService) deploymentForPanel(ctx context.Context, deploymentID string) (deployment.Deployment, error) {
+	item, err := s.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return deployment.Deployment{}, err
+	}
+	if item.PanelID != "" && item.PanelID != s.config.PanelID {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	return item, nil
 }
 
 func (s *DeploymentService) beginExecution(parent context.Context, deploymentID string) (context.Context, func(), error) {

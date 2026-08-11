@@ -84,3 +84,16 @@ func TestLegacyTargetMigrationRequiresExplicitAcknowledgement(t *testing.T) {
 		}
 	}
 }
+
+func TestMultiPanelMigrationScopesDeploymentsAndCertificates(t *testing.T) {
+	contents, err := Files.ReadFile("000006_multi_panel_scope.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"alter table deployments", "certificate_records", "certificate_versions", "certificate_distributions", "certificate_target_reviews", "panel_id", "primary key (panel_id, sni_domain)"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("multi-panel migration does not contain %q", required)
+		}
+	}
+}

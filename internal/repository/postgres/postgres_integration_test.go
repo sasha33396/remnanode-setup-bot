@@ -61,7 +61,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql"} {
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql", "000006_multi_panel_scope.up.sql"} {
 		upSQL, err := migrations.Files.ReadFile(migration)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", migration, err)

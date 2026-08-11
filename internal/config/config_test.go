@@ -20,6 +20,33 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if cfg.XraySNIRepoURL != defaultXraySNIRepoURL || cfg.XraySNIRef != defaultXraySNIRef {
 		t.Fatalf("xray-sni defaults = %q %q", cfg.XraySNIRepoURL, cfg.XraySNIRef)
 	}
+	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
+		t.Fatalf("legacy panel = %#v", cfg.Panels)
+	}
+}
+
+func TestLoadMultiplePanelsWithIndependentDNS(t *testing.T) {
+	values := validValues()
+	for _, name := range []string{"REMNAWAVE_URL", "REMNAWAVE_TOKEN", "DNS_BALANCER_URL", "DNS_BALANCER_TOKEN"} {
+		delete(values, name)
+	}
+	values["EU_REMNAWAVE_TOKEN"] = "eu-remnawave-secret"
+	values["EU_DNS_TOKEN"] = "eu-dns-secret"
+	values["TEST_REMNAWAVE_TOKEN"] = "test-remnawave-secret"
+	values["PANELS_JSON"] = `[
+		{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","dns":{"mode":"enabled","url":"https://eu-dns.example","token_env":"EU_DNS_TOKEN"}},
+		{"id":"test","name":"Test","remnawave_url":"https://test-panel.example","remnawave_token_env":"TEST_REMNAWAVE_TOKEN","dns":{"mode":"disabled"}}
+	]`
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Panels) != 2 || cfg.Panels[0].DNSMode != DNSModeEnabled || cfg.Panels[1].DNSMode != DNSModeDisabled {
+		t.Fatalf("panels = %#v", cfg.Panels)
+	}
+	if cfg.Panels[0].RemnawaveToken != values["EU_REMNAWAVE_TOKEN"] || cfg.Panels[0].DNSBalancerToken != values["EU_DNS_TOKEN"] {
+		t.Fatal("panel secret references were not resolved")
+	}
 }
 
 func TestLoadXraySNIConfiguration(t *testing.T) {

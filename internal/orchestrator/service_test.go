@@ -63,6 +63,26 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 	}
 }
 
+func TestDeploymentCompletesWithExplicitSkippedDNSForDisabledPanel(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.service.config.PanelID = "test"
+	fixture.service.config.DNSDisabled = true
+	prepared := fixture.prepare(t, "node-without-dns", "8.8.4.4")
+	if prepared.Deployment.PanelID != "test" {
+		t.Fatalf("panel ID = %q", prepared.Deployment.PanelID)
+	}
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.dns.addCalls != 0 {
+		t.Fatalf("DNS add calls = %d", fixture.dns.addCalls)
+	}
+	step := fixture.repo.steps[prepared.Deployment.ID][stepAddDNS]
+	if step.Status != deployment.StepStatusSkipped {
+		t.Fatalf("DNS step = %#v", step)
+	}
+}
+
 func TestReplaceNodeIPUpdatesPanelThenDNSAndPersistence(t *testing.T) {
 	fixture := newFixture(t)
 	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
@@ -395,7 +415,11 @@ func (r *memoryRepository) CreateDeployment(_ context.Context, params repository
 	r.nextID++
 	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", r.nextID)
 	now := time.Now()
-	item := deployment.Deployment{ID: id, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
+	panelID := params.PanelID
+	if panelID == "" {
+		panelID = "default"
+	}
+	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
 	r.items[id] = item
 	return item, nil
 }
@@ -493,6 +517,17 @@ func (r *memoryRepository) FindUnfinishedDeployments(context.Context, int) ([]de
 		}
 	}
 	return result, nil
+}
+
+func (r *memoryRepository) FindDeploymentByPanelNodeUUID(_ context.Context, panelID, nodeUUID string) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, item := range r.items {
+		if (item.PanelID == panelID || (item.PanelID == "" && panelID == "default")) && item.RemnawaveNodeUUID != nil && *item.RemnawaveNodeUUID == nodeUUID {
+			return item, nil
+		}
+	}
+	return deployment.Deployment{}, repository.ErrNotFound
 }
 
 func (r *memoryRepository) mustGet(id string) deployment.Deployment {

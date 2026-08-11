@@ -1,6 +1,67 @@
 # Multi-panel Remnawave and certificate architecture
 
-Status: design discussion, no implementation yet.
+Status: first implementation slice completed on `feature/multi-panel-support`
+(August 2026). Treat this file as the durable handoff/memory for future chats.
+
+Implemented in the first slice:
+
+- static `PANELS_JSON` configuration with environment-secret references;
+- per-panel Remnawave, optional DNS, Cloudflare/ACME, certificate store and
+  certificate lock instances;
+- persisted `panel_id` ownership for deployments and certificate metadata;
+- Telegram panel selection for Add Node and Change IP;
+- explicit DNS `SKIPPED` behavior and inventory-based certificate targets for
+  panels whose DNS mode is disabled;
+- non-destructive read fallback for the default panel's pre-migration
+  certificate files and ACME account key.
+
+Not yet implemented: imported/external/node-local issuers, an interactive
+safe import of legacy Nodes into inventory, and a panel-selection UI for the
+certificate bootstrap recovery action.
+
+## Current implementation snapshot
+
+The code currently uses these concrete decisions:
+
+- `PANELS_JSON` is the multi-panel configuration entry point. Tokens are not
+  embedded in JSON; JSON contains environment-variable names whose values are
+  resolved during startup.
+- If `PANELS_JSON` is absent, the old single-panel variables are mapped to a
+  compatibility panel with ID `default`.
+- Every configured panel currently uses central ACME DNS-01 issuance with its
+  own Cloudflare token and ACME account key. Per-panel alternative issuer
+  modes remain future work.
+- A panel's DNS-balancer mode is either `enabled` or `disabled`. Disabled DNS
+  records `add_dns` as `SKIPPED` and is considered a successful deployment.
+- The Add Node and Change IP wizards ask the operator to select a panel when
+  more than one panel exists. A single configured panel is selected
+  automatically for backwards-compatible operator UX.
+- Change IP reads legacy Nodes directly from the selected Remnawave API. A
+  deployment row is not required. Only a managed Node's persisted deployment
+  IP is updated.
+- Certificate database identity, distribution targets, filesystem paths and
+  advisory locks are panel-scoped. The effective certificate identity is
+  `(panel_id, normalized SNI)`.
+- Migration `000006_multi_panel_scope` assigns all existing rows to
+  `default`, then installs composite certificate keys and cross-panel foreign
+  keys.
+- New certificate files live below
+  `/var/lib/deployer/certificates/<panel-id>/`. The `default` panel can read
+  the old unscoped active files and reuses the old ACME account key when it
+  exists, so rollout is non-destructive.
+- For DNS-enabled panels, certificate recipients come only from that panel's
+  DNS balancer and are matched to that panel's deployments. For DNS-disabled
+  panels, only trusted managed deployments with a Node UUID and SSH host-key
+  fingerprint are recipients; unknown legacy Nodes are not sent private-key
+  material.
+- Deployment retries and recovery resolve the panel from the persisted
+  deployment rather than current Telegram state.
+
+Before deploying this branch, apply migration `000006` and validate both its
+up and down paths against a staging copy of PostgreSQL. Unit tests and `go
+vet` pass, but the development workstation used for this slice did not have a
+Docker daemon, so the migration has not yet been executed against a live
+PostgreSQL instance.
 
 This document preserves the agreed direction for continuing the design or
 implementation in another Codex chat. It is the source of truth for the
@@ -314,23 +375,22 @@ different panel.
 9. Add cross-panel isolation, retry, rollback, and legacy integration tests.
 10. Update operational backup/restore and deployment documentation.
 
-## Open decisions for the next discussion
+## Remaining decisions for the next discussion
 
-Before implementation, decide:
+Before extending the first slice, decide:
 
-1. How panels are declared: one YAML file, environment-generated YAML, or
-   database metadata plus secret references. Static YAML plus Docker secrets is
-   currently recommended.
-2. Which panels have DNS balancing enabled and the endpoint/secret reference
-   for each.
-3. For each panel without balancing, whether issuance is ACME DNS-01,
-   certificate import, or external management.
-4. Whether the first release includes legacy inventory import or supports only
-   new managed Nodes for inventory-backed scopes.
-5. How existing certificate store entries map to the new default panel and
-   certificate scopes.
-6. Whether one panel can have multiple SNI certificate scopes (the design
-   supports it and this is recommended).
+1. Whether `PANELS_JSON` remains the long-term configuration or is later
+   replaced with YAML/database metadata plus secret references.
+2. Which production panels have DNS balancing enabled and the endpoint/secret
+   reference for each.
+3. For each panel, whether issuance remains ACME DNS-01 or changes to
+   certificate import or external management.
+4. Whether the next release includes the button-based legacy inventory import
+   or initially supports only new managed Nodes for inventory-backed scopes.
+5. Whether to migrate old `default` certificate files into the new directory
+   layout after successful rollout or retain the read fallback indefinitely.
+6. How certificate bootstrap should present panel selection without requiring
+   Telegram commands or exposing internal IDs.
 
 ## How to resume in another Codex chat
 
@@ -339,6 +399,9 @@ making changes:
 
 ```text
 Read docs/MULTI_PANEL_CERTIFICATES.md and inspect the current project.
-Continue the multi-panel Remnawave/DNS/certificate design from that document.
-Do not implement until the remaining certificate-policy decisions are agreed.
+Continue from branch feature/multi-panel-support. First verify migration
+000006 and the current tests. Preserve strict panel isolation. The next likely
+work is the button-based legacy inventory import and explicit per-panel
+certificate issuer modes; do not silently distribute certificate private keys
+to unknown legacy Nodes.
 ```

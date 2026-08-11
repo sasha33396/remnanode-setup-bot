@@ -113,6 +113,21 @@ type Repository interface {
 	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
+// PanelRepository persists certificate metadata with an explicit owning
+// panel. ScopedRepository adapts it to one Manager instance.
+type PanelRepository interface {
+	GetActiveForPanel(context.Context, string, string) (Record, error)
+	SaveVersionForPanel(context.Context, string, Version) error
+	SetVersionStatusForPanel(context.Context, string, string, string, VersionStatus) error
+	ActivateVersionForPanel(context.Context, string, string, string, bool) error
+	SetStatusForPanel(context.Context, string, string, Status) error
+	RecordDistributionForPanel(context.Context, string, DistributionRecord) error
+	ListExpiringForPanel(context.Context, string, time.Time, int) ([]Record, error)
+	ListVersionsForPanel(context.Context, string, string) ([]Version, error)
+	RecordTargetReviewForPanel(context.Context, string, TargetReview) error
+	ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error)
+}
+
 type Locker interface {
 	Lock(context.Context, string) (func(), error)
 }

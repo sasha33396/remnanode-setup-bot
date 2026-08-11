@@ -19,6 +19,7 @@ var (
 // CreateDeploymentParams contains immutable operator input for a new job.
 type CreateDeploymentParams struct {
 	ID                        string
+	PanelID                   string
 	TelegramOperatorUserID    int64
 	SelectedRemnawaveHostUUID string
 	SelectedHostRemark        string
@@ -55,4 +56,5 @@ type DeploymentRepository interface {
 	ListDeploymentSteps(context.Context, string) ([]deployment.Step, error)
 	ListRecentDeployments(context.Context, int) ([]deployment.Deployment, error)
 	FindUnfinishedDeployments(context.Context, int) ([]deployment.Deployment, error)
+	FindDeploymentByPanelNodeUUID(context.Context, string, string) (deployment.Deployment, error)
 }

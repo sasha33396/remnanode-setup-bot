@@ -24,9 +24,24 @@ type DeploymentLookup interface {
 	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
+type PanelDeploymentLookup interface {
+	FindDeploymentsByPanelSNI(context.Context, string, string, int) ([]deployment.Deployment, error)
+	ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error)
+}
+
 type DNSDeploymentResolver struct {
 	dns         DNSConfigAPI
 	deployments DeploymentLookup
+	panelID     string
+	panelLookup PanelDeploymentLookup
+}
+
+func NewPanelDNSDeploymentResolver(panelID string, dns DNSConfigAPI, deployments PanelDeploymentLookup) (*DNSDeploymentResolver, error) {
+	panelID = strings.TrimSpace(panelID)
+	if panelID == "" || dns == nil || deployments == nil {
+		return nil, ErrInvalidInput
+	}
+	return &DNSDeploymentResolver{dns: dns, panelID: panelID, panelLookup: deployments}, nil
 }
 
 func NewDNSDeploymentResolver(dns DNSConfigAPI, deployments DeploymentLookup) (*DNSDeploymentResolver, error) {
@@ -62,11 +77,21 @@ func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (Target
 	if len(ipSet) == 0 {
 		return TargetResolution{}, nil
 	}
-	items, err := r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
+	var items []deployment.Deployment
+	if r.panelLookup != nil {
+		items, err = r.panelLookup.FindDeploymentsByPanelSNI(ctx, r.panelID, sni, 100)
+	} else {
+		items, err = r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
+	}
 	if err != nil {
 		return TargetResolution{}, ErrDistributionFailed
 	}
-	reviews, err := r.deployments.ListTargetReviews(ctx, sni)
+	var reviews []TargetReview
+	if r.panelLookup != nil {
+		reviews, err = r.panelLookup.ListTargetReviewsForPanel(ctx, r.panelID, sni)
+	} else {
+		reviews, err = r.deployments.ListTargetReviews(ctx, sni)
+	}
 	if err != nil {
 		return TargetResolution{}, ErrDistributionFailed
 	}

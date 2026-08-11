@@ -14,28 +14,85 @@ import (
 // TelegramApplication adapts DeploymentService to the presentation-only
 // Telegram application port.
 type TelegramApplication struct {
-	service  *DeploymentService
-	recovery *recovery.Service
+	panels     map[string]PanelApplicationConfig
+	order      []string
+	repository DeploymentRepository
+}
+
+type PanelApplicationConfig struct {
+	ID         string
+	Name       string
+	DNSEnabled bool
+	Service    *DeploymentService
+	Recovery   *recovery.Service
+}
+
+func NewMultiPanelTelegramApplication(panels []PanelApplicationConfig) (*TelegramApplication, error) {
+	if len(panels) == 0 {
+		return nil, errors.New("at least one panel is required")
+	}
+	app := &TelegramApplication{panels: make(map[string]PanelApplicationConfig, len(panels))}
+	for _, panel := range panels {
+		panel.ID, panel.Name = strings.TrimSpace(panel.ID), strings.TrimSpace(panel.Name)
+		if panel.ID == "" || panel.Name == "" || panel.Service == nil {
+			return nil, errors.New("invalid panel application configuration")
+		}
+		if _, exists := app.panels[panel.ID]; exists {
+			return nil, errors.New("duplicate panel application configuration")
+		}
+		if app.repository == nil {
+			app.repository = panel.Service.repository
+		} else if app.repository != panel.Service.repository {
+			return nil, errors.New("panels must share deployment repository")
+		}
+		app.panels[panel.ID] = panel
+		app.order = append(app.order, panel.ID)
+	}
+	return app, nil
 }
 
 func NewTelegramApplicationWithRecovery(service *DeploymentService, recoveryService *recovery.Service) (*TelegramApplication, error) {
-	application, err := NewTelegramApplication(service)
-	if err != nil {
-		return nil, err
-	}
-	application.recovery = recoveryService
-	return application, nil
+	return NewMultiPanelTelegramApplication([]PanelApplicationConfig{{ID: "default", Name: "Default", DNSEnabled: true, Service: service, Recovery: recoveryService}})
 }
 
 func NewTelegramApplication(service *DeploymentService) (*TelegramApplication, error) {
 	if service == nil {
 		return nil, errors.New("deployment service is required")
 	}
-	return &TelegramApplication{service: service}, nil
+	return NewMultiPanelTelegramApplication([]PanelApplicationConfig{{ID: "default", Name: "Default", DNSEnabled: true, Service: service}})
 }
 
-func (a *TelegramApplication) ListHosts(ctx context.Context) ([]telegram.Host, error) {
-	hosts, err := a.service.remnawave.GetHosts(ctx)
+func (a *TelegramApplication) panel(id string) (PanelApplicationConfig, error) {
+	panel, ok := a.panels[strings.TrimSpace(id)]
+	if !ok {
+		return PanelApplicationConfig{}, ErrInvalidInput
+	}
+	return panel, nil
+}
+
+func (a *TelegramApplication) panelForDeployment(ctx context.Context, deploymentID string) (PanelApplicationConfig, error) {
+	item, err := a.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return PanelApplicationConfig{}, err
+	}
+	return a.panel(item.PanelID)
+}
+
+func (a *TelegramApplication) ListPanels(context.Context) ([]telegram.Panel, error) {
+	result := make([]telegram.Panel, 0, len(a.order))
+	for _, id := range a.order {
+		panel := a.panels[id]
+		result = append(result, telegram.Panel{ID: id, Name: panel.Name, DNSEnabled: panel.DNSEnabled})
+	}
+	return result, nil
+}
+
+func (a *TelegramApplication) ListHosts(ctx context.Context, panelID string) ([]telegram.Host, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return nil, err
+	}
+	hosts, err := panel.Service.remnawave.GetHosts(ctx)
 	if err != nil {
 		return nil, errors.New("list Hosts failed")
 	}
@@ -53,11 +110,15 @@ func (a *TelegramApplication) ListHosts(ctx context.Context) ([]telegram.Host, e
 	return result, nil
 }
 
-func (a *TelegramApplication) CheckNodeName(ctx context.Context, name string) error {
+func (a *TelegramApplication) CheckNodeName(ctx context.Context, panelID, name string) error {
 	if remnawave.ValidateNodeName(name) != nil {
 		return ErrInvalidInput
 	}
-	nodes, err := a.service.remnawave.GetNodes(ctx)
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return err
+	}
+	nodes, err := panel.Service.remnawave.GetNodes(ctx)
 	if err != nil {
 		return errors.New("check Node name failed")
 	}
@@ -69,11 +130,15 @@ func (a *TelegramApplication) CheckNodeName(ctx context.Context, name string) er
 	return nil
 }
 
-func (a *TelegramApplication) CheckVPSAddress(ctx context.Context, address netip.Addr) error {
+func (a *TelegramApplication) CheckVPSAddress(ctx context.Context, panelID string, address netip.Addr) error {
 	if !publicIP(address) {
 		return ErrInvalidInput
 	}
-	nodes, err := a.service.remnawave.GetNodes(ctx)
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return err
+	}
+	nodes, err := panel.Service.remnawave.GetNodes(ctx)
 	if err != nil {
 		return errors.New("check Node address failed")
 	}
@@ -87,7 +152,12 @@ func (a *TelegramApplication) CheckVPSAddress(ctx context.Context, address netip
 }
 
 func (a *TelegramApplication) Preflight(ctx context.Context, input telegram.PreflightInput) (telegram.PreflightResult, error) {
-	prepared, err := a.service.Prepare(ctx, PrepareInput{
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return telegram.PreflightResult{}, err
+	}
+	prepared, err := panel.Service.Prepare(ctx, PrepareInput{
+		PanelID:        input.PanelID,
 		OperatorUserID: input.OperatorUserID,
 		HostID:         input.HostID,
 		NodeName:       input.NodeName,
@@ -107,7 +177,11 @@ func (a *TelegramApplication) Preflight(ctx context.Context, input telegram.Pref
 }
 
 func (a *TelegramApplication) StartDeployment(ctx context.Context, input telegram.DeploymentInput, progress func(telegram.Progress) error) error {
-	return a.service.Deploy(ctx, StartInput{
+	panel, err := a.panelForDeployment(ctx, input.PreparedDeploymentID)
+	if err != nil {
+		return err
+	}
+	return panel.Service.Deploy(ctx, StartInput{
 		DeploymentID:   input.PreparedDeploymentID,
 		OperatorUserID: input.OperatorUserID,
 		HostID:         input.HostID,
@@ -121,22 +195,35 @@ func (a *TelegramApplication) StartDeployment(ctx context.Context, input telegra
 }
 
 func (a *TelegramApplication) CancelDeployment(ctx context.Context, deploymentID string) error {
-	return a.service.Cancel(ctx, deploymentID)
+	panel, err := a.panelForDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	return panel.Service.Cancel(ctx, deploymentID)
 }
 
 func (a *TelegramApplication) RetryFailedStep(ctx context.Context, deploymentID string) error {
-	return a.service.RetryFailedStep(ctx, deploymentID, nil)
+	panel, err := a.panelForDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	return panel.Service.RetryFailedStep(ctx, deploymentID, nil)
 }
 
 func (a *TelegramApplication) RetryDNS(ctx context.Context, deploymentID string) error {
-	return a.service.RetryDNS(ctx, deploymentID, nil)
+	panel, err := a.panelForDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
+	return panel.Service.RetryDNS(ctx, deploymentID, nil)
 }
 
 func (a *TelegramApplication) RecheckRemnawave(ctx context.Context, deploymentID string) (string, error) {
-	if a.recovery == nil {
+	panel, panelErr := a.panelForDeployment(ctx, deploymentID)
+	if panelErr != nil || panel.Recovery == nil {
 		return "", errors.New("recovery service is unavailable")
 	}
-	result, err := a.recovery.RecheckRemnawave(ctx, deploymentID)
+	result, err := panel.Recovery.RecheckRemnawave(ctx, deploymentID)
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +231,11 @@ func (a *TelegramApplication) RecheckRemnawave(ctx context.Context, deploymentID
 }
 
 func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID string) ([]string, error) {
-	entries, err := a.service.SafeLogs(ctx, deploymentID)
+	panel, panelErr := a.panelForDeployment(ctx, deploymentID)
+	if panelErr != nil {
+		return nil, panelErr
+	}
+	entries, err := panel.Service.SafeLogs(ctx, deploymentID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,41 +251,59 @@ func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID str
 }
 
 func (a *TelegramApplication) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {
-	return a.service.BootstrapCertificate(ctx, sni, operatorUserID)
+	if len(a.order) != 1 {
+		return "", errors.New("panel selection is required for certificate bootstrap")
+	}
+	return a.panels[a.order[0]].Service.BootstrapCertificate(ctx, sni, operatorUserID)
 }
 
-func (a *TelegramApplication) FindNodeForIPChange(ctx context.Context, query string) (telegram.NodeIPChangeTarget, error) {
-	target, err := a.service.FindNodeForIPChange(ctx, query)
+func (a *TelegramApplication) FindNodeForIPChange(ctx context.Context, panelID, query string) (telegram.NodeIPChangeTarget, error) {
+	panel, err := a.panel(panelID)
 	if err != nil {
 		return telegram.NodeIPChangeTarget{}, err
 	}
-	return telegram.NodeIPChangeTarget{UUID: target.UUID, Name: target.Name, Address: target.Address, Connected: target.Connected, DNSZones: target.DNSZones, IsManaged: target.Managed}, nil
+	target, err := panel.Service.FindNodeForIPChange(ctx, query)
+	if err != nil {
+		return telegram.NodeIPChangeTarget{}, err
+	}
+	return telegram.NodeIPChangeTarget{PanelName: panel.Name, DNSEnabled: panel.DNSEnabled, UUID: target.UUID, Name: target.Name, Address: target.Address, Connected: target.Connected, DNSZones: target.DNSZones, IsManaged: target.Managed}, nil
 }
 
 func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, input telegram.NodeIPChangeInput) (string, error) {
-	return a.service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return "", err
+	}
+	return panel.Service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
 }
 
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {
-	nodes, err := a.service.remnawave.GetNodes(ctx)
-	if err != nil {
-		return nil, errors.New("list Nodes failed")
-	}
-	result := make([]telegram.NodeSummary, 0, len(nodes))
-	for _, node := range nodes {
-		result = append(result, telegram.NodeSummary{Name: node.Name, Address: node.Address, Connected: node.IsConnected})
+	result := make([]telegram.NodeSummary, 0)
+	for _, id := range a.order {
+		panel := a.panels[id]
+		nodes, err := panel.Service.remnawave.GetNodes(ctx)
+		if err != nil {
+			return nil, errors.New("list Nodes failed")
+		}
+		for _, node := range nodes {
+			result = append(result, telegram.NodeSummary{PanelName: panel.Name, Name: node.Name, Address: node.Address, Connected: node.IsConnected})
+		}
 	}
 	return result, nil
 }
 
 func (a *TelegramApplication) ListDeployments(ctx context.Context, limit int) ([]telegram.DeploymentSummary, error) {
-	deployments, err := a.service.repository.ListRecentDeployments(ctx, limit)
+	deployments, err := a.repository.ListRecentDeployments(ctx, limit)
 	if err != nil {
 		return nil, errors.New("list deployments failed")
 	}
 	result := make([]telegram.DeploymentSummary, 0, len(deployments))
 	for _, item := range deployments {
-		result = append(result, telegram.DeploymentSummary{ID: item.ID, NodeName: item.NodeName, Status: string(item.Status), UpdatedAt: item.UpdatedAt})
+		panelName := item.PanelID
+		if panel, ok := a.panels[item.PanelID]; ok {
+			panelName = panel.Name
+		}
+		result = append(result, telegram.DeploymentSummary{PanelName: panelName, ID: item.ID, NodeName: item.NodeName, Status: string(item.Status), UpdatedAt: item.UpdatedAt})
 	}
 	return result, nil
 }

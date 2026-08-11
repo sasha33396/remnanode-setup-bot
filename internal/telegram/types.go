@@ -79,7 +79,14 @@ type Host struct {
 	ConfigProfileReadiness Readiness
 }
 
+type Panel struct {
+	ID         string
+	Name       string
+	DNSEnabled bool
+}
+
 type NodeSummary struct {
+	PanelName string
 	Name      string
 	Address   string
 	Connected bool
@@ -88,21 +95,25 @@ type NodeSummary struct {
 // NodeIPChangeTarget is an operator-safe projection used by the IP-change
 // wizard. UUID is retained only in transient server-side state.
 type NodeIPChangeTarget struct {
-	UUID      string
-	Name      string
-	Address   netip.Addr
-	Connected bool
-	DNSZones  []string
-	IsManaged bool
+	PanelName  string
+	DNSEnabled bool
+	UUID       string
+	Name       string
+	Address    netip.Addr
+	Connected  bool
+	DNSZones   []string
+	IsManaged  bool
 }
 
 type NodeIPChangeInput struct {
+	PanelID    string
 	NodeUUID   string
 	ExpectedIP netip.Addr
 	NewIP      netip.Addr
 }
 
 type DeploymentSummary struct {
+	PanelName string
 	ID        string
 	NodeName  string
 	Status    string
@@ -112,6 +123,7 @@ type DeploymentSummary struct {
 // PreflightInput contains the transient password. Implementations must not
 // retain it after Preflight returns.
 type PreflightInput struct {
+	PanelID        string
 	OperatorUserID int64
 	HostID         string
 	NodeName       string
@@ -132,6 +144,7 @@ type PreflightResult struct {
 // StartDeployment must run synchronously and must not retain Password after it
 // returns.
 type DeploymentInput struct {
+	PanelID              string
 	PreparedDeploymentID string
 	OperatorUserID       int64
 	HostID               string
@@ -153,9 +166,10 @@ type Progress struct {
 // deployment behavior. Implementations may orchestrate APIs, persistence and
 // SSH behind this boundary.
 type Application interface {
-	ListHosts(context.Context) ([]Host, error)
-	CheckNodeName(context.Context, string) error
-	CheckVPSAddress(context.Context, netip.Addr) error
+	ListPanels(context.Context) ([]Panel, error)
+	ListHosts(context.Context, string) ([]Host, error)
+	CheckNodeName(context.Context, string, string) error
+	CheckVPSAddress(context.Context, string, netip.Addr) error
 	Preflight(context.Context, PreflightInput) (PreflightResult, error)
 	StartDeployment(context.Context, DeploymentInput, func(Progress) error) error
 	CancelDeployment(context.Context, string) error
@@ -176,6 +190,6 @@ type RecoveryApplication interface {
 // NodeIPApplication is optional. It powers the button-based IP replacement
 // wizard for both managed and legacy Remnawave Nodes.
 type NodeIPApplication interface {
-	FindNodeForIPChange(context.Context, string) (NodeIPChangeTarget, error)
+	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
 }

@@ -19,6 +19,7 @@ import (
 
 const deploymentColumns = `
     id::text,
+    panel_id,
     telegram_operator_user_id,
     selected_remnawave_host_uuid::text,
     selected_host_remark,
@@ -70,14 +71,18 @@ func New(pool *pgxpool.Pool) *Repository {
 // service reports readiness.
 func (r *Repository) CheckSchema(ctx context.Context) error {
 	var deployments, certificateRecords, certificateVersions, certificateTargetReviews *string
+	var panelColumns int
 	if err := r.pool.QueryRow(ctx, `
         SELECT to_regclass('public.deployments')::text,
                to_regclass('public.certificate_records')::text,
                to_regclass('public.certificate_versions')::text,
-               to_regclass('public.certificate_target_reviews')::text`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews); err != nil {
+               to_regclass('public.certificate_target_reviews')::text,
+               (SELECT count(*) FROM information_schema.columns
+                WHERE table_schema = 'public' AND column_name = 'panel_id'
+                  AND table_name IN ('deployments', 'certificate_records', 'certificate_versions', 'certificate_distributions', 'certificate_target_reviews'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &panelColumns); err != nil {
 		return errors.New("verify PostgreSQL schema failed")
 	}
-	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil {
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || panelColumns != 5 {
 		return errors.New("required PostgreSQL migrations are not applied")
 	}
 	return nil
@@ -85,6 +90,9 @@ func (r *Repository) CheckSchema(ctx context.Context) error {
 
 // CreateDeployment inserts a deployment in CREATED state.
 func (r *Repository) CreateDeployment(ctx context.Context, params repositorycontract.CreateDeploymentParams) (deployment.Deployment, error) {
+	if strings.TrimSpace(params.PanelID) == "" {
+		params.PanelID = "default"
+	}
 	if params.ID == "" {
 		var err error
 		params.ID, err = deployment.NewID()
@@ -98,12 +106,13 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
 
 	row := r.pool.QueryRow(ctx, `
         INSERT INTO deployments (
-            id, telegram_operator_user_id, selected_remnawave_host_uuid,
+            id, panel_id, telegram_operator_user_id, selected_remnawave_host_uuid,
             selected_host_remark, sni_domain, node_name, target_vps_ip,
             status, current_step
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING `+deploymentColumns,
 		params.ID,
+		params.PanelID,
 		params.TelegramOperatorUserID,
 		params.SelectedRemnawaveHostUUID,
 		params.SelectedHostRemark,
@@ -345,6 +354,25 @@ func (r *Repository) FindUnfinishedDeployments(ctx context.Context, limit int) (
         LIMIT $1`, limit, "find unfinished deployments")
 }
 
+func (r *Repository) FindUnfinishedDeploymentsByPanel(ctx context.Context, panelID string, limit int) ([]deployment.Deployment, error) {
+	if !validPanelID(panelID) {
+		return nil, invalid("panel ID")
+	}
+	return r.list(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE panel_id = $2 AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'DNS_FAILED', 'MANUAL_REVIEW') ORDER BY updated_at ASC, id ASC LIMIT $1`, limit, "find unfinished deployments by panel", panelID)
+}
+
+func (r *Repository) FindDeploymentByPanelNodeUUID(ctx context.Context, panelID, nodeUUID string) (deployment.Deployment, error) {
+	if !validPanelID(panelID) || !validUUID(nodeUUID) {
+		return deployment.Deployment{}, invalid("panel ID or Remnawave Node UUID")
+	}
+	row := r.pool.QueryRow(ctx, `SELECT `+deploymentColumns+` FROM deployments WHERE panel_id = $1 AND remnawave_node_uuid = $2 ORDER BY updated_at DESC LIMIT 1`, panelID, nodeUUID)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("find deployment by panel Node UUID", err)
+	}
+	return result, nil
+}
+
 func (r *Repository) list(ctx context.Context, query string, limit int, operation string, queryArgs ...any) ([]deployment.Deployment, error) {
 	if limit < 1 || limit > 100 {
 		return nil, invalid("list limit must be between 1 and 100")
@@ -379,6 +407,7 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 	var ip string
 	err := row.Scan(
 		&result.ID,
+		&result.PanelID,
 		&result.TelegramOperatorUserID,
 		&result.SelectedRemnawaveHostUUID,
 		&result.SelectedHostRemark,
@@ -427,6 +456,9 @@ func validateCreate(params repositorycontract.CreateDeploymentParams) error {
 	if params.TelegramOperatorUserID <= 0 {
 		return invalid("Telegram operator user ID")
 	}
+	if !validPanelID(params.PanelID) {
+		return invalid("panel ID")
+	}
 	if !validUUID(params.SelectedRemnawaveHostUUID) {
 		return invalid("selected Remnawave Host UUID")
 	}
@@ -440,6 +472,19 @@ func validateCreate(params repositorycontract.CreateDeploymentParams) error {
 		return invalid("target VPS IP")
 	}
 	return nil
+}
+
+func validPanelID(value string) bool {
+	if len(value) < 1 || len(value) > 32 {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || (index > 0 && (char == '-' || char == '_')) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validUUID(value string) bool {

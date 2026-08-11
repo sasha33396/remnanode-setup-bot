@@ -138,6 +138,9 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
+	case stateSelectingPanel, stateSelectingIPPanel:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
+		return err
 	case stateSelectingHost:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Select a Host using the inline buttons.", Keyboard{})
 		return err
@@ -286,6 +289,23 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 
 	switch action {
+	case "panel":
+		if session.state != stateSelectingPanel || index < 0 || index >= len(session.panels) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.showHostPicker(ctx, callback.FromUserID, session.chatID, session.nonce, session.panels[index])
+	case "ip_panel":
+		if session.state != stateSelectingIPPanel || index < 0 || index >= len(session.panels) {
+			return c.expiredCallback(ctx, callback)
+		}
+		if !c.updateSession(callback.FromUserID, nonce, stateSelectingIPPanel, func(current *wizard) {
+			current.panel = session.panels[index]
+			current.state = stateAwaitingIPChangeQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		_, err := c.messenger.SendMessage(ctx, session.chatID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+		return err
 	case "host":
 		if session.state != stateSelectingHost || index < 0 || index >= len(session.hosts) {
 			return c.expiredCallback(ctx, callback)
@@ -330,9 +350,37 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 
 func (c *Controller) beginAddNode(ctx context.Context, message *Message) error {
 	c.cancelExisting(ctx, message.FromUserID)
-	hosts, err := c.app.ListHosts(ctx)
+	panels, err := c.app.ListPanels(ctx)
 	if err != nil {
-		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Hosts are temporarily unavailable. Try again later.", mainKeyboard())
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Панели временно недоступны.", mainKeyboard())
+		return sendErr
+	}
+	if len(panels) == 0 {
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, "Нет доступных панелей.", mainKeyboard())
+		return err
+	}
+	nonce, err := c.nonce()
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Could not start the wizard. Try again.", mainKeyboard())
+		return errors.Join(errors.New("generate Telegram wizard nonce"), sendErr)
+	}
+	if len(panels) == 1 {
+		return c.showHostPicker(ctx, message.FromUserID, message.ChatID, nonce, panels[0])
+	}
+	session := &wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingPanel, expiresAt: c.now().Add(c.ttl), panels: panels}
+	c.putSession(session)
+	rows := make([][]Button, 0, len(panels))
+	for index, panel := range panels {
+		rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("add:panel:%s:%d", nonce, index)}})
+	}
+	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
+	return err
+}
+
+func (c *Controller) showHostPicker(ctx context.Context, userID, chatID int64, nonce string, panel Panel) error {
+	hosts, err := c.app.ListHosts(ctx, panel.ID)
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Hosts are temporarily unavailable. Try again later.", mainKeyboard())
 		return sendErr
 	}
 	selectable := make([]Host, 0, len(hosts))
@@ -343,21 +391,17 @@ func (c *Controller) beginAddNode(ctx context.Context, message *Message) error {
 		selectable = append(selectable, host)
 	}
 	if len(selectable) == 0 {
-		_, err = c.messenger.SendMessage(ctx, message.ChatID, "No deployable Hosts are available.", mainKeyboard())
+		_, err = c.messenger.SendMessage(ctx, chatID, "No deployable Hosts are available.", mainKeyboard())
 		return err
 	}
-	nonce, err := c.nonce()
-	if err != nil {
-		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Could not start the wizard. Try again.", mainKeyboard())
-		return errors.Join(errors.New("generate Telegram wizard nonce"), sendErr)
-	}
 	session := &wizard{
-		userID:    message.FromUserID,
-		chatID:    message.ChatID,
+		userID:    userID,
+		chatID:    chatID,
 		nonce:     nonce,
 		state:     stateSelectingHost,
 		expiresAt: c.now().Add(c.ttl),
 		hosts:     selectable,
+		panel:     panel,
 	}
 	c.putSession(session)
 
@@ -368,7 +412,7 @@ func (c *Controller) beginAddNode(ctx context.Context, message *Message) error {
 			CallbackData: fmt.Sprintf("add:host:%s:%d", nonce, index),
 		}})
 	}
-	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Select a Remnawave Host:", Keyboard{Inline: rows})
+	_, err = c.messenger.SendMessage(ctx, chatID, "Панель: "+safeLine(panel.Name, 80)+"\nВыберите Remnawave Host:", Keyboard{Inline: rows})
 	return err
 }
 
@@ -378,18 +422,32 @@ func (c *Controller) beginIPChange(ctx context.Context, message *Message) error 
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Смена IP сейчас недоступна.", mainKeyboard())
 		return err
 	}
+	panels, err := c.app.ListPanels(ctx)
+	if err != nil || len(panels) == 0 {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Панели временно недоступны.", mainKeyboard())
+		return sendErr
+	}
 	nonce, err := c.nonce()
 	if err != nil {
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось начать смену IP. Повторите позже.", mainKeyboard())
 		return errors.Join(err, sendErr)
 	}
-	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateAwaitingIPChangeQuery, expiresAt: c.now().Add(c.ttl)})
+	if len(panels) > 1 {
+		c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingIPPanel, expiresAt: c.now().Add(c.ttl), panels: panels})
+		rows := make([][]Button, 0, len(panels))
+		for index, panel := range panels {
+			rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("ip:panel:%s:%d", nonce, index)}})
+		}
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
+		return err
+	}
+	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateAwaitingIPChangeQuery, expiresAt: c.now().Add(c.ttl), panel: panels[0]})
 	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
 	return err
 }
 
 func (c *Controller) acceptIPChangeQuery(ctx context.Context, message *Message, session *wizard) error {
-	target, err := c.app.(NodeIPApplication).FindNodeForIPChange(ctx, strings.TrimSpace(message.Text))
+	target, err := c.app.(NodeIPApplication).FindNodeForIPChange(ctx, session.panel.ID, strings.TrimSpace(message.Text))
 	if err != nil {
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Нода не найдена или запрос неоднозначен. Проверьте имя/IP и повторите.", Keyboard{})
 		return sendErr
@@ -421,7 +479,7 @@ func (c *Controller) acceptNewNodeIP(ctx context.Context, message *Message, sess
 		return c.sendExpired(ctx, message.ChatID)
 	}
 	defer active.clear()
-	result, err := c.app.(NodeIPApplication).ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: active.ipTarget.UUID, ExpectedIP: active.ipTarget.Address, NewIP: newIP})
+	result, err := c.app.(NodeIPApplication).ReplaceNodeIP(ctx, NodeIPChangeInput{PanelID: active.panel.ID, NodeUUID: active.ipTarget.UUID, ExpectedIP: active.ipTarget.Address, NewIP: newIP})
 	if err != nil {
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось безопасно сменить IP. Данные ноды могли измениться; запустите смену IP заново.", mainKeyboard())
 		return sendErr
@@ -436,7 +494,7 @@ func (c *Controller) acceptNodeName(ctx context.Context, message *Message, sessi
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Invalid Node name. Use 3–30 printable characters.", Keyboard{})
 		return err
 	}
-	if err := c.app.CheckNodeName(ctx, name); err != nil {
+	if err := c.app.CheckNodeName(ctx, session.panel.ID, name); err != nil {
 		text := "Node name could not be checked. Try again."
 		if errors.Is(err, ErrDuplicateNodeName) {
 			text = "A Node with that name already exists. Enter another name."
@@ -460,7 +518,7 @@ func (c *Controller) acceptVPSIP(ctx context.Context, message *Message, session 
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Invalid VPS address. Enter a publicly routable IPv4 or IPv6 address.", Keyboard{})
 		return err
 	}
-	if err := c.app.CheckVPSAddress(ctx, address); err != nil {
+	if err := c.app.CheckVPSAddress(ctx, session.panel.ID, address); err != nil {
 		text := "VPS address could not be checked. Try again."
 		if errors.Is(err, ErrDuplicateVPSIP) {
 			text = "A Node with that VPS address already exists. Enter another address."
@@ -506,6 +564,7 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 		return c.sendExpired(ctx, message.ChatID)
 	}
 	result, err := c.app.Preflight(ctx, PreflightInput{
+		PanelID:        current.panel.ID,
 		OperatorUserID: current.userID,
 		HostID:         current.selected.ID,
 		NodeName:       current.nodeName,
@@ -579,6 +638,7 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 		defer c.workers.Done()
 		defer active.clear()
 		input := DeploymentInput{
+			PanelID:              active.panel.ID,
 			PreparedDeploymentID: active.preflight.PreparedDeploymentID,
 			OperatorUserID:       active.userID,
 			HostID:               active.selected.ID,
@@ -651,7 +711,7 @@ func (c *Controller) showNodes(ctx context.Context, chatID int64) error {
 		if node.Connected {
 			state = "connected"
 		}
-		fmt.Fprintf(&builder, "\n• %s — %s — %s", safeLine(node.Name, 60), safeLine(node.Address, 80), state)
+		fmt.Fprintf(&builder, "\n• [%s] %s — %s — %s", safeLine(node.PanelName, 40), safeLine(node.Name, 60), safeLine(node.Address, 80), state)
 		if builder.Len() >= maxMessageBytes {
 			builder.WriteString("\n…")
 			break
@@ -677,7 +737,7 @@ func (c *Controller) showDeployments(ctx context.Context, chatID int64) error {
 		if !item.UpdatedAt.IsZero() {
 			updated = item.UpdatedAt.UTC().Format("2006-01-02 15:04 UTC")
 		}
-		fmt.Fprintf(&builder, "\n• %s — %s — %s", safeLine(item.NodeName, 60), safeLine(item.Status, 40), updated)
+		fmt.Fprintf(&builder, "\n• [%s] %s — %s — %s", safeLine(item.PanelName, 40), safeLine(item.NodeName, 60), safeLine(item.Status, 40), updated)
 		if builder.Len() >= maxMessageBytes {
 			builder.WriteString("\n…")
 			break
@@ -866,10 +926,12 @@ func renderIPChangeTarget(target NodeIPChangeTarget) string {
 		kind = "создана этим ботом"
 	}
 	zones := "не найдены"
-	if len(target.DNSZones) > 0 {
+	if !target.DNSEnabled {
+		zones = "отключена для этой панели"
+	} else if len(target.DNSZones) > 0 {
 		zones = strings.Join(target.DNSZones, ", ")
 	}
-	return fmt.Sprintf("Нода: %s\nТекущий IP: %s\nСтатус: %s\nТип: %s\nDNS-зоны: %s", safeLine(target.Name, 80), target.Address, status, kind, safeLine(zones, 800))
+	return fmt.Sprintf("Панель: %s\nНода: %s\nТекущий IP: %s\nСтатус: %s\nТип: %s\nDNS-зоны: %s", safeLine(target.PanelName, 80), safeLine(target.Name, 80), target.Address, status, kind, safeLine(zones, 800))
 }
 
 func confirmationKeyboard(nonce string) Keyboard {
@@ -886,12 +948,15 @@ func renderConfirmation(session *wizard) string {
 		profile = session.selected.ConfigProfileReadiness
 	}
 	dnsZone := "not resolved"
-	if strings.TrimSpace(session.preflight.DNSZone) != "" {
+	if !session.panel.DNSEnabled {
+		dnsZone = "disabled for this panel"
+	} else if strings.TrimSpace(session.preflight.DNSZone) != "" {
 		dnsZone = safeLine(session.preflight.DNSZone, 120)
 	}
 	var builder strings.Builder
 	builder.WriteString("Confirm deployment\n")
 	fmt.Fprintf(&builder, "Host: %s\n", safeLine(session.selected.Remark, 120))
+	fmt.Fprintf(&builder, "Panel: %s\n", safeLine(session.panel.Name, 80))
 	fmt.Fprintf(&builder, "SNI: %s\n", safeLine(session.selected.Address, 255))
 	fmt.Fprintf(&builder, "Node name: %s\n", safeLine(session.nodeName, 60))
 	fmt.Fprintf(&builder, "VPS IP: %s\n", session.vpsIP.String())
@@ -943,6 +1008,13 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	if len(parts) < 3 || parts[2] == "" {
 		return "", "", 0, false
 	}
+	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "panel" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 {
+			return "", "", 0, false
+		}
+		return "ip_panel", parts[2], parsed, true
+	}
 	if parts[0] == "ip" && len(parts) == 3 {
 		switch parts[1] {
 		case "change":
@@ -955,7 +1027,7 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		return "", "", 0, false
 	}
 	switch parts[1] {
-	case "host":
+	case "host", "panel":
 		if len(parts) != 4 {
 			return "", "", 0, false
 		}
@@ -963,7 +1035,7 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		if err != nil || parsed < 0 {
 			return "", "", 0, false
 		}
-		return "host", parts[2], parsed, true
+		return parts[1], parts[2], parsed, true
 	case "deploy", "cancel":
 		if len(parts) != 3 {
 			return "", "", 0, false

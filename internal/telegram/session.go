@@ -8,7 +8,9 @@ import (
 type wizardState uint8
 
 const (
-	stateSelectingHost wizardState = iota + 1
+	stateSelectingPanel wizardState = iota + 1
+	stateSelectingIPPanel
+	stateSelectingHost
 	stateAwaitingName
 	stateAwaitingIP
 	stateAwaitingPassword
@@ -27,6 +29,8 @@ type wizard struct {
 	state       wizardState
 	expiresAt   time.Time
 	hosts       []Host
+	panels      []Panel
+	panel       Panel
 	selected    Host
 	nodeName    string
 	vpsIP       netip.Addr
@@ -43,6 +47,7 @@ func (w *wizard) clone() *wizard {
 	}
 	result := *w
 	result.hosts = append([]Host(nil), w.hosts...)
+	result.panels = append([]Panel(nil), w.panels...)
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil

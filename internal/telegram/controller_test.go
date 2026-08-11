@@ -85,6 +85,41 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	}
 }
 
+func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
+	application := &fakeApplication{
+		panels: []Panel{{ID: "europe", Name: "Europe", DNSEnabled: true}, {ID: "test", Name: "Test", DNSEnabled: false}},
+		hosts:  []Host{{ID: "host-id", Remark: "Test Host", Address: "test.example.com"}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuAddNode)
+	picker := messenger.lastSent()
+	if len(picker.keyboard.Inline) != 2 || !strings.Contains(picker.text, "панель") {
+		t.Fatalf("panel picker = %#v", picker)
+	}
+	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, picker.message)
+	hosts := messenger.lastSent()
+	if !strings.Contains(hosts.text, "Test") || len(hosts.keyboard.Inline) != 1 {
+		t.Fatalf("host picker = %#v", hosts)
+	}
+}
+
+func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
+	application := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{panels: []Panel{{ID: "europe", Name: "Europe"}, {ID: "test", Name: "Test"}}},
+		target: NodeIPChangeTarget{PanelName: "Test", UUID: "node-uuid", Name: "legacy", Address: netip.MustParseAddr("8.8.8.8")},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	picker := messenger.lastSent()
+	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, picker.message)
+	handleMessage(t, controller, 2, "legacy")
+	if application.findPanel != "test" { t.Fatalf("find panel = %q", application.findPanel) }
+	card := messenger.lastSent()
+	if !strings.Contains(card.text, "Панель: Test") { t.Fatalf("card = %q", card.text) }
+}
+
 func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	profileReady := ReadinessReady
 	application := &fakeApplication{
@@ -287,6 +322,7 @@ type fakeApplication struct {
 	mu sync.Mutex
 
 	hosts           []Host
+	panels          []Panel
 	nameErr         error
 	addressErr      error
 	preflightResult PreflightResult
@@ -329,9 +365,11 @@ type fakeNodeIPApplication struct {
 	replaceErr   error
 	replaceCalls int
 	input        NodeIPChangeInput
+	findPanel    string
 }
 
-func (f *fakeNodeIPApplication) FindNodeForIPChange(context.Context, string) (NodeIPChangeTarget, error) {
+func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {
+	f.findPanel = panelID
 	return f.target, f.findErr
 }
 func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
@@ -349,21 +387,28 @@ func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni st
 	return f.bootstrapResult, f.bootstrapErr
 }
 
-func (f *fakeApplication) ListHosts(context.Context) ([]Host, error) {
+func (f *fakeApplication) ListPanels(context.Context) ([]Panel, error) {
+	if len(f.panels) != 0 {
+		return append([]Panel(nil), f.panels...), nil
+	}
+	return []Panel{{ID: "default", Name: "Default", DNSEnabled: true}}, nil
+}
+
+func (f *fakeApplication) ListHosts(context.Context, string) ([]Host, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listHostCalls++
 	return append([]Host(nil), f.hosts...), nil
 }
 
-func (f *fakeApplication) CheckNodeName(_ context.Context, _ string) error {
+func (f *fakeApplication) CheckNodeName(_ context.Context, _, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nameChecks++
 	return f.nameErr
 }
 
-func (f *fakeApplication) CheckVPSAddress(_ context.Context, _ netip.Addr) error {
+func (f *fakeApplication) CheckVPSAddress(_ context.Context, _ string, _ netip.Addr) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addressChecks++

@@ -111,6 +111,10 @@ func (r *recoveryRepository) FindUnfinishedDeployments(context.Context, int) ([]
 	return []deployment.Deployment{r.item}, nil
 }
 
+func (r *recoveryRepository) FindDeploymentByPanelNodeUUID(context.Context, string, string) (deployment.Deployment, error) {
+	return deployment.Deployment{}, repository.ErrNotFound
+}
+
 type recoveryRemnawave struct {
 	nodes []remnawave.Node
 	node  remnawave.Node

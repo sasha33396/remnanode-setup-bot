@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/remnawave"
+	"remnanode-setup-bot/internal/repository"
 )
 
 var (
@@ -69,19 +69,23 @@ func (s *DeploymentService) FindNodeForIPChange(ctx context.Context, query strin
 		return NodeIPTarget{}, ErrNodeIPChangeFailed
 	}
 	address = address.Unmap()
-	zones, err := s.dns.FindZonesByIP(ctx, address)
-	if err != nil {
-		return NodeIPTarget{}, ErrDNSUpdateFailed
+	var zones []dnsbalancer.ZoneMatch
+	if !s.config.DNSDisabled {
+		zones, err = s.dns.FindZonesByIP(ctx, address)
+		if err != nil {
+			return NodeIPTarget{}, ErrDNSUpdateFailed
+		}
 	}
 	zoneNames := make([]string, 0, len(zones))
 	for _, zone := range zones {
 		zoneNames = append(zoneNames, zone.FQDN)
 	}
 	sort.Strings(zoneNames)
-	managed := false
-	if items, listErr := s.repository.ListRecentDeployments(ctx, 1000); listErr == nil {
-		managed = findManagedDeployment(items, node.UUID) != nil
+	_, managedErr := s.repository.FindDeploymentByPanelNodeUUID(ctx, s.config.PanelID, node.UUID)
+	if managedErr != nil && !errors.Is(managedErr, repository.ErrNotFound) {
+		return NodeIPTarget{}, ErrPersistenceFailed
 	}
+	managed := managedErr == nil
 	return NodeIPTarget{UUID: node.UUID, Name: node.Name, Address: address, Connected: node.IsConnected, DNSZones: zoneNames, Managed: managed}, nil
 }
 
@@ -128,15 +132,17 @@ func (s *DeploymentService) ReplaceNodeIP(ctx context.Context, input NodeIPChang
 		return "", ErrNodeIPChangeFailed
 	}
 
-	zones, err := s.dns.FindZonesByIP(runCtx, oldIP)
-	if err != nil {
-		return "", ErrDNSUpdateFailed
+	var zones []dnsbalancer.ZoneMatch
+	if !s.config.DNSDisabled {
+		zones, err = s.dns.FindZonesByIP(runCtx, oldIP)
+		if err != nil {
+			return "", ErrDNSUpdateFailed
+		}
 	}
-	deployments, repoErr := s.repository.ListRecentDeployments(runCtx, 1000)
-	if repoErr != nil {
+	managed, managedErr := s.repository.FindDeploymentByPanelNodeUUID(runCtx, s.config.PanelID, selected.UUID)
+	if managedErr != nil && !errors.Is(managedErr, repository.ErrNotFound) {
 		return "", ErrPersistenceFailed
 	}
-	managed := findManagedDeployment(deployments, selected.UUID)
 
 	if _, err := s.remnawave.UpdateNodeAddress(runCtx, remnawave.UpdateNodeAddressInput{UUID: selected.UUID, Address: newIP}); err != nil {
 		return "", ErrNodeIPChangeFailed
@@ -152,7 +158,7 @@ func (s *DeploymentService) ReplaceNodeIP(ctx context.Context, input NodeIPChang
 			changedZones = append(changedZones, zone)
 		}
 	}
-	if managed != nil {
+	if managedErr == nil {
 		if _, err := s.repository.SetTargetVPSIP(runCtx, managed.ID, newIP); err != nil {
 			s.rollbackNodeIP(runCtx, selected.UUID, oldIP, newIP, changedZones)
 			return "", ErrPersistenceFailed
@@ -166,13 +172,4 @@ func (s *DeploymentService) rollbackNodeIP(ctx context.Context, nodeUUID string,
 		_, _ = s.dns.ReplaceIP(ctx, zones[index].FQDN, newIP, oldIP)
 	}
 	_, _ = s.remnawave.UpdateNodeAddress(ctx, remnawave.UpdateNodeAddressInput{UUID: nodeUUID, Address: oldIP})
-}
-
-func findManagedDeployment(items []deployment.Deployment, nodeUUID string) *deployment.Deployment {
-	for index := range items {
-		if items[index].RemnawaveNodeUUID != nil && *items[index].RemnawaveNodeUUID == nodeUUID {
-			return &items[index]
-		}
-	}
-	return nil
 }

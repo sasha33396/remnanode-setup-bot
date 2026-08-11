@@ -33,6 +33,13 @@ credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 central DNS-01 client and is never copied to a Node. Certificate versions and
 the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
 
+Multi-panel mode is enabled with `PANELS_JSON`; see `.env.example` for the
+schema. Each entry has a stable lowercase `id`, display `name`, Remnawave URL
+and token-environment reference, its own Cloudflare token reference, and a DNS
+configuration whose mode is `enabled` or `disabled`. Tokens stay in separate
+environment variables and are never embedded in JSON. When `PANELS_JSON` is
+empty, the legacy variables create one panel named `Default` with ID `default`.
+
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.
 For Compose, `DATABASE_URL` must use `postgres` as the database hostname.
@@ -46,7 +53,7 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-Migrations `000001` through `000005` must be applied first. Startup verifies
+Migrations `000001` through `000006` must be applied first. Startup verifies
 PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
@@ -74,8 +81,8 @@ cancellation. A DNS failure preserves the healthy Remnawave Node, records
 `DNS_FAILED`, and can be resumed with the DNS-only retry operation. Certificate
 material is obtained only through the centralized Certificate Manager.
 
-The manager enforces one active certificate per normalized SNI, obtains and
-renews certificates with ACME DNS-01 through Cloudflare, stores protected
+The manager enforces one active certificate per panel and normalized SNI, obtains and
+renews certificates with a panel-scoped ACME account and Cloudflare credential, stores protected
 immutable versions, and distributes renewed material to DNS-configured Nodes.
 Node activation follows the pinned xray-sni external contract and rolls back on
 reload or TLS health failure.
@@ -90,12 +97,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.down.sql
@@ -112,7 +121,7 @@ docker compose up --build
 ```
 
 The Compose stack persists PostgreSQL in `postgres_data` and protected
-certificate versions/account key in `certificate_store`. The deployer runs as
+certificate versions/account keys in panel-specific directories inside `certificate_store`. The deployer runs as
 root so a root-owned `0600` file-backed Compose secret works without host UID
 coordination. Its root filesystem remains read-only; all capabilities are
 dropped except `DAC_OVERRIDE` and `FOWNER`, which also permit reuse of volumes
