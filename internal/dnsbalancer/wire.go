@@ -72,7 +72,8 @@ func (z zoneWire) model() (Zone, error) {
 }
 
 type patchZoneRequest struct {
-	IPs []string `json:"ips"`
+	IPs   []string   `json:"ips,omitempty"`
+	Nodes []ZoneNode `json:"nodes,omitempty"`
 }
 
 type statusResponse struct {

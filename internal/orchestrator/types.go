@@ -82,11 +82,14 @@ type RemnawaveAPI interface {
 	GetNodes(context.Context) ([]remnawave.Node, error)
 	GetNode(context.Context, string) (remnawave.Node, error)
 	CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
+	UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
 }
 
 type DNSAPI interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
+	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 }
 
 type DeploymentRepository interface {

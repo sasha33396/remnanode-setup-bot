@@ -39,3 +39,11 @@ type AddIPResult struct {
 	Added bool
 	IPs   []string
 }
+
+// ReplaceIPResult reports an idempotent simple or advanced IP replacement.
+type ReplaceIPResult struct {
+	FQDN    string
+	Changed bool
+	IPs     []string
+	Nodes   []ZoneNode
+}

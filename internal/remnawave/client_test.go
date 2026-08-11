@@ -123,6 +123,30 @@ func TestCreateNodeUsesContractMapping(t *testing.T) {
 	}
 }
 
+func TestUpdateNodeAddressSendsMinimalContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/nodes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 2 || body["uuid"] != testNodeUUID || body["address"] != "198.51.100.20" {
+			t.Errorf("PATCH body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "198.51.100.20", true)+`}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	node, err := client.UpdateNodeAddress(context.Background(), UpdateNodeAddressInput{UUID: testNodeUUID, Address: netip.MustParseAddr("198.51.100.20")})
+	if err != nil || node.Address != "198.51.100.20" {
+		t.Fatalf("UpdateNodeAddress() = %#v, %v", node, err)
+	}
+}
+
 func TestClientAuthFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

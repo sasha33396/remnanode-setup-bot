@@ -70,6 +70,16 @@ Telegram user ID. Acknowledged legacy targets are excluded from later central
 distribution until they are imported; managed target failures still block
 activation. Use this command only after comparing the DNS pool with Remnawave.
 
+IP replacement is available through the `🔄 Сменить IP` main-menu button.
+The wizard accepts an exact Remnawave Node name or current IP, shows the Node
+and every matching DNS-balancer zone, asks for confirmation, and then requests
+the new public IP. It works for both managed and legacy Nodes because lookup is
+performed directly through the Remnawave API. The operation preserves all
+other entries in every matching simple `ips:` or advanced `nodes:` zone. A
+stale confirmation or duplicate new address is rejected; API changes are
+compensated when a later update fails. For managed Nodes, the deployment's
+canonical VPS address is updated after both external systems succeed.
+
 At startup, unfinished jobs are inspected without repeating external effects.
 Existing Remnawave Nodes are matched by exact name and IP, DNS is read before a
 retry is offered, and ambiguous states become `MANUAL_REVIEW`.

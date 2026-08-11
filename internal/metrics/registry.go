@@ -107,6 +107,7 @@ type RemnawaveClient struct {
 		GetNodes(context.Context) ([]remnawave.Node, error)
 		GetNode(context.Context, string) (remnawave.Node, error)
 		CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
+		UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
 	}
 	metrics *Registry
 }
@@ -117,6 +118,7 @@ func ObserveRemnawave(next interface {
 	GetNodes(context.Context) ([]remnawave.Node, error)
 	GetNode(context.Context, string) (remnawave.Node, error)
 	CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
+	UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
 }, registry *Registry) *RemnawaveClient {
 	return &RemnawaveClient{next: next, metrics: registry}
 }
@@ -146,6 +148,11 @@ func (c *RemnawaveClient) CreateNode(ctx context.Context, input remnawave.Create
 	c.observe(err)
 	return value, err
 }
+func (c *RemnawaveClient) UpdateNodeAddress(ctx context.Context, input remnawave.UpdateNodeAddressInput) (remnawave.Node, error) {
+	value, err := c.next.UpdateNodeAddress(ctx, input)
+	c.observe(err)
+	return value, err
+}
 func (c *RemnawaveClient) observe(err error) {
 	if err != nil && c.metrics != nil {
 		c.metrics.RemnawaveAPIError()
@@ -155,14 +162,18 @@ func (c *RemnawaveClient) observe(err error) {
 type DNSClient struct {
 	next interface {
 		FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+		FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 		AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
+		ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 	}
 	metrics *Registry
 }
 
 func ObserveDNS(next interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
+	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
+	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 }, registry *Registry) *DNSClient {
 	return &DNSClient{next: next, metrics: registry}
 }
@@ -172,8 +183,18 @@ func (c *DNSClient) FindZone(ctx context.Context, sni string) (dnsbalancer.ZoneM
 	c.observe(err)
 	return value, err
 }
+func (c *DNSClient) FindZonesByIP(ctx context.Context, ip netip.Addr) ([]dnsbalancer.ZoneMatch, error) {
+	value, err := c.next.FindZonesByIP(ctx, ip)
+	c.observe(err)
+	return value, err
+}
 func (c *DNSClient) AddIP(ctx context.Context, sni string, ip netip.Addr) (dnsbalancer.AddIPResult, error) {
 	value, err := c.next.AddIP(ctx, sni, ip)
+	c.observe(err)
+	return value, err
+}
+func (c *DNSClient) ReplaceIP(ctx context.Context, sni string, oldIP, newIP netip.Addr) (dnsbalancer.ReplaceIPResult, error) {
+	value, err := c.next.ReplaceIP(ctx, sni, oldIP, newIP)
 	c.observe(err)
 	return value, err
 }

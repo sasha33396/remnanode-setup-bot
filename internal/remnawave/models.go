@@ -58,3 +58,9 @@ type CreateNodeInput struct {
 	Address netip.Addr
 	Host    Host
 }
+
+// UpdateNodeAddressInput changes only the address of an existing Node.
+type UpdateNodeAddressInput struct {
+	UUID    string
+	Address netip.Addr
+}

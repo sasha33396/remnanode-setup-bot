@@ -31,7 +31,51 @@ var (
 type API interface {
 	GetDomains(context.Context) ([]Domain, error)
 	FindZone(context.Context, string) (ZoneMatch, error)
+	FindZonesByIP(context.Context, netip.Addr) ([]ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (AddIPResult, error)
+	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (ReplaceIPResult, error)
+}
+
+// FindZonesByIP returns every simple or advanced zone containing ip.
+func (c *Client) FindZonesByIP(ctx context.Context, ip netip.Addr) ([]ZoneMatch, error) {
+	if !ip.IsValid() {
+		return nil, fmt.Errorf("IP: %w", ErrInvalidInput)
+	}
+	domains, err := c.GetDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ip = ip.Unmap()
+	result := make([]ZoneMatch, 0)
+	for _, domain := range domains {
+		for _, zone := range domain.Zones {
+			matched := false
+			for _, value := range zone.IPs {
+				parsed, parseErr := netip.ParseAddr(strings.TrimSpace(value))
+				if parseErr == nil && parsed.Unmap() == ip {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				for _, node := range zone.Nodes {
+					parsed, parseErr := netip.ParseAddr(strings.TrimSpace(node.IP))
+					if parseErr == nil && parsed.Unmap() == ip {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				fqdn := zone.Name + "." + domain.Name
+				if zone.Name == "@" {
+					fqdn = domain.Name
+				}
+				result = append(result, ZoneMatch{Domain: domain.Name, ZoneName: zone.Name, FQDN: normalizeFQDN(fqdn), Zone: zone})
+			}
+		}
+	}
+	return result, nil
 }
 
 // Client is a typed remnawave-cloudflare-nodes HTTP client.
@@ -151,6 +195,103 @@ func (c *Client) AddIP(ctx context.Context, fqdn string, ip netip.Addr) (AddIPRe
 		return AddIPResult{}, invalidResponse("PATCH status is missing or not ok")
 	}
 	return AddIPResult{FQDN: match.FQDN, Added: true, IPs: complete}, nil
+}
+
+// ReplaceIP atomically replaces an IP in either supported zone format while
+// preserving every other entry. A completed replacement is a no-op.
+func (c *Client) ReplaceIP(ctx context.Context, fqdn string, oldIP, newIP netip.Addr) (ReplaceIPResult, error) {
+	key := normalizeFQDN(fqdn)
+	if key == "" || !oldIP.IsValid() || !newIP.IsValid() || oldIP.Unmap() == newIP.Unmap() {
+		return ReplaceIPResult{}, fmt.Errorf("FQDN or IP: %w", ErrInvalidInput)
+	}
+	oldIP, newIP = oldIP.Unmap(), newIP.Unmap()
+	unlock, err := c.locker.Lock(ctx, key)
+	if err != nil {
+		return ReplaceIPResult{}, fmt.Errorf("lock DNS zone: %w", err)
+	}
+	defer unlock()
+	domains, err := c.GetDomains(ctx)
+	if err != nil {
+		return ReplaceIPResult{}, fmt.Errorf("read DNS configuration: %w", err)
+	}
+	match, err := LocateZone(domains, key)
+	if err != nil {
+		return ReplaceIPResult{}, err
+	}
+	if len(match.Zone.Nodes) != 0 {
+		foundOld, foundNew := false, false
+		for _, item := range match.Zone.Nodes {
+			parsed, parseErr := netip.ParseAddr(strings.TrimSpace(item.IP))
+			if parseErr != nil {
+				return ReplaceIPResult{}, invalidResponse("zone contains an invalid advanced-node IP")
+			}
+			switch parsed.Unmap() {
+			case oldIP:
+				foundOld = true
+			case newIP:
+				foundNew = true
+			}
+		}
+		if !foundOld {
+			if foundNew {
+				return ReplaceIPResult{FQDN: match.FQDN, Nodes: append([]ZoneNode(nil), match.Zone.Nodes...)}, nil
+			}
+			return ReplaceIPResult{}, fmt.Errorf("old IP is absent: %w", ErrNotFound)
+		}
+		complete := make([]ZoneNode, 0, len(match.Zone.Nodes))
+		for _, item := range match.Zone.Nodes {
+			parsed, _ := netip.ParseAddr(strings.TrimSpace(item.IP))
+			if parsed.Unmap() == oldIP {
+				if foundNew {
+					continue
+				}
+				item.IP = newIP.String()
+			}
+			complete = append(complete, item)
+		}
+		var response statusResponse
+		if err := c.doJSON(ctx, http.MethodPatch, c.zoneEndpoint(match.Domain, match.ZoneName), patchZoneRequest{Nodes: complete}, http.StatusOK, &response); err != nil {
+			return ReplaceIPResult{}, err
+		}
+		if response.Status == nil || *response.Status != "ok" {
+			return ReplaceIPResult{}, invalidResponse("PATCH status is missing or not ok")
+		}
+		return ReplaceIPResult{FQDN: match.FQDN, Changed: true, Nodes: complete}, nil
+	}
+	complete := make([]string, 0, len(match.Zone.IPs))
+	foundOld, foundNew := false, false
+	for _, value := range match.Zone.IPs {
+		parsed, parseErr := netip.ParseAddr(strings.TrimSpace(value))
+		if parseErr != nil {
+			return ReplaceIPResult{}, invalidResponse("zone contains an invalid IP")
+		}
+		switch parsed.Unmap() {
+		case oldIP:
+			foundOld = true
+		case newIP:
+			foundNew = true
+			complete = append(complete, newIP.String())
+		default:
+			complete = append(complete, parsed.Unmap().String())
+		}
+	}
+	if !foundOld {
+		if foundNew {
+			return ReplaceIPResult{FQDN: match.FQDN, IPs: complete}, nil
+		}
+		return ReplaceIPResult{}, fmt.Errorf("old IP is absent: %w", ErrNotFound)
+	}
+	if !foundNew {
+		complete = append(complete, newIP.String())
+	}
+	var response statusResponse
+	if err := c.doJSON(ctx, http.MethodPatch, c.zoneEndpoint(match.Domain, match.ZoneName), patchZoneRequest{IPs: complete}, http.StatusOK, &response); err != nil {
+		return ReplaceIPResult{}, err
+	}
+	if response.Status == nil || *response.Status != "ok" {
+		return ReplaceIPResult{}, invalidResponse("PATCH status is missing or not ok")
+	}
+	return ReplaceIPResult{FQDN: match.FQDN, Changed: true, IPs: complete}, nil
 }
 
 func (c *Client) endpoint(path string) *url.URL {

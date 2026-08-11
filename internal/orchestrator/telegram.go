@@ -163,6 +163,18 @@ func (a *TelegramApplication) BootstrapCertificate(ctx context.Context, sni stri
 	return a.service.BootstrapCertificate(ctx, sni, operatorUserID)
 }
 
+func (a *TelegramApplication) FindNodeForIPChange(ctx context.Context, query string) (telegram.NodeIPChangeTarget, error) {
+	target, err := a.service.FindNodeForIPChange(ctx, query)
+	if err != nil {
+		return telegram.NodeIPChangeTarget{}, err
+	}
+	return telegram.NodeIPChangeTarget{UUID: target.UUID, Name: target.Name, Address: target.Address, Connected: target.Connected, DNSZones: target.DNSZones, IsManaged: target.Managed}, nil
+}
+
+func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, input telegram.NodeIPChangeInput) (string, error) {
+	return a.service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
+}
+
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {
 	nodes, err := a.service.remnawave.GetNodes(ctx)
 	if err != nil {
