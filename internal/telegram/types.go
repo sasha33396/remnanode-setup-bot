@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	MenuAddNode     = "➕ Add Node"
-	MenuNodes       = "📡 Nodes"
-	MenuDeployments = "📜 Deployments"
+	MenuAddNode     = "➕ Добавить ноду"
+	MenuNodes       = "📡 Ноды"
+	MenuDeployments = "📜 Развёртывания"
 	MenuChangeIP    = "🔄 Сменить IP"
 )
 

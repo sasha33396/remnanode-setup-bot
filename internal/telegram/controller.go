@@ -18,6 +18,10 @@ const (
 	cancelTimeout     = 10 * time.Second
 	maxPasswordBytes  = 4096
 	maxMessageBytes   = 3900
+	nodesPageSize     = 15
+	legacyMenuAddNode = "➕ Add Node"
+	legacyMenuNodes   = "📡 Nodes"
+	legacyMenuDeploys = "📜 Deployments"
 )
 
 // Controller owns Telegram authorization, presentation and transient wizard
@@ -116,12 +120,12 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.showMainMenu(ctx, message.ChatID)
 	case "/cancel":
 		return c.cancelFromMessage(ctx, message)
-	case MenuAddNode:
+	case MenuAddNode, legacyMenuAddNode:
 		return c.beginAddNode(ctx, message)
-	case MenuNodes:
+	case MenuNodes, legacyMenuNodes:
 		c.cancelExisting(ctx, message.FromUserID)
 		return c.showNodes(ctx, message.ChatID)
-	case MenuDeployments:
+	case MenuDeployments, legacyMenuDeploys:
 		c.cancelExisting(ctx, message.FromUserID)
 		return c.showDeployments(ctx, message.ChatID)
 	case MenuChangeIP:
@@ -277,6 +281,10 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	}
 	if callback.Message == nil || callback.Message.ChatID == 0 {
 		return c.messenger.AnswerCallback(ctx, callback.ID, "This action is no longer available.")
+	}
+	if page, valid := parseNodesPageCallback(callback.Data); valid {
+		_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
+		return c.showNodesPage(ctx, callback.Message.ChatID, callback.Message.ID, page)
 	}
 	action, nonce, index, valid := parseCallbackData(callback.Data)
 	if !valid {
@@ -691,33 +699,58 @@ func (c *Controller) cancelFromCallback(ctx context.Context, callback *CallbackQ
 }
 
 func (c *Controller) showMainMenu(ctx context.Context, chatID int64) error {
-	_, err := c.messenger.SendMessage(ctx, chatID, "Choose an action:", mainKeyboard())
+	_, err := c.messenger.SendMessage(ctx, chatID, "Выберите действие:", mainKeyboard())
 	return err
 }
 
 func (c *Controller) showNodes(ctx context.Context, chatID int64) error {
+	return c.showNodesPage(ctx, chatID, 0, 0)
+}
+
+func (c *Controller) showNodesPage(ctx context.Context, chatID int64, messageID, requestedPage int) error {
 	nodes, err := c.app.ListNodes(ctx)
 	if err != nil {
-		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Nodes are temporarily unavailable.", mainKeyboard())
+		if messageID != 0 {
+			return c.messenger.EditMessage(ctx, chatID, messageID, "Ноды временно недоступны.", Keyboard{})
+		}
+		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Ноды временно недоступны.", mainKeyboard())
 		return sendErr
 	}
-	var builder strings.Builder
-	builder.WriteString("📡 Nodes\n")
-	if len(nodes) == 0 {
-		builder.WriteString("No Nodes found.")
+	totalPages := (len(nodes) + nodesPageSize - 1) / nodesPageSize
+	if totalPages == 0 {
+		totalPages = 1
 	}
-	for _, node := range nodes {
-		state := "offline"
+	page := requestedPage
+	if page < 0 {
+		page = 0
+	}
+	if page >= totalPages {
+		page = totalPages - 1
+	}
+	start := page * nodesPageSize
+	end := start + nodesPageSize
+	if end > len(nodes) {
+		end = len(nodes)
+	}
+
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "📡 Ноды — страница %d из %d\n", page+1, totalPages)
+	if len(nodes) == 0 {
+		builder.WriteString("Ноды не найдены.")
+	}
+	for _, node := range nodes[start:end] {
+		state := "не в сети"
 		if node.Connected {
-			state = "connected"
+			state = "подключена"
 		}
 		fmt.Fprintf(&builder, "\n• [%s] %s — %s — %s", safeLine(node.PanelName, 40), safeLine(node.Name, 60), safeLine(node.Address, 80), state)
-		if builder.Len() >= maxMessageBytes {
-			builder.WriteString("\n…")
-			break
-		}
 	}
-	_, err = c.messenger.SendMessage(ctx, chatID, truncateUTF8(builder.String(), maxMessageBytes), mainKeyboard())
+	keyboard := nodesPageKeyboard(page, totalPages)
+	text := truncateUTF8(builder.String(), maxMessageBytes)
+	if messageID != 0 {
+		return c.messenger.EditMessage(ctx, chatID, messageID, text, keyboard)
+	}
+	_, err = c.messenger.SendMessage(ctx, chatID, text, keyboard)
 	return err
 }
 
@@ -909,6 +942,20 @@ func mainKeyboard() Keyboard {
 	return Keyboard{Reply: [][]string{{MenuAddNode, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
 }
 
+func nodesPageKeyboard(page, totalPages int) Keyboard {
+	if totalPages <= 1 {
+		return mainKeyboard()
+	}
+	row := make([]Button, 0, 2)
+	if page > 0 {
+		row = append(row, Button{Text: "⬅️ Назад", CallbackData: fmt.Sprintf("nodes:%d", page-1)})
+	}
+	if page+1 < totalPages {
+		row = append(row, Button{Text: "Вперёд ➡️", CallbackData: fmt.Sprintf("nodes:%d", page+1)})
+	}
+	return Keyboard{Inline: [][]Button{row}}
+}
+
 func ipChangeKeyboard(nonce string) Keyboard {
 	return Keyboard{Inline: [][]Button{{
 		{Text: "🔄 Сменить", CallbackData: "ip:change:" + nonce},
@@ -936,8 +983,8 @@ func renderIPChangeTarget(target NodeIPChangeTarget) string {
 
 func confirmationKeyboard(nonce string) Keyboard {
 	return Keyboard{Inline: [][]Button{
-		{{Text: "🚀 Deploy", CallbackData: "add:deploy:" + nonce}},
-		{{Text: "❌ Cancel", CallbackData: "add:cancel:" + nonce}},
+		{{Text: "🚀 Развернуть", CallbackData: "add:deploy:" + nonce}},
+		{{Text: "❌ Отмена", CallbackData: "add:cancel:" + nonce}},
 	}}
 }
 
@@ -1044,6 +1091,15 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	default:
 		return "", "", 0, false
 	}
+}
+
+func parseNodesPageCallback(data string) (int, bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 2 || parts[0] != "nodes" {
+		return 0, false
+	}
+	page, err := strconv.Atoi(parts[1])
+	return page, err == nil && page >= 0
 }
 
 func randomNonce() (string, error) {

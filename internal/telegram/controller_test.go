@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -35,6 +36,73 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 	}
 	if got := messenger.lastAnswer().text; got != "Access denied." {
 		t.Fatalf("unauthorized callback answer = %q", got)
+	}
+}
+
+func TestTelegramButtonsUseRussianLabels(t *testing.T) {
+	menu := mainKeyboard()
+	wantReply := [][]string{{"➕ Добавить ноду", "🔄 Сменить IP"}, {"📡 Ноды", "📜 Развёртывания"}}
+	if fmt.Sprint(menu.Reply) != fmt.Sprint(wantReply) {
+		t.Fatalf("main keyboard = %#v, want %#v", menu.Reply, wantReply)
+	}
+	confirmation := confirmationKeyboard("nonce")
+	if confirmation.Inline[0][0].Text != "🚀 Развернуть" || confirmation.Inline[1][0].Text != "❌ Отмена" {
+		t.Fatalf("confirmation keyboard = %#v", confirmation)
+	}
+	pagination := nodesPageKeyboard(1, 3)
+	if pagination.Inline[0][0].Text != "⬅️ Назад" || pagination.Inline[0][1].Text != "Вперёд ➡️" {
+		t.Fatalf("pagination keyboard = %#v", pagination)
+	}
+}
+
+func TestNodesPaginationShowsEveryPanelNode(t *testing.T) {
+	nodes := make([]NodeSummary, 37)
+	for index := range nodes {
+		nodes[index] = NodeSummary{
+			PanelName: []string{"Основная", "Вторая"}[index%2],
+			Name:      fmt.Sprintf("node-%02d", index),
+			Address:   fmt.Sprintf("203.0.113.%d", index+1),
+			Connected: index%2 == 0,
+		}
+	}
+	application := &fakeApplication{nodes: nodes}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuNodes)
+	first := messenger.lastSent()
+	assertNodePage(t, first.text, 1, "[Основная] node-00", "node-14", "node-15")
+	if got := first.keyboard.Inline[0][0]; got.Text != "Вперёд ➡️" || got.CallbackData != "nodes:1" {
+		t.Fatalf("first page keyboard = %#v", first.keyboard)
+	}
+
+	handleCallback(t, controller, "nodes-page-2", "nodes:1", first.message)
+	edits := messenger.editsSnapshot()
+	second := edits[len(edits)-1]
+	assertNodePage(t, second.text, 2, "node-15", "node-29", "node-30")
+	if len(second.keyboard.Inline) != 1 || len(second.keyboard.Inline[0]) != 2 || second.keyboard.Inline[0][0].CallbackData != "nodes:0" || second.keyboard.Inline[0][1].CallbackData != "nodes:2" {
+		t.Fatalf("second page keyboard = %#v", second.keyboard)
+	}
+
+	handleCallback(t, controller, "nodes-page-3", "nodes:2", first.message)
+	edits = messenger.editsSnapshot()
+	third := edits[len(edits)-1]
+	assertNodePage(t, third.text, 3, "node-30", "node-36", "node-29")
+	if len(third.keyboard.Inline) != 1 || len(third.keyboard.Inline[0]) != 1 || third.keyboard.Inline[0][0].CallbackData != "nodes:1" {
+		t.Fatalf("third page keyboard = %#v", third.keyboard)
+	}
+	if application.listNodeCalls != 3 {
+		t.Fatalf("ListNodes calls = %d, want 3", application.listNodeCalls)
+	}
+}
+
+func assertNodePage(t *testing.T, text string, page int, first, last, excluded string) {
+	t.Helper()
+	if !strings.Contains(text, fmt.Sprintf("страница %d из 3", page)) || !strings.Contains(text, first) || !strings.Contains(text, last) {
+		t.Fatalf("page %d contents are incomplete:\n%s", page, text)
+	}
+	if strings.Contains(text, excluded) {
+		t.Fatalf("page %d unexpectedly contains %q:\n%s", page, excluded, text)
 	}
 }
 
@@ -107,7 +175,7 @@ func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
 func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
 	application := &fakeNodeIPApplication{
 		fakeApplication: &fakeApplication{panels: []Panel{{ID: "europe", Name: "Europe"}, {ID: "test", Name: "Test"}}},
-		target: NodeIPChangeTarget{PanelName: "Test", UUID: "node-uuid", Name: "legacy", Address: netip.MustParseAddr("8.8.8.8")},
+		target:          NodeIPChangeTarget{PanelName: "Test", UUID: "node-uuid", Name: "legacy", Address: netip.MustParseAddr("8.8.8.8")},
 	}
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
@@ -115,9 +183,13 @@ func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
 	picker := messenger.lastSent()
 	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, picker.message)
 	handleMessage(t, controller, 2, "legacy")
-	if application.findPanel != "test" { t.Fatalf("find panel = %q", application.findPanel) }
+	if application.findPanel != "test" {
+		t.Fatalf("find panel = %q", application.findPanel)
+	}
 	card := messenger.lastSent()
-	if !strings.Contains(card.text, "Панель: Test") { t.Fatalf("card = %q", card.text) }
+	if !strings.Contains(card.text, "Панель: Test") {
+		t.Fatalf("card = %q", card.text)
+	}
 }
 
 func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
@@ -323,6 +395,7 @@ type fakeApplication struct {
 
 	hosts           []Host
 	panels          []Panel
+	nodes           []NodeSummary
 	nameErr         error
 	addressErr      error
 	preflightResult PreflightResult
@@ -450,7 +523,7 @@ func (f *fakeApplication) ListNodes(context.Context) ([]NodeSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listNodeCalls++
-	return nil, nil
+	return append([]NodeSummary(nil), f.nodes...), nil
 }
 
 func (f *fakeApplication) ListDeployments(context.Context, int) ([]DeploymentSummary, error) {
