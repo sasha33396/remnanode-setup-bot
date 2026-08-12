@@ -5,7 +5,8 @@ Status: first implementation slice completed on `feature/multi-panel-support`
 
 Implemented in the first slice:
 
-- static `PANELS_JSON` configuration with environment-secret references;
+- static `config/panels.yml` configuration with environment-secret references
+  (`PANELS_JSON` remains a compatibility input);
 - per-panel Remnawave, optional DNS, Cloudflare/ACME, certificate store and
   certificate lock instances;
 - persisted `panel_id` ownership for deployments and certificate metadata;
@@ -23,10 +24,11 @@ certificate bootstrap recovery action.
 
 The code currently uses these concrete decisions:
 
-- `PANELS_JSON` is the multi-panel configuration entry point. Tokens are not
-  embedded in JSON; JSON contains environment-variable names whose values are
-  resolved during startup.
-- If `PANELS_JSON` is absent, the old single-panel variables are mapped to a
+- `PANELS_CONFIG_FILE` points to the readable multi-panel YAML file. Tokens are
+  not embedded in YAML; it contains environment-variable names whose values
+  are resolved during startup. `PANELS_JSON` remains a deprecated compatible
+  input, and using both sources is rejected.
+- If both multi-panel sources are absent, old single-panel variables are mapped to a
   compatibility panel with ID `default`.
 - Every configured panel currently uses central ACME DNS-01 issuance with its
   own Cloudflare token and ACME account key. Per-panel alternative issuer
@@ -379,8 +381,8 @@ different panel.
 
 Before extending the first slice, decide:
 
-1. Whether `PANELS_JSON` remains the long-term configuration or is later
-   replaced with YAML/database metadata plus secret references.
+1. Whether the current YAML configuration remains file-backed long term or is
+   later replaced with database metadata plus secret references.
 2. Which production panels have DNS balancing enabled and the endpoint/secret
    reference for each.
 3. For each panel, whether issuance remains ACME DNS-01 or changes to

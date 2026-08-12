@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type DNSMode string
@@ -97,10 +99,17 @@ func load(lookup lookupFunc) (Config, error) {
 		return value
 	}
 
+	panelsFile, hasPanelsFile := lookup("PANELS_CONFIG_FILE")
+	panelsFile = strings.TrimSpace(panelsFile)
+	hasPanelsFile = hasPanelsFile && panelsFile != ""
 	panelsJSON, hasPanelsJSON := lookup("PANELS_JSON")
 	hasPanelsJSON = hasPanelsJSON && strings.TrimSpace(panelsJSON) != ""
+	if hasPanelsFile && hasPanelsJSON {
+		validationErrors = append(validationErrors, errors.New("PANELS_CONFIG_FILE and PANELS_JSON cannot be used together"))
+	}
+	hasPanelConfig := hasPanelsFile || hasPanelsJSON
 	legacyRequired := func(name string) string {
-		if hasPanelsJSON {
+		if hasPanelConfig {
 			value, _ := lookup(name)
 			return strings.TrimSpace(value)
 		}
@@ -135,7 +144,9 @@ func load(lookup lookupFunc) (Config, error) {
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
 	}
-	if hasPanelsJSON {
+	if hasPanelsFile {
+		cfg.Panels, validationErrors = parsePanelsFile(panelsFile, lookup, cfg.CloudflareAPIToken, validationErrors)
+	} else if hasPanelsJSON {
 		cfg.Panels, validationErrors = parsePanels(panelsJSON, lookup, cfg.CloudflareAPIToken, validationErrors)
 	} else {
 		cfg.Panels = []PanelConfig{{ID: "default", Name: "Default", RemnawaveURL: cfg.RemnawaveURL, RemnawaveToken: cfg.RemnawaveToken, DNSMode: DNSModeEnabled, DNSBalancerURL: cfg.DNSBalancerURL, DNSBalancerToken: cfg.DNSBalancerToken, CloudflareAPIToken: cfg.CloudflareAPIToken}}
@@ -261,6 +272,70 @@ type dnsJSON struct {
 	TokenEnv string  `json:"token_env"`
 }
 
+type panelsYAML struct {
+	Panels []panelYAML `yaml:"panels"`
+}
+
+type panelYAML struct {
+	ID          string          `yaml:"id"`
+	Name        string          `yaml:"name"`
+	Remnawave   remnawaveYAML   `yaml:"remnawave"`
+	DNS         dnsYAML         `yaml:"dns"`
+	Certificate certificateYAML `yaml:"certificate"`
+}
+
+type remnawaveYAML struct {
+	URL      string `yaml:"url"`
+	TokenEnv string `yaml:"token_env"`
+}
+
+type dnsYAML struct {
+	Mode     DNSMode `yaml:"mode"`
+	URL      string  `yaml:"url"`
+	TokenEnv string  `yaml:"token_env"`
+}
+
+type certificateYAML struct {
+	CloudflareTokenEnv string `yaml:"cloudflare_token_env"`
+}
+
+func parsePanelsFile(path string, lookup lookupFunc, fallbackCloudflare string, validationErrors []error) ([]PanelConfig, []error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, append(validationErrors, errors.New("PANELS_CONFIG_FILE could not be opened"))
+	}
+	defer file.Close()
+	if info, statErr := file.Stat(); statErr != nil || info.Size() > 1<<20 {
+		return nil, append(validationErrors, errors.New("PANELS_CONFIG_FILE could not be read safely"))
+	}
+
+	var document panelsYAML
+	decoder := yaml.NewDecoder(io.LimitReader(file, 1<<20))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&document); err != nil || len(document.Panels) == 0 {
+		return nil, append(validationErrors, errors.New("PANELS_CONFIG_FILE must contain a non-empty valid panels list"))
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, append(validationErrors, errors.New("PANELS_CONFIG_FILE must contain exactly one YAML document"))
+	}
+	raw := make([]panelJSON, 0, len(document.Panels))
+	for _, item := range document.Panels {
+		raw = append(raw, panelJSON{
+			ID:                 item.ID,
+			Name:               item.Name,
+			RemnawaveURL:       item.Remnawave.URL,
+			RemnawaveTokenEnv:  item.Remnawave.TokenEnv,
+			CloudflareTokenEnv: item.Certificate.CloudflareTokenEnv,
+			DNS: dnsJSON{
+				Mode:     item.DNS.Mode,
+				URL:      item.DNS.URL,
+				TokenEnv: item.DNS.TokenEnv,
+			},
+		})
+	}
+	return validatePanels(raw, lookup, fallbackCloudflare, validationErrors)
+}
+
 func parsePanels(value string, lookup lookupFunc, fallbackCloudflare string, validationErrors []error) ([]PanelConfig, []error) {
 	var raw []panelJSON
 	decoder := json.NewDecoder(strings.NewReader(value))
@@ -270,6 +345,13 @@ func parsePanels(value string, lookup lookupFunc, fallbackCloudflare string, val
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, append(validationErrors, errors.New("PANELS_JSON must contain exactly one JSON array"))
+	}
+	return validatePanels(raw, lookup, fallbackCloudflare, validationErrors)
+}
+
+func validatePanels(raw []panelJSON, lookup lookupFunc, fallbackCloudflare string, validationErrors []error) ([]PanelConfig, []error) {
+	if len(raw) > 32 {
+		return nil, append(validationErrors, errors.New("panel configuration cannot contain more than 32 panels"))
 	}
 	seen := make(map[string]struct{}, len(raw))
 	result := make([]PanelConfig, 0, len(raw))

@@ -7,13 +7,14 @@ services:
     user: "0:0"
     restart: unless-stopped
     init: true
-    # Makes token variables referenced by PANELS_JSON available to the
+    # Makes token variables referenced by the panel configuration available to the
     # deployer without hard-coding panel-specific names in this file.
     env_file:
       - .env
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:?TELEGRAM_ALLOWED_USERS is required}
+      PANELS_CONFIG_FILE: "${PANELS_CONFIG_FILE:-}"
       PANELS_JSON: "${PANELS_JSON:-}"
       REMNAWAVE_URL: ${REMNAWAVE_URL:-}
       REMNAWAVE_TOKEN: ${REMNAWAVE_TOKEN:-}
@@ -47,6 +48,7 @@ services:
       - deploy_ssh_private_key
     volumes:
       - certificate_store:/var/lib/deployer/certificates
+      - ./config:/etc/remnanode-setup-bot:ro
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
     depends_on:

@@ -1,0 +1,25 @@
+# Copy this file to config/panels.yml, edit the non-secret settings and set
+# PANELS_CONFIG_FILE=/etc/remnanode-setup-bot/panels.yml in .env.
+# Token values remain in .env; this file stores only their variable names.
+panels:
+  - id: default
+    name: Основная панель
+    remnawave:
+      url: https://panel.example.com
+      token_env: MAIN_REMNAWAVE_TOKEN
+    dns:
+      mode: enabled
+      url: http://remnawave-cloudflare-nodes:8741
+      token_env: MAIN_DNS_TOKEN
+    certificate:
+      cloudflare_token_env: MAIN_CF_TOKEN
+
+  - id: second
+    name: Вторая панель
+    remnawave:
+      url: https://panel2.example.com
+      token_env: SECOND_REMNAWAVE_TOKEN
+    dns:
+      mode: disabled
+    certificate:
+      cloudflare_token_env: SECOND_CF_TOKEN

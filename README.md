@@ -33,12 +33,15 @@ credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 central DNS-01 client and is never copied to a Node. Certificate versions and
 the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
 
-Multi-panel mode is enabled with `PANELS_JSON`; see `.env.example` for the
-schema. Each entry has a stable lowercase `id`, display `name`, Remnawave URL
-and token-environment reference, its own Cloudflare token reference, and a DNS
-configuration whose mode is `enabled` or `disabled`. Tokens stay in separate
-environment variables and are never embedded in JSON. When `PANELS_JSON` is
-empty, the legacy variables create one panel named `Default` with ID `default`.
+Multi-panel mode is configured in `config/panels.yml`. Copy
+`config/panels.yml.example`, edit the panel URLs and set
+`PANELS_CONFIG_FILE=/etc/remnanode-setup-bot/panels.yml` in `.env`. Each entry
+has a stable lowercase `id`, display `name`, Remnawave URL and token-environment
+reference, its own Cloudflare token reference, and a DNS configuration whose
+mode is `enabled` or `disabled`. Token values stay in `.env` and are never
+embedded in YAML. `PANELS_JSON` remains supported for backwards compatibility,
+but cannot be combined with the YAML file. When neither source is configured,
+the legacy variables create one panel named `Default` with ID `default`.
 
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.
@@ -114,7 +117,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.down.sq
 
 ## Run with Docker Compose
 
-After creating `.env` and the SSH key file referenced by it:
+After creating `.env`, copying `config/panels.yml.example` to
+`config/panels.yml`, and creating the SSH key file referenced by `.env`:
 
 ```sh
 docker compose up --build

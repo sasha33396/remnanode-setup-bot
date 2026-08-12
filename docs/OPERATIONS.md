@@ -20,9 +20,11 @@ reload, health validation, and rollback have been smoke-tested.
 
 Required secrets are `TELEGRAM_BOT_TOKEN`, the password in `DATABASE_URL`, the
 deployment SSH private key, and the Remnawave/Cloudflare plus optional DNS
-tokens referenced by each panel. Legacy single-panel mode uses
+tokens referenced by each panel's `config/panels.yml`. Legacy single-panel mode uses
 `REMNAWAVE_TOKEN`, `DNS_BALANCER_TOKEN`, and `CF_API_TOKEN`. Secrets must not
-appear in arguments, logs, Telegram, `PANELS_JSON`, or xray-sni `.env` files.
+appear in arguments, logs, Telegram, panel YAML, `PANELS_JSON`, or xray-sni
+`.env` files. `PANELS_JSON` is retained only for backwards compatibility and
+must not be combined with `PANELS_CONFIG_FILE`.
 
 Operational controls include deployment/distribution concurrency, HTTP/SSH/API
 timeouts, ACME propagation timeouts, renewal windows, pinned xray-sni source,
