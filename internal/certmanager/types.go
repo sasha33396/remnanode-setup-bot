@@ -207,4 +207,8 @@ func SafeMessage(err error, fallback string) string {
 	return fallback
 }
 
+// NormalizeSNI validates and canonicalizes an operator/API supplied SNI using
+// the same rules as certificate storage and issuance.
+func NormalizeSNI(value string) (string, error) { return canonicalSNI(value) }
+
 func safe(message string, kind error) error { return &safeError{message: message, kind: kind} }

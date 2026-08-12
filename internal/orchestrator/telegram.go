@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/telegram"
@@ -251,10 +252,43 @@ func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID str
 }
 
 func (a *TelegramApplication) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {
-	if len(a.order) != 1 {
-		return "", errors.New("panel selection is required for certificate bootstrap")
+	domain, err := certmanager.NormalizeSNI(sni)
+	if err != nil {
+		return "Invalid certificate SNI.", ErrInvalidInput
 	}
-	return a.panels[a.order[0]].Service.BootstrapCertificate(ctx, sni, operatorUserID)
+	if len(a.order) == 1 {
+		return a.panels[a.order[0]].Service.BootstrapCertificate(ctx, domain, operatorUserID)
+	}
+
+	matches := make([]PanelApplicationConfig, 0, 1)
+	for _, id := range a.order {
+		panel := a.panels[id]
+		hosts, listErr := panel.Service.remnawave.GetHosts(ctx)
+		if listErr != nil {
+			return "Could not safely resolve the certificate panel because Hosts are unavailable.", listErr
+		}
+		for _, host := range hosts {
+			if host.IsDisabled {
+				continue
+			}
+			profile, profileErr := remnawave.DeploymentProfileFromHost(host)
+			if profileErr != nil {
+				continue
+			}
+			hostDomain, domainErr := certmanager.NormalizeSNI(profile.SNIDomain)
+			if domainErr == nil && hostDomain == domain {
+				matches = append(matches, panel)
+				break
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return "No enabled Remnawave Host owns this SNI.", ErrHostUnavailable
+	}
+	if len(matches) > 1 {
+		return "More than one panel owns this SNI; automatic certificate panel selection is unsafe.", ErrInvalidInput
+	}
+	return matches[0].Service.BootstrapCertificate(ctx, domain, operatorUserID)
 }
 
 func (a *TelegramApplication) FindNodeForIPChange(ctx context.Context, panelID, query string) (telegram.NodeIPChangeTarget, error) {

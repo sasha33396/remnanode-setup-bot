@@ -72,6 +72,9 @@ and records each unknown DNS IP as `LEGACY_ACKNOWLEDGED` with the authorizing
 Telegram user ID. Acknowledged legacy targets are excluded from later central
 distribution until they are imported; managed target failures still block
 activation. Use this command only after comparing the DNS pool with Remnawave.
+In multi-panel mode the owning panel is resolved from enabled Remnawave Hosts
+with the same normalized SNI. Bootstrap is rejected if no panel or more than
+one panel owns the SNI; the application never guesses.
 
 IP replacement is available through the `🔄 Сменить IP` main-menu button.
 The wizard accepts an exact Remnawave Node name or current IP, shows the Node

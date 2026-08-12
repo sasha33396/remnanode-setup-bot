@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,6 +163,48 @@ func TestDeploymentServiceClassifiesCertificateIssuanceFailure(t *testing.T) {
 	}
 	if fixture.vps.provisionCalls != 0 || fixture.remnawave.createCalls != 0 || fixture.dns.addCalls != 0 {
 		t.Fatal("deployment continued after certificate issuance failure")
+	}
+}
+
+func TestMultiPanelCertificateBootstrapResolvesPanelFromHostSNI(t *testing.T) {
+	events := &eventLog{}
+	repo := newMemoryRepository()
+	mainCert := &fakeCertificateProvider{events: events, readiness: CertificateReady}
+	hordaCert := &fakeCertificateProvider{
+		events: events, readiness: CertificateReady,
+		bootstrapResult: certmanager.BootstrapResult{SNI: "direct-nl.bachidze.com", Version: "v1"},
+	}
+	newPanelService := func(panelID string, host remnawave.Host, cert *fakeCertificateProvider) *DeploymentService {
+		api := &fakeRemnawave{events: events, hosts: []remnawave.Host{host}, secret: "generated-secret"}
+		service, err := NewDeploymentService(repo, api, &fakeDNS{events: events}, cert, &fakeVPS{events: events}, Config{PanelID: panelID, MaxConcurrentDeployments: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	host := func(address string) remnawave.Host {
+		return remnawave.Host{
+			UUID: testHostUUID, Remark: address, Address: address,
+			Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID},
+		}
+	}
+	app, err := NewMultiPanelTelegramApplication([]PanelApplicationConfig{
+		{ID: "main", Name: "Main", Service: newPanelService("main", host("main.example.com"), mainCert)},
+		{ID: "horda", Name: "Horda", Service: newPanelService("horda", host("direct-nl.bachidze.com"), hordaCert)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.BootstrapCertificate(context.Background(), "DIRECT-NL.BACHIDZE.COM.", 42)
+	if err != nil {
+		t.Fatalf("BootstrapCertificate() error = %v, result = %q", err, result)
+	}
+	if mainCert.bootstrapCalls != 0 || hordaCert.bootstrapCalls != 1 {
+		t.Fatalf("bootstrap calls: main=%d horda=%d", mainCert.bootstrapCalls, hordaCert.bootstrapCalls)
+	}
+	if !strings.Contains(result, "direct-nl.bachidze.com") {
+		t.Fatalf("bootstrap result = %q", result)
 	}
 }
 
@@ -730,10 +773,13 @@ func (f *fakeVPS) Provision(ctx context.Context, input ProvisionVPSInput, progre
 }
 
 type fakeCertificateProvider struct {
-	events    *eventLog
-	readiness CertificateReadiness
-	material  certificates.Material
-	err       error
+	events          *eventLog
+	readiness       CertificateReadiness
+	material        certificates.Material
+	err             error
+	bootstrapResult certmanager.BootstrapResult
+	bootstrapErr    error
+	bootstrapCalls  int
 }
 
 func (f *fakeCertificateProvider) Readiness(context.Context, string) (CertificateReadiness, error) {
@@ -743,6 +789,11 @@ func (f *fakeCertificateProvider) Readiness(context.Context, string) (Certificat
 func (f *fakeCertificateProvider) Prepare(context.Context, string) (certificates.Material, error) {
 	f.events.add("certificate.prepare")
 	return f.material.Clone(), f.err
+}
+
+func (f *fakeCertificateProvider) Bootstrap(context.Context, string, int64) (certmanager.BootstrapResult, error) {
+	f.bootstrapCalls++
+	return f.bootstrapResult, f.bootstrapErr
 }
 
 type fakeDNS struct {
