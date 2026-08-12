@@ -2,7 +2,9 @@ package certmanager
 
 import (
 	"context"
+	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,51 @@ func TestScopedRepositoryNeverDropsPanelContext(t *testing.T) {
 		t.Fatalf("panel calls = %v", backend.panels)
 	}
 }
+
+func TestScopedLockerUsesPostgreSQLSafeUnambiguousKey(t *testing.T) {
+	backend := &recordingLocker{}
+	locker, err := NewScopedLocker("horda", backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := locker.Lock(context.Background(), "direct-nl.bachidze.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	if strings.ContainsRune(backend.key, '\x00') {
+		t.Fatalf("scoped lock key contains PostgreSQL-invalid NUL: %q", backend.key)
+	}
+	if got, want := backend.key, "5:horda:direct-nl.bachidze.com"; got != want {
+		t.Fatalf("scoped lock key = %q, want %q", got, want)
+	}
+}
+
+func TestManagerReportsSafeLockFailure(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	fixture.manager.locker = failingLocker{err: errors.New("protected database detail")}
+	_, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if !errors.Is(err, ErrPersistenceFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrPersistenceFailed", err)
+	}
+	if got, want := SafeMessage(err, "fallback"), "Certificate issuance lock is unavailable"; got != want {
+		t.Fatalf("safe message = %q, want %q", got, want)
+	}
+	if strings.Contains(err.Error(), "protected database detail") {
+		t.Fatalf("lock error leaked protected detail: %q", err)
+	}
+}
+
+type recordingLocker struct{ key string }
+
+func (l *recordingLocker) Lock(_ context.Context, key string) (func(), error) {
+	l.key = key
+	return func() {}, nil
+}
+
+type failingLocker struct{ err error }
+
+func (l failingLocker) Lock(context.Context, string) (func(), error) { return nil, l.err }
 
 type recordingPanelRepository struct{ panels []string }
 

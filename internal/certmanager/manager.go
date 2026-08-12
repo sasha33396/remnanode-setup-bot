@@ -79,7 +79,10 @@ func (m *Manager) Prepare(ctx context.Context, sni string) (certificates.Materia
 	}
 	unlock, err := m.locker.Lock(ctx, domain)
 	if err != nil {
-		return certificates.Material{}, err
+		if ctx.Err() != nil {
+			return certificates.Material{}, ctx.Err()
+		}
+		return certificates.Material{}, safe("Certificate issuance lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
 
@@ -116,7 +119,10 @@ func (m *Manager) Renew(ctx context.Context, sni string) error {
 	}
 	unlock, err := m.locker.Lock(ctx, domain)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return safe("Certificate renewal lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
 	var previous *Record
@@ -228,7 +234,10 @@ func (m *Manager) Rollback(ctx context.Context, sni, version string) error {
 	}
 	unlock, err := m.locker.Lock(ctx, domain)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return safe("Certificate rollback lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
 	versions, err := m.repository.ListVersions(ctx, domain)

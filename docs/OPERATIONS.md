@@ -138,6 +138,9 @@ Do not run destructive down migrations merely to roll back an application image.
   safe phase-specific message and, when Cloudflare supplies one, only its
   numeric error code; Cloudflare response messages are not persisted because
   they are not controlled by this application.
+- `Certificate issuance lock is unavailable`: check PostgreSQL connectivity
+  and advisory-lock availability. Panel-scoped lock keys are length-prefixed
+  text and must never contain NUL bytes.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni
   revision, certificate modes, `snisite`, Caddy config, and local `9443/health`.
 - `DNS_FAILED`: recheck Remnawave, inspect DNS-balancer, then use `/retry_dns`;
