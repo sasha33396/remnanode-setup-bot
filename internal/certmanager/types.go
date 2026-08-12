@@ -195,4 +195,16 @@ type safeError struct {
 func (e *safeError) Error() string { return e.message }
 func (e *safeError) Unwrap() error { return e.kind }
 
+// SafeMessage returns an operator-facing message only for errors deliberately
+// constructed by this package. It never falls back to err.Error(), because an
+// arbitrary issuer, storage or transport implementation may include secrets in
+// its error text.
+func SafeMessage(err error, fallback string) string {
+	var safeErr *safeError
+	if errors.As(err, &safeErr) && safeErr.message != "" {
+		return safeErr.message
+	}
+	return fallback
+}
+
 func safe(message string, kind error) error { return &safeError{message: message, kind: kind} }

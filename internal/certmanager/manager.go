@@ -281,7 +281,7 @@ func (m *Manager) issueAndActivate(ctx context.Context, domain string, previous 
 	defer cancel()
 	material, err := m.issuer.Issue(issueCtx, domain)
 	if err != nil {
-		return certificates.Material{}, safe("Certificate issuance failed", ErrIssuanceFailed)
+		return certificates.Material{}, safe(SafeMessage(err, "Certificate issuance failed"), ErrIssuanceFailed)
 	}
 	valid := false
 	defer func() {

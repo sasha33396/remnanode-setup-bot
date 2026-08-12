@@ -48,18 +48,24 @@ func (c *CloudflareDNS) Present(ctx context.Context, fqdn, value string) (func(c
 	}
 	zoneID, err := c.findZone(ctx, name)
 	if err != nil {
-		return nil, ErrIssuanceFailed
+		return nil, safe(SafeMessage(err, "Cloudflare DNS zone could not be resolved"), ErrIssuanceFailed)
 	}
 	var response cloudflareResponse[cloudflareRecord]
 	err = c.call(ctx, http.MethodPost, "zones/"+url.PathEscape(zoneID)+"/dns_records", map[string]any{"type": "TXT", "name": name, "content": value, "ttl": 60}, &response)
-	if err != nil || !response.Success || response.Result.ID == "" {
-		return nil, ErrIssuanceFailed
+	if err != nil {
+		return nil, safe(SafeMessage(err, "Cloudflare DNS challenge record could not be created"), ErrIssuanceFailed)
+	}
+	if !response.Success || response.Result.ID == "" {
+		return nil, cloudflareRejected("Cloudflare rejected the DNS challenge record", response.Errors)
 	}
 	recordID := response.Result.ID
 	return func(cleanupCtx context.Context) error {
 		var deleted cloudflareResponse[json.RawMessage]
-		if err := c.call(cleanupCtx, http.MethodDelete, "zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, &deleted); err != nil || !deleted.Success {
-			return ErrIssuanceFailed
+		if err := c.call(cleanupCtx, http.MethodDelete, "zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, &deleted); err != nil {
+			return safe(SafeMessage(err, "Cloudflare DNS challenge record could not be removed"), ErrIssuanceFailed)
+		}
+		if !deleted.Success {
+			return cloudflareRejected("Cloudflare rejected DNS challenge cleanup", deleted.Errors)
 		}
 		return nil
 	}, nil
@@ -81,7 +87,7 @@ func (c *CloudflareDNS) WaitPropagation(ctx context.Context, fqdn, value string)
 		}
 		select {
 		case <-waitCtx.Done():
-			return ErrIssuanceFailed
+			return safe("ACME DNS challenge record did not propagate before timeout", ErrIssuanceFailed)
 		case <-ticker.C:
 		}
 	}
@@ -96,11 +102,14 @@ func (c *CloudflareDNS) findZone(ctx context.Context, fqdn string) (string, erro
 		if err := c.call(ctx, http.MethodGet, "zones?"+query.Encode(), nil, &response); err != nil {
 			return "", err
 		}
+		if !response.Success {
+			return "", cloudflareRejected("Cloudflare rejected DNS zone lookup", response.Errors)
+		}
 		if response.Success && len(response.Result) == 1 && response.Result[0].ID != "" {
 			return response.Result[0].ID, nil
 		}
 	}
-	return "", ErrNotFound
+	return "", safe("Cloudflare DNS zone was not found for the SNI", ErrNotFound)
 }
 
 func (c *CloudflareDNS) call(ctx context.Context, method, path string, body any, target any) error {
@@ -127,11 +136,20 @@ func (c *CloudflareDNS) call(ctx context.Context, method, path string, body any,
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return ErrIssuanceFailed
+		return safe("Cloudflare API request failed", ErrIssuanceFailed)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Cloudflare API returned HTTP %d: %w", response.StatusCode, ErrIssuanceFailed)
+		switch response.StatusCode {
+		case http.StatusUnauthorized:
+			return safe("Cloudflare API authentication failed (HTTP 401)", ErrIssuanceFailed)
+		case http.StatusForbidden:
+			return safe("Cloudflare API token lacks DNS permissions (HTTP 403)", ErrIssuanceFailed)
+		case http.StatusTooManyRequests:
+			return safe("Cloudflare API rate limit was reached (HTTP 429)", ErrIssuanceFailed)
+		default:
+			return safe(fmt.Sprintf("Cloudflare API request failed (HTTP %d)", response.StatusCode), ErrIssuanceFailed)
+		}
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxCloudflareResponse))
 	if err := decoder.Decode(target); err != nil {
@@ -158,6 +176,18 @@ func canonicalChallengeName(value string) (string, error) {
 type cloudflareResponse[T any] struct {
 	Success bool `json:"success"`
 	Result  T    `json:"result"`
+	Errors  []cloudflareProblem `json:"errors"`
+}
+
+type cloudflareProblem struct {
+	Code int `json:"code"`
+}
+
+func cloudflareRejected(message string, problems []cloudflareProblem) error {
+	if len(problems) > 0 && problems[0].Code > 0 {
+		message = fmt.Sprintf("%s (code %d)", message, problems[0].Code)
+	}
+	return safe(message, ErrIssuanceFailed)
 }
 
 type cloudflareZone struct {

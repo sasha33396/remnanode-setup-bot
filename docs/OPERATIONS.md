@@ -134,7 +134,10 @@ Do not run destructive down migrations merely to roll back an application image.
 
 - `readyz` is 503: check PostgreSQL and migrations `000001`–`000006`.
 - ACME fails: check email, directory, Cloudflare scope, zone discovery, TXT
-  propagation, CAA, and clock.
+  propagation, CAA, and clock. The failed `prepare_certificate` step records a
+  safe phase-specific message and, when Cloudflare supplies one, only its
+  numeric error code; Cloudflare response messages are not persisted because
+  they are not controlled by this application.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni
   revision, certificate modes, `snisite`, Caddy config, and local `9443/health`.
 - `DNS_FAILED`: recheck Remnawave, inspect DNS-balancer, then use `/retry_dns`;

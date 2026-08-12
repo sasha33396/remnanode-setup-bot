@@ -59,6 +59,18 @@ func TestManagerInitialIssuance(t *testing.T) {
 	}
 }
 
+func TestManagerPreservesSafeIssuanceReason(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	fixture.issuer.issueErr = safe("Cloudflare API authentication failed (HTTP 401)", ErrIssuanceFailed)
+	_, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if !errors.Is(err, ErrIssuanceFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrIssuanceFailed", err)
+	}
+	if got, want := SafeMessage(err, "fallback"), "Cloudflare API authentication failed (HTTP 401)"; got != want {
+		t.Fatalf("safe message = %q, want %q", got, want)
+	}
+}
+
 func TestManagerConcurrentIssuanceRequest(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
 	fixture.issuer.started = make(chan struct{})
@@ -219,6 +231,7 @@ type fakeIssuer struct {
 	calls     atomic.Int64
 	started   chan struct{}
 	release   chan struct{}
+	issueErr  error
 }
 
 func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material, error) {
@@ -235,6 +248,9 @@ func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.issueErr != nil {
+		return certificates.Material{}, i.issueErr
+	}
 	if call > len(i.materials) {
 		return certificates.Material{}, errors.New("unexpected issuance")
 	}

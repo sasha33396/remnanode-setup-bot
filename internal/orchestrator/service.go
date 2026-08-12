@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/provisioner"
 	"remnanode-setup-bot/internal/remnawave"
@@ -294,7 +295,19 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		return ctx.Err()
 	}
 	if err != nil {
-		return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "CERTIFICATE_UNAVAILABLE", "Certificate is not ready", ErrCertificateUnavailable)
+		code := "CERTIFICATE_UNAVAILABLE"
+		switch {
+		case errors.Is(err, certmanager.ErrIssuanceFailed):
+			code = "CERTIFICATE_ISSUANCE_FAILED"
+		case errors.Is(err, certmanager.ErrDistributionFailed):
+			code = "CERTIFICATE_DISTRIBUTION_FAILED"
+		case errors.Is(err, certmanager.ErrStorageFailed):
+			code = "CERTIFICATE_STORAGE_FAILED"
+		case errors.Is(err, certmanager.ErrPersistenceFailed):
+			code = "CERTIFICATE_PERSISTENCE_FAILED"
+		}
+		message := certmanager.SafeMessage(err, "Certificate is not ready")
+		return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, code, message, ErrCertificateUnavailable)
 	}
 	defer material.Destroy()
 	if current.Status != deployment.StatusProvisioning {

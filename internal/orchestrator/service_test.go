@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"remnanode-setup-bot/internal/certificates"
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/provisioner"
@@ -141,6 +142,26 @@ func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.
 	}
 	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "VPS provisioning failed" {
 		t.Fatalf("safe error = %#v", stored.SafeErrorMessage)
+	}
+}
+
+func TestDeploymentServiceClassifiesCertificateIssuanceFailure(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.cert.err = certmanager.ErrIssuanceFailed
+	prepared := fixture.prepare(t, "node-cert-fail", "8.8.4.4")
+	err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil)
+	if !errors.Is(err, ErrCertificateUnavailable) {
+		t.Fatalf("Deploy() error = %v, want ErrCertificateUnavailable", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.SafeErrorCode == nil || *stored.SafeErrorCode != "CERTIFICATE_ISSUANCE_FAILED" {
+		t.Fatalf("safe error code = %#v", stored.SafeErrorCode)
+	}
+	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "Certificate is not ready" {
+		t.Fatalf("safe error message = %#v", stored.SafeErrorMessage)
+	}
+	if fixture.vps.provisionCalls != 0 || fixture.remnawave.createCalls != 0 || fixture.dns.addCalls != 0 {
+		t.Fatal("deployment continued after certificate issuance failure")
 	}
 }
 
