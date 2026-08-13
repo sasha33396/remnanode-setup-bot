@@ -75,6 +75,35 @@ func TestTOFUDoesNotCommitFailedConnectionCandidate(t *testing.T) {
 	}
 }
 
+func TestHostKeySessionAcceptedOnlyAfterMatchingKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryHostKeyStore()
+	trustedKey := generatePublicKey(t)
+	trusted := newHostKeySession(ctx, "deployment-1", store)
+	if err := trusted.callback("host", nil, trustedKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := trusted.commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	rejected := newHostKeySession(ctx, "deployment-1", store)
+	if err := rejected.callback("host", nil, generatePublicKey(t)); !errors.Is(err, ErrHostKeyChanged) {
+		t.Fatalf("rejected callback error = %v, want ErrHostKeyChanged", err)
+	}
+	if rejected.accepted() {
+		t.Fatal("rejected host key was marked accepted")
+	}
+
+	matched := newHostKeySession(ctx, "deployment-1", store)
+	if err := matched.callback("host", nil, trustedKey); err != nil {
+		t.Fatal(err)
+	}
+	if !matched.accepted() {
+		t.Fatal("matching host key was not marked accepted")
+	}
+}
+
 func generatePublicKey(t *testing.T) gossh.PublicKey {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)

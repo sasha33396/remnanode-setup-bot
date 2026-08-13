@@ -102,6 +102,15 @@ func (s *hostKeySession) callback(_ string, _ net.Addr, key gossh.PublicKey) err
 	return nil
 }
 
+// accepted reports whether the server presented the already trusted key (or a
+// provisional TOFU candidate). It lets the client distinguish an
+// authentication failure from a rejected/unsupported host-key attempt.
+func (s *hostKeySession) accepted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.candidate != ""
+}
+
 func (s *hostKeySession) commit() error {
 	s.mu.Lock()
 	candidate := s.candidate
