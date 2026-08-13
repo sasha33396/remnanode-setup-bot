@@ -146,6 +146,20 @@ func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.
 	}
 }
 
+func TestDeploymentServicePreservesOnlyTrustedProvisioningPhase(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.vps.provisionErr = provisioningPhase("xray-sni adapter could not be initialized")
+	prepared := fixture.prepare(t, "phase-failure", "1.1.1.2")
+	err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil)
+	if !errors.Is(err, ErrProvisioningFailed) {
+		t.Fatalf("Deploy() error = %v, want ErrProvisioningFailed", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "xray-sni adapter could not be initialized" {
+		t.Fatalf("safe provisioning message = %#v", stored.SafeErrorMessage)
+	}
+}
+
 func TestDeploymentServiceClassifiesCertificateIssuanceFailure(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.cert.err = certmanager.ErrIssuanceFailed

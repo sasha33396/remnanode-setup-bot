@@ -152,6 +152,10 @@ Do not run destructive down migrations merely to roll back an application image.
   and the selected deployment's persisted `panel_id`.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni
   revision, certificate modes, `snisite`, Caddy config, and local `9443/health`.
+- A provisioning failure before stage logs now identifies only its safe phase:
+  deployment-key SSH, provisioner configuration, xray-sni adapter, stage
+  construction, or engine initialization. Protected underlying output remains
+  excluded.
 - `DNS_FAILED`: recheck Remnawave, inspect DNS-balancer, then use `/retry_dns`;
   never delete the healthy Node as cleanup.
 - `MANUAL_REVIEW`: compare safe steps with Remnawave/DNS. Do not guess by editing

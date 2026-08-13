@@ -345,7 +345,7 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		return ctx.Err()
 	}
 	if err != nil {
-		return s.failStage(ctx, current.ID, stepProvisioning, deployment.StatusFailed, "PROVISIONING_FAILED", "VPS provisioning failed", ErrProvisioningFailed)
+		return s.failStage(ctx, current.ID, stepProvisioning, deployment.StatusFailed, "PROVISIONING_FAILED", safeProvisioningMessage(err), ErrProvisioningFailed)
 	}
 	if err := s.completeStage(ctx, current.ID, stepProvisioning, "VPS provisioning completed"); err != nil {
 		return err
