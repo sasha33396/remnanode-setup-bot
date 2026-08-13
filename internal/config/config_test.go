@@ -44,6 +44,7 @@ func TestLoadMultiplePanelsFromYAMLFile(t *testing.T) {
     remnawave:
       url: https://main-panel.example
       token_env: MAIN_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.20
     dns:
       mode: enabled
       url: https://main-dns.example
@@ -55,6 +56,7 @@ func TestLoadMultiplePanelsFromYAMLFile(t *testing.T) {
     remnawave:
       url: https://second-panel.example
       token_env: SECOND_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.30
     dns:
       mode: disabled
     certificate:
@@ -74,6 +76,12 @@ func TestLoadMultiplePanelsFromYAMLFile(t *testing.T) {
 	}
 	if cfg.Panels[0].DNSBalancerToken != values["MAIN_DNS_TOKEN"] || cfg.Panels[1].CloudflareAPIToken != values["SECOND_CF_TOKEN"] {
 		t.Fatal("YAML panel secret references were not resolved")
+	}
+	if got, want := cfg.Panels[0].RemnawaveAPIIP.String(), "192.0.2.20"; got != want {
+		t.Fatalf("main panel Remnawave API IP = %q, want %q", got, want)
+	}
+	if got, want := cfg.Panels[1].RemnawaveAPIIP.String(), "192.0.2.30"; got != want {
+		t.Fatalf("second panel Remnawave API IP = %q, want %q", got, want)
 	}
 }
 
@@ -96,8 +104,8 @@ func TestLoadMultiplePanelsWithIndependentDNS(t *testing.T) {
 	values["EU_DNS_TOKEN"] = "eu-dns-secret"
 	values["TEST_REMNAWAVE_TOKEN"] = "test-remnawave-secret"
 	values["PANELS_JSON"] = `[
-		{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","dns":{"mode":"enabled","url":"https://eu-dns.example","token_env":"EU_DNS_TOKEN"}},
-		{"id":"test","name":"Test","remnawave_url":"https://test-panel.example","remnawave_token_env":"TEST_REMNAWAVE_TOKEN","dns":{"mode":"disabled"}}
+		{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","remnawave_api_ip":"192.0.2.40","dns":{"mode":"enabled","url":"https://eu-dns.example","token_env":"EU_DNS_TOKEN"}},
+		{"id":"test","name":"Test","remnawave_url":"https://test-panel.example","remnawave_token_env":"TEST_REMNAWAVE_TOKEN","remnawave_api_ip":"192.0.2.50","dns":{"mode":"disabled"}}
 	]`
 	cfg, err := load(mapLookup(values))
 	if err != nil {
@@ -109,8 +117,24 @@ func TestLoadMultiplePanelsWithIndependentDNS(t *testing.T) {
 	if cfg.Panels[0].RemnawaveToken != values["EU_REMNAWAVE_TOKEN"] || cfg.Panels[0].DNSBalancerToken != values["EU_DNS_TOKEN"] {
 		t.Fatal("panel secret references were not resolved")
 	}
+	if got, want := cfg.Panels[0].RemnawaveAPIIP.String(), "192.0.2.40"; got != want {
+		t.Fatalf("Europe Remnawave API IP = %q, want %q", got, want)
+	}
+	if got, want := cfg.Panels[1].RemnawaveAPIIP.String(), "192.0.2.50"; got != want {
+		t.Fatalf("Test Remnawave API IP = %q, want %q", got, want)
+	}
 }
 
+func TestLoadRejectsPanelWithoutRemnawaveAPIIP(t *testing.T) {
+	values := validValues()
+	values["EU_REMNAWAVE_TOKEN"] = "eu-remnawave-secret"
+	values["PANELS_JSON"] = `[{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","dns":{"mode":"disabled"},"cloudflare_token_env":"CF_API_TOKEN"}]`
+
+	_, err := load(mapLookup(values))
+	if err == nil || !strings.Contains(err.Error(), "panel europe Remnawave API IP") {
+		t.Fatalf("load() error = %v, want panel API IP validation error", err)
+	}
+}
 func TestLoadXraySNIConfiguration(t *testing.T) {
 	values := validValues()
 	values["XRAY_SNI_REPO_URL"] = "https://git.example.com/xray-sni.git"

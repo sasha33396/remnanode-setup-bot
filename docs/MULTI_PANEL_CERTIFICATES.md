@@ -123,6 +123,7 @@ panels:
     name: Europe
     remnawave:
       url: https://panel-europe.example
+      api_ip: 192.0.2.10
       token_secret: remnawave_europe_token
     dns:
       mode: enabled
@@ -137,6 +138,7 @@ panels:
     name: Test
     remnawave:
       url: https://panel-test.example
+      api_ip: 192.0.2.20
       token_secret: remnawave_test_token
     dns:
       mode: disabled

@@ -21,8 +21,8 @@ private key is supplied as a read-only Compose secret; set
 or the `secrets/` directory.
 
 `TELEGRAM_ALLOWED_USERS` accepts comma-, semicolon-, or space-separated positive
-Telegram user IDs. `REMNA_API_IP` and `METRICS_IP` must be literal IPv4 or IPv6
-addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
+Telegram user IDs. Each panel's `remnawave.api_ip` and the global `METRICS_IP`
+must be literal IPv4 or IPv6 addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
 PostgreSQL URL.
 
 `XRAY_SNI_REPO_URL` defaults to the external-certificate fork and must be a
@@ -36,12 +36,12 @@ the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
 Multi-panel mode is configured in `config/panels.yml`. Copy
 `config/panels.yml.example`, edit the panel URLs and set
 `PANELS_CONFIG_FILE=/etc/remnanode-setup-bot/panels.yml` in `.env`. Each entry
-has a stable lowercase `id`, display `name`, Remnawave URL and token-environment
+has a stable lowercase `id`, display `name`, Remnawave URL, API IP and token-environment
 reference, its own Cloudflare token reference, and a DNS configuration whose
 mode is `enabled` or `disabled`. Token values stay in `.env` and are never
 embedded in YAML. `PANELS_JSON` remains supported for backwards compatibility,
 but cannot be combined with the YAML file. When neither source is configured,
-the legacy variables create one panel named `Default` with ID `default`.
+the legacy variables, including `REMNA_API_IP`, create one panel named `Default` with ID `default`.
 
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.

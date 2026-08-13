@@ -81,15 +81,16 @@ func run() int {
 		logger.Error("certificate distributor initialization failed")
 		return 1
 	}
-	vps, err := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: cfg.RemnaAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout})
-	if err != nil {
-		logger.Error("VPS provisioner initialization failed")
-		return 1
-	}
+
 	certificateManagers := make([]*certmanager.Manager, 0, len(cfg.Panels))
 	panelApplications := make([]orchestrator.PanelApplicationConfig, 0, len(cfg.Panels))
 	recoveredJobs := 0
 	for _, panel := range cfg.Panels {
+		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout})
+		if provisionerErr != nil {
+			logger.Error("VPS provisioner initialization failed", slog.String("panel_id", panel.ID))
+			return 1
+		}
 		remnawaveClient, clientErr := remnawave.NewClient(panel.RemnawaveURL, panel.RemnawaveToken, cfg.HTTPTimeout)
 		if clientErr != nil {
 			logger.Error("Remnawave client initialization failed", slog.String("panel_id", panel.ID))

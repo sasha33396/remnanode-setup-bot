@@ -24,7 +24,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
       ACME_DIRECTORY_URL: ${ACME_DIRECTORY_URL:-https://acme-v02.api.letsencrypt.org/directory}
       CERTIFICATE_STORE_PATH: /var/lib/deployer/certificates
-      REMNA_API_IP: ${REMNA_API_IP:?REMNA_API_IP is required}
+      REMNA_API_IP: ${REMNA_API_IP:-}
       METRICS_IP: ${METRICS_IP:?METRICS_IP is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DEPLOY_SSH_PRIVATE_KEY: /run/secrets/deploy_ssh_private_key

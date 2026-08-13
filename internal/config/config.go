@@ -31,6 +31,7 @@ type PanelConfig struct {
 	Name               string
 	RemnawaveURL       string
 	RemnawaveToken     string
+	RemnawaveAPIIP     netip.Addr
 	DNSMode            DNSMode
 	DNSBalancerURL     string
 	DNSBalancerToken   string
@@ -144,12 +145,16 @@ func load(lookup lookupFunc) (Config, error) {
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
 	}
+	remnaAPIIP := legacyRequired("REMNA_API_IP")
+	if remnaAPIIP != "" {
+		cfg.RemnaAPIIP, validationErrors = parseIP("REMNA_API_IP", remnaAPIIP, validationErrors)
+	}
 	if hasPanelsFile {
 		cfg.Panels, validationErrors = parsePanelsFile(panelsFile, lookup, cfg.CloudflareAPIToken, validationErrors)
 	} else if hasPanelsJSON {
 		cfg.Panels, validationErrors = parsePanels(panelsJSON, lookup, cfg.CloudflareAPIToken, validationErrors)
 	} else {
-		cfg.Panels = []PanelConfig{{ID: "default", Name: "Default", RemnawaveURL: cfg.RemnawaveURL, RemnawaveToken: cfg.RemnawaveToken, DNSMode: DNSModeEnabled, DNSBalancerURL: cfg.DNSBalancerURL, DNSBalancerToken: cfg.DNSBalancerToken, CloudflareAPIToken: cfg.CloudflareAPIToken}}
+		cfg.Panels = []PanelConfig{{ID: "default", Name: "Default", RemnawaveURL: cfg.RemnawaveURL, RemnawaveToken: cfg.RemnawaveToken, RemnawaveAPIIP: cfg.RemnaAPIIP, DNSMode: DNSModeEnabled, DNSBalancerURL: cfg.DNSBalancerURL, DNSBalancerToken: cfg.DNSBalancerToken, CloudflareAPIToken: cfg.CloudflareAPIToken}}
 	}
 
 	if value, ok := lookup("HEALTH_ADDR"); ok && strings.TrimSpace(value) != "" {
@@ -213,10 +218,6 @@ func load(lookup lookupFunc) (Config, error) {
 		cfg.TelegramAllowedUsers, validationErrors = parseAllowedUsers(allowedUsers, validationErrors)
 	}
 
-	remnaAPIIP := required("REMNA_API_IP")
-	if remnaAPIIP != "" {
-		cfg.RemnaAPIIP, validationErrors = parseIP("REMNA_API_IP", remnaAPIIP, validationErrors)
-	}
 	metricsIP := required("METRICS_IP")
 	if metricsIP != "" {
 		cfg.MetricsIP, validationErrors = parseIP("METRICS_IP", metricsIP, validationErrors)
@@ -262,6 +263,7 @@ type panelJSON struct {
 	Name               string  `json:"name"`
 	RemnawaveURL       string  `json:"remnawave_url"`
 	RemnawaveTokenEnv  string  `json:"remnawave_token_env"`
+	RemnawaveAPIIP     string  `json:"remnawave_api_ip"`
 	CloudflareTokenEnv string  `json:"cloudflare_token_env"`
 	DNS                dnsJSON `json:"dns"`
 }
@@ -287,6 +289,7 @@ type panelYAML struct {
 type remnawaveYAML struct {
 	URL      string `yaml:"url"`
 	TokenEnv string `yaml:"token_env"`
+	APIIP    string `yaml:"api_ip"`
 }
 
 type dnsYAML struct {
@@ -325,6 +328,7 @@ func parsePanelsFile(path string, lookup lookupFunc, fallbackCloudflare string, 
 			Name:               item.Name,
 			RemnawaveURL:       item.Remnawave.URL,
 			RemnawaveTokenEnv:  item.Remnawave.TokenEnv,
+			RemnawaveAPIIP:     item.Remnawave.APIIP,
 			CloudflareTokenEnv: item.Certificate.CloudflareTokenEnv,
 			DNS: dnsJSON{
 				Mode:     item.DNS.Mode,
@@ -371,6 +375,10 @@ func validatePanels(raw []panelJSON, lookup lookupFunc, fallbackCloudflare strin
 		if remnawaveToken == "" {
 			validationErrors = append(validationErrors, fmt.Errorf("panel %s Remnawave token environment variable is missing", item.ID))
 		}
+		remnawaveAPIIP, err := netip.ParseAddr(strings.TrimSpace(item.RemnawaveAPIIP))
+		if err != nil {
+			validationErrors = append(validationErrors, fmt.Errorf("panel %s Remnawave API IP must be a valid IP address", item.ID))
+		}
 		mode := item.DNS.Mode
 		if mode == "" {
 			mode = DNSModeDisabled
@@ -392,7 +400,7 @@ func validatePanels(raw []panelJSON, lookup lookupFunc, fallbackCloudflare strin
 		if cloudflareToken == "" {
 			validationErrors = append(validationErrors, fmt.Errorf("panel %s Cloudflare token environment variable is missing", item.ID))
 		}
-		result = append(result, PanelConfig{ID: item.ID, Name: item.Name, RemnawaveURL: strings.TrimSpace(item.RemnawaveURL), RemnawaveToken: remnawaveToken, DNSMode: mode, DNSBalancerURL: strings.TrimSpace(item.DNS.URL), DNSBalancerToken: dnsToken, CloudflareAPIToken: cloudflareToken})
+		result = append(result, PanelConfig{ID: item.ID, Name: item.Name, RemnawaveURL: strings.TrimSpace(item.RemnawaveURL), RemnawaveToken: remnawaveToken, RemnawaveAPIIP: remnawaveAPIIP, DNSMode: mode, DNSBalancerURL: strings.TrimSpace(item.DNS.URL), DNSBalancerToken: dnsToken, CloudflareAPIToken: cloudflareToken})
 	}
 	return result, validationErrors
 }

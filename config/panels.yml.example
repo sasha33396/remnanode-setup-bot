@@ -7,6 +7,7 @@ panels:
     remnawave:
       url: https://panel.example.com
       token_env: MAIN_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.10
     dns:
       mode: enabled
       url: http://remnawave-cloudflare-nodes:8741
@@ -19,6 +20,7 @@ panels:
     remnawave:
       url: https://panel2.example.com
       token_env: SECOND_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.20
     dns:
       mode: disabled
     certificate:
