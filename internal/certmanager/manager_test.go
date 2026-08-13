@@ -264,6 +264,19 @@ type fakeResolver struct {
 	err       error
 }
 
+func TestManagerPreservesSafeResolverFailure(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	fixture.resolver.err = safe("DNS-balancer certificate zone is unavailable", ErrDistributionFailed)
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrDistributionFailed", err)
+	}
+	if got, want := SafeMessage(err, "fallback"), "DNS-balancer certificate zone is unavailable"; got != want {
+		t.Fatalf("safe message = %q, want %q", got, want)
+	}
+}
+
 func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
 	legacyIP := netip.MustParseAddr("203.0.113.50")

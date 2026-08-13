@@ -193,7 +193,7 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 
 	resolution, err := m.resolver.Resolve(ctx, domain)
 	if err != nil {
-		return BootstrapResult{}, safe("Certificate distribution targets are unavailable", ErrDistributionFailed)
+		return BootstrapResult{}, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
 	}
 	for _, ip := range resolution.Unmanaged {
 		operator := operatorUserID
@@ -347,7 +347,7 @@ func (m *Manager) distribute(ctx context.Context, domain, version string, materi
 	}
 	resolution, err := m.resolver.Resolve(ctx, domain)
 	if err != nil {
-		return safe("Certificate distribution targets are unavailable", ErrDistributionFailed)
+		return safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
 	}
 	if len(resolution.Unmanaged) > 0 {
 		for _, ip := range resolution.Unmanaged {

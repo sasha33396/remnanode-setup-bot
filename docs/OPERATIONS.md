@@ -144,6 +144,12 @@ Do not run destructive down migrations merely to roll back an application image.
 - `Certificate issuance lock is unavailable`: check PostgreSQL connectivity
   and advisory-lock availability. Panel-scoped lock keys are length-prefixed
   text and must never contain NUL bytes.
+- `DNS-balancer certificate zone is unavailable`: verify the selected panel's
+  DNS-balancer URL/token, Docker network and exact SNI zone. The application
+  deliberately does not persist the protected upstream response.
+- `Certificate deployment inventory is unavailable` or `Certificate target
+  reviews are unavailable`: verify migration `000006`, PostgreSQL readiness
+  and the selected deployment's persisted `panel_id`.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni
   revision, certificate modes, `snisite`, Caddy config, and local `9443/health`.
 - `DNS_FAILED`: recheck Remnawave, inspect DNS-balancer, then use `/retry_dns`;

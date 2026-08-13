@@ -225,7 +225,7 @@ func (r *Repository) ListTargetReviews(ctx context.Context, sni string) ([]certm
 
 func (r *Repository) ListTargetReviewsForPanel(ctx context.Context, panelID, sni string) ([]certmanager.TargetReview, error) {
 	rows, err := r.pool.Query(ctx, `
-        SELECT sni_domain, node_ip::text, state, reason, acknowledged_by,
+        SELECT sni_domain, host(node_ip), state, reason, acknowledged_by,
                created_at, updated_at, acknowledged_at
         FROM certificate_target_reviews
         WHERE panel_id = $1 AND sni_domain = lower(btrim($2))

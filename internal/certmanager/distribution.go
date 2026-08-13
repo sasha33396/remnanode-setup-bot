@@ -57,21 +57,21 @@ func NewDNSDeploymentResolver(dns DNSConfigAPI, deployments DeploymentLookup) (*
 func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (TargetResolution, error) {
 	match, err := r.dns.FindZone(ctx, sni)
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("DNS-balancer certificate zone is unavailable", ErrDistributionFailed)
 	}
 	ipSet := make(map[netip.Addr]struct{})
 	for _, value := range match.Zone.IPs {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(value)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return TargetResolution{}, ErrDistributionFailed
+			return TargetResolution{}, safe("DNS-balancer certificate zone contains an invalid IP", ErrDistributionFailed)
 		}
 	}
 	for _, node := range match.Zone.Nodes {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(node.IP)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return TargetResolution{}, ErrDistributionFailed
+			return TargetResolution{}, safe("DNS-balancer certificate zone contains an invalid Node IP", ErrDistributionFailed)
 		}
 	}
 	if len(ipSet) == 0 {
@@ -84,7 +84,7 @@ func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (Target
 		items, err = r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
 	}
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("Certificate deployment inventory is unavailable", ErrDistributionFailed)
 	}
 	var reviews []TargetReview
 	if r.panelLookup != nil {
@@ -93,7 +93,7 @@ func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (Target
 		reviews, err = r.deployments.ListTargetReviews(ctx, sni)
 	}
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("Certificate target reviews are unavailable", ErrDistributionFailed)
 	}
 	reviewByIP := make(map[netip.Addr]TargetReviewState, len(reviews))
 	for _, review := range reviews {

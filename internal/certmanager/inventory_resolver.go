@@ -27,7 +27,7 @@ func NewInventoryResolver(panelID string, lookup PanelDeploymentLookup) (*Invent
 func (r *InventoryResolver) Resolve(ctx context.Context, sni string) (TargetResolution, error) {
 	items, err := r.lookup.FindDeploymentsByPanelSNI(ctx, r.panelID, sni, 100)
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("Certificate deployment inventory is unavailable", ErrDistributionFailed)
 	}
 	result := TargetResolution{}
 	seen := make(map[string]struct{})
