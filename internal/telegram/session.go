@@ -69,7 +69,7 @@ func (w *wizard) clone() *wizard {
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil
-	result.preflight.SafeWarnings = append([]string(nil), w.preflight.SafeWarnings...)
+	result.preflight.Warnings = append([]OperatorNotice(nil), w.preflight.Warnings...)
 	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
 	return &result
 }

@@ -115,6 +115,7 @@ func (e *Engine) RunWithProgress(ctx context.Context, deploymentID string, progr
 		if _, err := e.record(ctx, deploymentID, stage.Name(), deployment.StepStatusRunning, "started", ""); err != nil {
 			return reports, fmt.Errorf("record stage start: %w", err)
 		}
+		emitReport(progress, Report{Name: stage.Name(), Status: deployment.StepStatusRunning, Summary: "started"})
 
 		report, runErr := runStage(ctx, stage)
 		if runErr != nil {

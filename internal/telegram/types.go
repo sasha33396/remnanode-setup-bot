@@ -180,7 +180,12 @@ type PreflightResult struct {
 	DNSZone                string
 	CertificateReadiness   Readiness
 	ConfigProfileReadiness Readiness
-	SafeWarnings           []string
+	Warnings               []OperatorNotice
+}
+
+type OperatorNotice struct {
+	Code    string
+	Message string
 }
 
 // DeploymentInput contains the password retained by the transient wizard.
@@ -203,7 +208,19 @@ type Progress struct {
 	Completed   int
 	Total       int
 	SafeMessage string
+	Status      ProgressStatus
+	Code        string
 }
+
+type ProgressStatus string
+
+const (
+	ProgressRunning   ProgressStatus = "RUNNING"
+	ProgressCompleted ProgressStatus = "COMPLETED"
+	ProgressWarning   ProgressStatus = "WARNING"
+	ProgressFailed    ProgressStatus = "FAILED"
+	ProgressSkipped   ProgressStatus = "SKIPPED"
+)
 
 // Application is the only dependency from Telegram presentation code into
 // deployment behavior. Implementations may orchestrate APIs, persistence and

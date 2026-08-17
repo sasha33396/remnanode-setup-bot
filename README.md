@@ -104,6 +104,56 @@ deployment UUID and SNI from PostgreSQL, acknowledges reviewed legacy DNS
 targets, and resumes the failed certificate step without requiring commands or
 manual database queries.
 
+### Live deployment checklist and operator codes
+
+Telegram renders deployment progress as one continuously updated checklist.
+The six durable workflow stages remain visible, while the VPS provisioning
+stage expands into its component stages (`system`, `docker`, `firewall`,
+`remnanode`, exporters, `logrotate`, `xray_sni`, and `healthcheck`). The symbols
+have a strict meaning:
+
+- `⬜` has not started;
+- `🔄` is currently running;
+- `✅` completed successfully (a previously satisfied idempotent stage also
+  uses this symbol and says that it was already configured);
+- `⚠️` completed or can continue, but the operator should read the bracketed
+  warning code and parenthesized explanation;
+- `❌` is a blocking failure. The checklist keeps the failed stage, safe error
+  code, safe message, and points to the deployment card actions.
+
+Operator-facing codes are stable, contain only uppercase ASCII letters,
+digits, and hyphens, and never include secrets or raw command output. `W-...`
+means a non-blocking warning; `E-...` means deployment stopped. Persisted
+underscore error codes are displayed with an `E-` prefix and hyphens, for
+example `PROVISIONING_FAILED` becomes `E-PROVISIONING-FAILED`.
+
+Common warning codes:
+
+| Code | Meaning / action |
+| --- | --- |
+| `W-DNS-DISABLED` | DNS balancing is disabled for the selected panel; no action is required if intentional. |
+| `W-DOCKER-NOT-INSTALLED` | Docker is absent and will be installed automatically. |
+| `W-REMNANODE-EXISTS` | Existing Remnanode files or containers will be inspected and reconciled. |
+| `W-XRAY-SNI-EXISTS` | Existing Xray SNI state will be inspected and reconciled. |
+| `W-SSH-PORT-NOT-DETECTED` | SSH works, but port 22 was not visible in the listening-port inspection. |
+| `W-COMPONENT-INSPECTION-FAILED` / `W-COMPONENT-INFO-INVALID` | Existing component state could not be fully identified; watch the corresponding provisioning stage. |
+| `W-CONTAINER-INSPECTION-FAILED` | Existing Docker containers could not be fully inspected. |
+
+Common blocking error families:
+
+| Codes | Operator action |
+| --- | --- |
+| `E-PREFLIGHT-FAILED`, `E-PREFLIGHT-REJECTED`, `E-HOST-INVALID` | Check VPS reachability/requirements or select a valid Host, then start again. |
+| `E-CERTIFICATE-*` | Open the deployment card and use certificate repair or safe logs before retrying. |
+| `E-KEYGEN-FAILED`, `E-PROVISIONING-FAILED`, `E-PROVISIONING-<COMPONENT>` | Inspect the marked VPS component, open safe logs, and retry the failed provisioning step. |
+| `E-DUPLICATE-NODE`, `E-NODE-CREATE-FAILED`, `E-NODE-UUID-*` | Resolve the Remnawave Node conflict/persistence problem, then retry. |
+| `E-NODE-CONNECTION-*`, `E-NODE-WAIT-FAILED`, `E-NODE-NOT-CONNECTED` | Check Remnanode connectivity and use the Remnawave recheck action. |
+| `E-DNS-*`, `E-NODE-NOT-HEALTHY` | Keep the healthy Node, fix DNS/health, and use the dedicated DNS retry or recheck action. |
+| `E-*-PERSIST-FAILED`, `E-PERSISTENCE-*`, `E-STATE-PERSIST-FAILED`, `E-STEP-PERSIST-FAILED` | Check PostgreSQL/service health before retrying; durable state could not be safely recorded. |
+
+Unknown internal failures are deliberately collapsed to
+`E-DEPLOYMENT-FAILED`; arbitrary error strings are never sent to Telegram.
+
 ## Deployment orchestration
 
 `internal/orchestrator` implements the resumable deployment workflow from

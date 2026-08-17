@@ -73,7 +73,11 @@ func TestDeploymentCompletesWithExplicitSkippedDNSForDisabledPanel(t *testing.T)
 	if prepared.Deployment.PanelID != "test" {
 		t.Fatalf("panel ID = %q", prepared.Deployment.PanelID)
 	}
-	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+	if len(prepared.Warnings) != 1 || prepared.Warnings[0].Code != "W-DNS-DISABLED" {
+		t.Fatalf("warnings = %#v", prepared.Warnings)
+	}
+	var progress []Progress
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), func(update Progress) { progress = append(progress, update) }); err != nil {
 		t.Fatal(err)
 	}
 	if fixture.dns.addCalls != 0 {
@@ -82,6 +86,10 @@ func TestDeploymentCompletesWithExplicitSkippedDNSForDisabledPanel(t *testing.T)
 	step := fixture.repo.steps[prepared.Deployment.ID][stepAddDNS]
 	if step.Status != deployment.StepStatusSkipped {
 		t.Fatalf("DNS step = %#v", step)
+	}
+	last := progress[len(progress)-1]
+	if last.Status != deployment.StepStatusSkipped || last.Code != "W-DNS-DISABLED" {
+		t.Fatalf("last progress = %#v", last)
 	}
 }
 

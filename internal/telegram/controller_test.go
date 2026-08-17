@@ -356,7 +356,7 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 			DNSZone:                "edge.example.com",
 			CertificateReadiness:   ReadinessReady,
 			ConfigProfileReadiness: ReadinessReady,
-			SafeWarnings:           []string{"Docker will be installed"},
+			Warnings:               []OperatorNotice{{Code: "W-DOCKER-NOT-INSTALLED", Message: "Docker будет установлен автоматически"}},
 		},
 	}
 	messenger := &fakeMessenger{}
@@ -457,7 +457,7 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 			t.Fatalf("progress used another message: %#v", edit)
 		}
 	}
-	if got := edits[len(edits)-1].text; got != "✅ Deployment completed." {
+	if got := edits[len(edits)-1].text; !strings.Contains(got, "✅ Нода успешно развёрнута") || !strings.Contains(got, "Прогресс: 6/6") || !strings.Contains(got, "W-DOCKER-NOT-INSTALLED") {
 		t.Fatalf("final status = %q", got)
 	}
 }
@@ -757,10 +757,10 @@ func (f *fakeApplication) StartDeployment(_ context.Context, input DeploymentInp
 	f.deploymentInput = input
 	f.deploymentInput.Password = nil
 	f.mu.Unlock()
-	if err := progress(Progress{Step: "preflight", Completed: 1, Total: 2, SafeMessage: "Preflight complete"}); err != nil {
+	if err := progress(Progress{Step: "preflight", Completed: 1, Total: 2, SafeMessage: "Preflight complete", Status: ProgressCompleted}); err != nil {
 		return err
 	}
-	if err := progress(Progress{Step: "provisioning", Completed: 2, Total: 2, SafeMessage: "Provisioning complete"}); err != nil {
+	if err := progress(Progress{Step: "provisioning", Completed: 2, Total: 2, SafeMessage: "Provisioning complete", Status: ProgressCompleted}); err != nil {
 		return err
 	}
 	return f.deployErr

@@ -951,7 +951,8 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 		return c.expiredCallback(ctx, callback)
 	}
 	active.state = stateDeploying
-	if err := c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, renderProgress(Progress{Step: "starting", Completed: 0, Total: 0, SafeMessage: "Deployment started"}), Keyboard{}); err != nil {
+	progressView := newDeploymentProgressView(active.preflight.Warnings)
+	if err := c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{}); err != nil {
 		preparedID := active.preflight.PreparedDeploymentID
 		active.clear()
 		_ = c.app.CancelDeployment(ctx, preparedID)
@@ -972,13 +973,16 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 			Password:             active.password,
 		}
 		err := c.app.StartDeployment(ctx, input, func(progress Progress) error {
-			return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, renderProgress(progress), Keyboard{})
+			progressView.Update(progress)
+			return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
 		})
 		if err != nil {
-			_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, "❌ Deployment failed. Check the safe deployment history for details.", Keyboard{})
+			progressView.Fail(err)
+			_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
 			return
 		}
-		_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, "✅ Deployment completed.", Keyboard{})
+		progressView.Complete()
+		_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
 	}()
 	return nil
 }
@@ -1440,29 +1444,13 @@ func renderConfirmation(session *wizard) string {
 	fmt.Fprintf(&builder, "DNS zone: %s\n", dnsZone)
 	fmt.Fprintf(&builder, "Certificate: %s\n", certificate)
 	fmt.Fprintf(&builder, "Config profile: %s", readinessText(profile))
-	for _, warning := range session.preflight.SafeWarnings {
-		warning = safeLine(warning, 160)
-		if warning != "" {
-			fmt.Fprintf(&builder, "\nWarning: %s", warning)
+	for _, warning := range session.preflight.Warnings {
+		message := safeLine(warning.Message, 160)
+		if message != "" {
+			fmt.Fprintf(&builder, "\n⚠️ [%s] (%s)", normalizeWarningCode(warning.Code), message)
 		}
 	}
 	return truncateUTF8(builder.String(), maxMessageBytes)
-}
-
-func renderProgress(progress Progress) string {
-	step := safeLine(progress.Step, 80)
-	if step == "" {
-		step = "working"
-	}
-	message := safeLine(progress.SafeMessage, 180)
-	if message == "" {
-		message = "In progress"
-	}
-	header := "🚀 Deployment in progress"
-	if progress.Total > 0 && progress.Completed >= 0 && progress.Completed <= progress.Total {
-		header = fmt.Sprintf("🚀 Deployment in progress (%d/%d)", progress.Completed, progress.Total)
-	}
-	return fmt.Sprintf("%s\nStep: %s\n%s", header, step, message)
 }
 
 func readinessText(value Readiness) string {

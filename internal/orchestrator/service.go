@@ -160,7 +160,7 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	}
 	prepared := PreparedDeployment{Deployment: created, ConfigProfileReadiness: true}
 	if s.config.DNSDisabled {
-		prepared.SafeWarnings = append(prepared.SafeWarnings, "DNS balancing is disabled for this panel")
+		prepared.Warnings = append(prepared.Warnings, OperatorNotice{Code: "W-DNS-DISABLED", Message: "DNS-балансировка отключена для этой панели"})
 	} else if match, zoneErr := s.dns.FindZone(runCtx, profile.SNIDomain); zoneErr == nil {
 		prepared.DNSZone = match.FQDN
 	}
@@ -177,10 +177,40 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	}
 	for _, warning := range result.Warnings {
 		if text := safeText(warning.Message, ""); text != "" {
-			prepared.SafeWarnings = append(prepared.SafeWarnings, text)
+			prepared.Warnings = append(prepared.Warnings, OperatorNotice{Code: warningCode(warning.Code), Message: warningMessage(warning.Code, text)})
 		}
 	}
 	return prepared, nil
+}
+
+func warningMessage(code, fallback string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "DOCKER_NOT_INSTALLED":
+		return "Docker не установлен — бот установит его автоматически"
+	case "REMNANODE_EXISTS":
+		return "Обнаружены существующие файлы или контейнеры Remnanode — конфигурация будет проверена и обновлена"
+	case "XRAY_SNI_EXISTS":
+		return "Обнаружена существующая установка Xray SNI — конфигурация будет проверена и обновлена"
+	case "SSH_PORT_NOT_DETECTED":
+		return "Порт 22 не найден в списке слушающих портов, хотя SSH-соединение работает"
+	case "COMPONENT_INSPECTION_FAILED", "COMPONENT_INFO_INVALID":
+		return "Не удалось полностью определить состояние установленного компонента — этап выполнит дополнительную проверку"
+	case "CONTAINER_INSPECTION_FAILED":
+		return "Не удалось полностью проверить существующие Docker-контейнеры"
+	default:
+		return fallback
+	}
+}
+
+func warningCode(code string) string {
+	code = strings.Trim(strings.ToUpper(strings.ReplaceAll(code, "_", "-")), "-")
+	if code == "" {
+		return "W-GENERAL"
+	}
+	if strings.HasPrefix(code, "W-") {
+		return code
+	}
+	return "W-" + code
 }
 
 // Deploy resumes a prepared deployment. Completed deployments are a no-op;
@@ -285,6 +315,7 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 }
 
 func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Preparing certificate", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusPreparingCertificate, stepPrepareCertificate); err != nil {
 			return err
@@ -314,8 +345,9 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		if err := s.completeStage(ctx, current.ID, stepPrepareCertificate, "Certificate prepared"); err != nil {
 			return err
 		}
-		emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Certificate prepared"})
 	}
+	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 2, Total: workflowStepCount, SafeMessage: "Certificate prepared", Status: deployment.StepStatusCompleted})
+	emit(progress, Progress{Step: stepProvisioning, Completed: 2, Total: workflowStepCount, SafeMessage: "Provisioning VPS", Status: deployment.StepStatusRunning})
 	if err := s.beginStage(ctx, current.ID, deployment.StatusProvisioning, stepProvisioning); err != nil {
 		return err
 	}
@@ -339,7 +371,11 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		if s.config.Observer != nil {
 			s.config.Observer.ProvisioningStepDuration(report.Name, report.Duration)
 		}
-		emit(progress, Progress{Step: "provisioning/" + safeText(report.Name, "stage"), Completed: 2, Total: workflowStepCount, SafeMessage: safeText(report.Summary, "Provisioning stage updated")})
+		code := ""
+		if report.Status == deployment.StepStatusFailed {
+			code = "E-PROVISIONING-" + strings.ToUpper(strings.ReplaceAll(safeText(report.Name, "STAGE"), "_", "-"))
+		}
+		emit(progress, Progress{Step: "provisioning/" + safeText(report.Name, "stage"), Completed: 2, Total: workflowStepCount, SafeMessage: safeText(report.Summary, "Provisioning stage updated"), Status: report.Status, Code: code})
 	})
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -350,11 +386,12 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 	if err := s.completeStage(ctx, current.ID, stepProvisioning, "VPS provisioning completed"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepProvisioning, Completed: 2, Total: workflowStepCount, SafeMessage: "VPS provisioning completed"})
+	emit(progress, Progress{Step: stepProvisioning, Completed: 3, Total: workflowStepCount, SafeMessage: "VPS provisioning completed", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode)
 }
 
 func (s *DeploymentService) createNode(ctx context.Context, current *deployment.Deployment, host remnawave.Host, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepCreateNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Creating Remnawave Node", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusCreatingRemnawave {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode); err != nil {
 			return err
@@ -395,11 +432,12 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 	if err := s.completeStage(ctx, current.ID, stepCreateNode, "Remnawave Node created"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepCreateNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Remnawave Node created"})
+	emit(progress, Progress{Step: stepCreateNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Remnawave Node created", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusWaitingRemnawave, stepWaitNode)
 }
 
 func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection", Status: deployment.StepStatusRunning})
 	if current.RemnawaveNodeUUID == nil {
 		return s.failStage(ctx, current.ID, stepWaitNode, deployment.StatusFailed, "NODE_UUID_MISSING", "Remnawave Node identifier is missing", ErrNodeConnectionFailed)
 	}
@@ -425,11 +463,12 @@ func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *dep
 	if err := s.completeStage(ctx, current.ID, stepWaitNode, "Remnawave Node connected"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Remnawave Node connected"})
+	emit(progress, Progress{Step: stepWaitNode, Completed: 5, Total: workflowStepCount, SafeMessage: "Remnawave Node connected", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusAddingToDNS, stepAddDNS)
 }
 
 func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepAddDNS, Completed: 5, Total: workflowStepCount, SafeMessage: "Updating DNS balancing", Status: deployment.StepStatusRunning})
 	if current.RemnawaveNodeUUID == nil {
 		return ErrDeploymentNotRunnable
 	}
@@ -446,7 +485,7 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 		if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
 			return err
 		}
-		emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "Deployment completed without DNS balancing"})
+		emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS-балансировка отключена для этой панели", Status: deployment.StepStatusSkipped, Code: "W-DNS-DISABLED"})
 		return nil
 	}
 	node, err := s.remnawave.GetNode(ctx, *current.RemnawaveNodeUUID)
@@ -468,7 +507,7 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "Deployment completed"})
+	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS updated", Status: deployment.StepStatusCompleted})
 	return nil
 }
 
@@ -623,7 +662,7 @@ func (s *DeploymentService) pollNode(ctx context.Context, uuid string, progress 
 				}
 				return remnawave.Node{}, &nodeConnectionError{code: "NODE_CONNECTION_REJECTED", message: message, kind: ErrNodeConnectionFailed}
 			}
-			emit(progress, Progress{Step: stepWaitNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection"})
+			emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection", Status: deployment.StepStatusRunning})
 		}
 		timer := time.NewTimer(backoff)
 		select {

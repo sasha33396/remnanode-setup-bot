@@ -194,7 +194,7 @@ func (a *TelegramApplication) Preflight(ctx context.Context, input telegram.Pref
 		DNSZone:                prepared.DNSZone,
 		CertificateReadiness:   telegramCertificateReadiness(prepared.CertificateReadiness),
 		ConfigProfileReadiness: readiness(prepared.ConfigProfileReadiness),
-		SafeWarnings:           append([]string(nil), prepared.SafeWarnings...),
+		Warnings:               telegramNotices(prepared.Warnings),
 	}, nil
 }
 
@@ -211,9 +211,30 @@ func (a *TelegramApplication) StartDeployment(ctx context.Context, input telegra
 		VPSIP:          input.VPSIP,
 	}, func(update Progress) {
 		if progress != nil {
-			_ = progress(telegram.Progress{Step: update.Step, Completed: update.Completed, Total: update.Total, SafeMessage: update.SafeMessage})
+			_ = progress(telegram.Progress{Step: update.Step, Completed: update.Completed, Total: update.Total, SafeMessage: update.SafeMessage, Status: telegramProgressStatus(update.Status), Code: update.Code})
 		}
 	})
+}
+
+func telegramNotices(values []OperatorNotice) []telegram.OperatorNotice {
+	result := make([]telegram.OperatorNotice, 0, len(values))
+	for _, value := range values {
+		result = append(result, telegram.OperatorNotice{Code: value.Code, Message: value.Message})
+	}
+	return result
+}
+
+func telegramProgressStatus(value deployment.StepStatus) telegram.ProgressStatus {
+	switch value {
+	case deployment.StepStatusCompleted:
+		return telegram.ProgressCompleted
+	case deployment.StepStatusFailed:
+		return telegram.ProgressFailed
+	case deployment.StepStatusSkipped:
+		return telegram.ProgressSkipped
+	default:
+		return telegram.ProgressRunning
+	}
 }
 
 func (a *TelegramApplication) CancelDeployment(ctx context.Context, deploymentID string) error {

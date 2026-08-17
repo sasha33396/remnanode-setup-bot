@@ -128,7 +128,12 @@ type PreparedDeployment struct {
 	DNSZone                string
 	CertificateReadiness   CertificateReadiness
 	ConfigProfileReadiness bool
-	SafeWarnings           []string
+	Warnings               []OperatorNotice
+}
+
+type OperatorNotice struct {
+	Code    string
+	Message string
 }
 
 type StartInput struct {
@@ -144,6 +149,8 @@ type Progress struct {
 	Completed   int
 	Total       int
 	SafeMessage string
+	Status      deployment.StepStatus
+	Code        string
 }
 
 type ProgressSink func(Progress)
@@ -169,3 +176,6 @@ func (e *SafeError) Error() string {
 }
 
 func (e *SafeError) Unwrap() error { return e.Kind }
+
+func (e *SafeError) OperatorCode() string    { return e.Code }
+func (e *SafeError) OperatorMessage() string { return e.SafeMessage }
