@@ -71,7 +71,7 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
-The **Сменить IP** menu contains two workflows:
+The **Сменить IP** menu contains three workflows:
 
 - **Панель + DNS-балансировка** updates the Remnawave Node and every matching
   DNS-balancer zone. It supports both Nodes created by this bot and legacy
@@ -88,6 +88,14 @@ The **Сменить IP** menu contains two workflows:
   manually and only the server network configuration is changed.
   This workflow does not order or assign an address through the Cherry API; the
   floating IP must already be assigned to that server in Cherry Servers.
+- **Смена IP на Royal (сервер)** connects through the current IPv4, locates the
+  matching netplan interface, replaces only that IPv4 address while preserving
+  its prefix and all IPv6 configuration, and changes the default IPv4 gateway
+  to the new address's `x.x.x.1`. It backs up and validates netplan before an
+  asynchronous apply, then treats the operation as successful only after SSH
+  is verified through the new address. As with Cherry, an existing managed or
+  legacy Remnawave Node and its DNS zones can be updated automatically, or the
+  server-only path can be used before the Node is added to Remnawave.
 
 The **Развёртывания** list is actionable. Opening a deployment shows only the
 buttons valid for its durable state: safe logs, step/DNS retry, Remnawave

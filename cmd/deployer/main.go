@@ -24,6 +24,7 @@ import (
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository/postgres"
+	"remnanode-setup-bot/internal/royalip"
 	sshclient "remnanode-setup-bot/internal/ssh"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -75,14 +76,19 @@ func run() int {
 		logger.Error("SSH client initialization failed")
 		return 1
 	}
-	cherrySSH, err := sshclient.NewClient(sshclient.NewMemoryHostKeyStore(), signer, cfg.SSHConnectTimeout, cfg.SSHCommandTimeout, 1<<20, 1<<20)
+	serverIPSSH, err := sshclient.NewClient(sshclient.NewMemoryHostKeyStore(), signer, cfg.SSHConnectTimeout, cfg.SSHCommandTimeout, 1<<20, 1<<20)
 	if err != nil {
-		logger.Error("Cherry SSH client initialization failed")
+		logger.Error("server IP SSH client initialization failed")
 		return 1
 	}
-	cherryIPService, err := cherryip.New(cherrySSH, cfg.SSHCommandTimeout)
+	cherryIPService, err := cherryip.New(serverIPSSH, cfg.SSHCommandTimeout)
 	if err != nil {
 		logger.Error("Cherry IP service initialization failed")
+		return 1
+	}
+	royalIPService, err := royalip.New(serverIPSSH, cfg.SSHCommandTimeout)
+	if err != nil {
+		logger.Error("Royal IP service initialization failed")
 		return 1
 	}
 
@@ -212,6 +218,10 @@ func run() int {
 	}
 	if err := application.SetCherryIPService(cherryIPService); err != nil {
 		logger.Error("Cherry IP application initialization failed")
+		return 1
+	}
+	if err := application.SetRoyalIPService(royalIPService); err != nil {
+		logger.Error("Royal IP application initialization failed")
 		return 1
 	}
 	bot, err := telegram.NewBotAPI(cfg.TelegramBotToken, cfg.TelegramPollTimeout)

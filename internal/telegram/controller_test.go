@@ -259,6 +259,73 @@ func TestCherryIPWizardUpdatesExistingRemnawaveNodeAndDNS(t *testing.T) {
 	}
 }
 
+func TestRoyalIPWizardUpdatesServerNodeAndDNS(t *testing.T) {
+	application := &fakeRoyalNodeApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeIPChangeTarget{
+			PanelName: "Royal",
+			UUID:      "royal-node-uuid",
+			Name:      "royal-legacy",
+			Address:   netip.MustParseAddr("37.16.74.103"),
+			DNSZones:  []string{"royal.example.com"},
+		},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	if len(mode.keyboard.Inline) != 2 || !strings.Contains(mode.keyboard.Inline[1][0].Text, "Royal") {
+		t.Fatalf("IP mode keyboard = %#v", mode.keyboard)
+	}
+	handleCallback(t, controller, "royal-mode", mode.keyboard.Inline[1][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	scope := edits[len(edits)-1]
+	handleCallback(t, controller, "with-node", scope.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "royal-legacy")
+	if got := messenger.lastSent().text; !strings.Contains(got, "шлюз x.x.x.1") || !strings.Contains(got, "обновит ноду и DNS") {
+		t.Fatalf("Royal new-IP prompt = %q", got)
+	}
+	handleMessage(t, controller, 3, "47.23.12.146")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.royalCalls != 1 || application.royalInput.ServerIP.String() != "37.16.74.103" || application.royalInput.NewIP.String() != "47.23.12.146" || string(application.royalPassword) != "root-secret" {
+		t.Fatalf("Royal input=%#v calls=%d", application.royalInput, application.royalCalls)
+	}
+	if application.replaceCalls != 1 || application.replaceInput.NodeUUID != "royal-node-uuid" || application.replaceInput.NewIP.String() != "47.23.12.146" {
+		t.Fatalf("replace input=%#v calls=%d", application.replaceInput, application.replaceCalls)
+	}
+	edits = messenger.editsSnapshot()
+	result := edits[len(edits)-1].text
+	if !strings.Contains(result, "47.23.12.1") || !strings.Contains(result, "SSH по новому IP подтверждён") {
+		t.Fatalf("Royal result = %q", result)
+	}
+}
+
+func TestRoyalIPWizardWorksBeforeNodeIsAddedToRemnawave(t *testing.T) {
+	application := &fakeRoyalIPApplication{fakeApplication: &fakeApplication{}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "royal-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	scope := edits[len(edits)-1]
+	handleCallback(t, controller, "without-node", scope.keyboard.Inline[1][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "37.16.74.103")
+	handleMessage(t, controller, 3, "47.23.12.146")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.calls != 1 || application.input.ServerIP.String() != "37.16.74.103" || application.input.NewIP.String() != "47.23.12.146" || string(application.password) != "root-secret" {
+		t.Fatalf("Royal input=%#v calls=%d", application.input, application.calls)
+	}
+}
+
 func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
 	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
 	base := &fakeApplication{deployments: []DeploymentSummary{{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}}}
@@ -558,6 +625,23 @@ type fakeCherryNodeApplication struct {
 	cherryPassword []byte
 }
 
+type fakeRoyalNodeApplication struct {
+	*fakeApplication
+	target        NodeIPChangeTarget
+	replaceCalls  int
+	replaceInput  NodeIPChangeInput
+	royalCalls    int
+	royalInput    RoyalIPInput
+	royalPassword []byte
+}
+
+type fakeRoyalIPApplication struct {
+	*fakeApplication
+	calls    int
+	input    RoyalIPInput
+	password []byte
+}
+
 func (f *fakeCherryIPApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
 	f.calls++
 	f.input = input
@@ -583,6 +667,32 @@ func (f *fakeCherryNodeApplication) ConfigureCherryIP(_ context.Context, input C
 	f.cherryInput.Password = nil
 	f.cherryPassword = append([]byte(nil), input.Password...)
 	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeRoyalNodeApplication) FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error) {
+	return f.target, nil
+}
+
+func (f *fakeRoyalNodeApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
+	f.replaceCalls++
+	f.replaceInput = input
+	return "Нода и DNS обновлены", nil
+}
+
+func (f *fakeRoyalNodeApplication) ConfigureRoyalIP(_ context.Context, input RoyalIPInput) (RoyalIPResult, error) {
+	f.royalCalls++
+	f.royalInput = input
+	f.royalInput.Password = nil
+	f.royalPassword = append([]byte(nil), input.Password...)
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
+}
+
+func (f *fakeRoyalIPApplication) ConfigureRoyalIP(_ context.Context, input RoyalIPInput) (RoyalIPResult, error) {
+	f.calls++
+	f.input = input
+	f.input.Password = nil
+	f.password = append([]byte(nil), input.Password...)
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
 }
 
 func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {

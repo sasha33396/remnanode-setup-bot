@@ -11,6 +11,7 @@ import (
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
+	"remnanode-setup-bot/internal/royalip"
 	"remnanode-setup-bot/internal/telegram"
 )
 
@@ -21,6 +22,15 @@ type TelegramApplication struct {
 	order      []string
 	repository DeploymentRepository
 	cherryIP   *cherryip.Service
+	royalIP    *royalip.Service
+}
+
+func (a *TelegramApplication) SetRoyalIPService(service *royalip.Service) error {
+	if a == nil || service == nil {
+		return errors.New("Royal IP service is required")
+	}
+	a.royalIP = service
+	return nil
 }
 
 func (a *TelegramApplication) SetCherryIPService(service *cherryip.Service) error {
@@ -367,6 +377,17 @@ func (a *TelegramApplication) ConfigureCherryIP(ctx context.Context, input teleg
 		return telegram.CherryIPResult{}, err
 	}
 	return telegram.CherryIPResult{Interface: result.Interface, LiveConfigured: result.LiveConfigured, Persistent: result.Persistent, PersistentNote: result.PersistentNote}, nil
+}
+
+func (a *TelegramApplication) ConfigureRoyalIP(ctx context.Context, input telegram.RoyalIPInput) (telegram.RoyalIPResult, error) {
+	if a.royalIP == nil {
+		return telegram.RoyalIPResult{}, errors.New("Royal IP service is unavailable")
+	}
+	result, err := a.royalIP.Configure(ctx, royalip.Input{ServerIP: input.ServerIP, NewIP: input.NewIP, Password: input.Password})
+	if err != nil {
+		return telegram.RoyalIPResult{}, err
+	}
+	return telegram.RoyalIPResult{Interface: result.Interface, PrefixBits: result.PrefixBits, Gateway: result.Gateway, NetplanFile: result.NetplanFile, BackupFile: result.BackupFile}, nil
 }
 
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {

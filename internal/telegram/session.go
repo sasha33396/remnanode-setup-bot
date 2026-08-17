@@ -7,6 +7,13 @@ import (
 
 type wizardState uint8
 
+type serverIPProvider uint8
+
+const (
+	serverIPProviderCherry serverIPProvider = iota + 1
+	serverIPProviderRoyal
+)
+
 const (
 	stateSelectingPanel wizardState = iota + 1
 	stateSelectingIPPanel
@@ -21,12 +28,12 @@ const (
 	stateAwaitingIPChangeConfirmation
 	stateAwaitingNewIP
 	stateSelectingIPMode
-	stateSelectingCherryMode
-	stateSelectingCherryPanel
-	stateAwaitingCherryNodeQuery
-	stateAwaitingCherryServerIP
-	stateAwaitingCherryFloatingIP
-	stateAwaitingCherryPassword
+	stateSelectingServerIPScope
+	stateSelectingServerIPPanel
+	stateAwaitingServerIPNodeQuery
+	stateAwaitingServerCurrentIP
+	stateAwaitingServerNewIP
+	stateAwaitingServerIPPassword
 )
 
 type wizard struct {
@@ -45,9 +52,10 @@ type wizard struct {
 	preflight        PreflightResult
 	statusMsgID      int
 	ipTarget         NodeIPChangeTarget
-	cherryServerIP   netip.Addr
-	cherryFloatingIP netip.Addr
-	cherryUpdateNode bool
+	serverIPProvider serverIPProvider
+	serverCurrentIP  netip.Addr
+	serverNewIP      netip.Addr
+	serverUpdateNode bool
 	expiryTimer      *time.Timer
 }
 

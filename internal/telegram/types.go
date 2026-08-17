@@ -127,6 +127,22 @@ type CherryIPResult struct {
 	PersistentNote string
 }
 
+// RoyalIPInput contains the transient root password used while replacing the
+// primary IPv4 address and gateway on a Royal Hosting server.
+type RoyalIPInput struct {
+	ServerIP netip.Addr
+	NewIP    netip.Addr
+	Password []byte
+}
+
+type RoyalIPResult struct {
+	Interface   string
+	PrefixBits  int
+	Gateway     netip.Addr
+	NetplanFile string
+	BackupFile  string
+}
+
 type DeploymentSummary struct {
 	PanelName string
 	ID        string
@@ -226,4 +242,10 @@ type NodeIPApplication interface {
 // floating-IP wizard and keeps the temporary password outside durable state.
 type CherryIPApplication interface {
 	ConfigureCherryIP(context.Context, CherryIPInput) (CherryIPResult, error)
+}
+
+// RoyalIPApplication is optional. It powers primary IPv4 and gateway
+// replacement for Royal Hosting servers.
+type RoyalIPApplication interface {
+	ConfigureRoyalIP(context.Context, RoyalIPInput) (RoyalIPResult, error)
 }
