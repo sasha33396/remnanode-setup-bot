@@ -485,7 +485,7 @@ func (c *Controller) beginPanelIPChange(ctx context.Context, callback *CallbackQ
 	}
 	panels, err := c.app.ListPanels(ctx)
 	if err != nil || len(panels) == 0 {
-		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Панели временно недоступны.", mainKeyboard())
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Панели временно недоступны.", Keyboard{})
 	}
 	if len(panels) == 1 {
 		if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
@@ -599,7 +599,7 @@ func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message,
 	}
 	active.password = append(active.password[:0], password...)
 	clearBytes(password)
-	status, err := c.messenger.SendMessage(ctx, message.ChatID, "Подключаюсь к Cherry-серверу и настраиваю floating IP…", Keyboard{})
+	status, err := c.messenger.SendMessage(ctx, message.ChatID, "Подключаюсь к Cherry-серверу и настраиваю floating IP… Обычно это занимает меньше минуты, общий лимит — 90 секунд.", Keyboard{})
 	if err != nil {
 		active.clear()
 		return err
@@ -610,7 +610,7 @@ func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message,
 		defer active.clear()
 		result, configureErr := c.app.(CherryIPApplication).ConfigureCherryIP(ctx, CherryIPInput{ServerIP: active.cherryServerIP, FloatingIP: active.cherryFloatingIP, Password: active.password})
 		if configureErr != nil {
-			_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, "❌ Не удалось настроить IP на Cherry-сервере. Проверьте root-пароль, доступность SSH и назначение floating IP.", mainKeyboard())
+			_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, "❌ Не удалось настроить IP на Cherry-сервере. Проверьте root-пароль, доступность SSH и назначение floating IP.", Keyboard{})
 			return
 		}
 		persistent := "не сохранён в netplan"
@@ -621,7 +621,7 @@ func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message,
 		if note := safeLine(result.PersistentNote, 500); note != "" {
 			text += "\n" + note
 		}
-		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, mainKeyboard())
+		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, Keyboard{})
 	}()
 	return nil
 }
@@ -926,7 +926,7 @@ func (c *Controller) handleDeploymentCallback(ctx context.Context, callback *Cal
 	}
 	details, err := recoveryApp.GetDeploymentDetails(ctx, deploymentID)
 	if err != nil {
-		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Развёртывание больше недоступно.", mainKeyboard())
+		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Развёртывание больше недоступно.", Keyboard{})
 	}
 	switch action {
 	case "logs":
@@ -988,7 +988,7 @@ func (c *Controller) runDeploymentAction(ctx context.Context, app RecoveryApplic
 func (c *Controller) showDeploymentCard(ctx context.Context, app RecoveryApplication, chatID int64, messageID int, deploymentID, notice string) error {
 	details, err := app.GetDeploymentDetails(ctx, deploymentID)
 	if err != nil {
-		return c.messenger.EditMessage(ctx, chatID, messageID, "Развёртывание больше недоступно.", mainKeyboard())
+		return c.messenger.EditMessage(ctx, chatID, messageID, "Развёртывание больше недоступно.", Keyboard{})
 	}
 	var builder strings.Builder
 	if notice != "" {

@@ -52,8 +52,9 @@ func NewBotAPI(token string, timeout time.Duration) (*BotAPI, error) {
 	}, nil
 }
 
-// Run polls updates until ctx is cancelled. Handler failures are returned so
-// the process supervisor can restart from the last acknowledged offset.
+// Run polls updates until ctx is cancelled. A failed presentation/API action
+// must not poison the polling offset: Telegram will otherwise redeliver the
+// same update after every process restart and create a permanent crash loop.
 func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 	if handler == nil {
 		return errors.New("Telegram update handler is required")
@@ -70,14 +71,11 @@ func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 		for index := range updates {
 			updateID := updates[index].UpdateID
 			mapped := mapUpdate(updates[index])
-			handleErr := handler.Handle(ctx, mapped)
+			_ = handler.Handle(ctx, mapped)
 			// Release Telegram message text promptly. Password messages have
 			// already been copied into clearable session memory by Controller.
 			if updates[index].Message != nil {
 				updates[index].Message.Text = ""
-			}
-			if handleErr != nil {
-				return errors.New("handle Telegram update failed")
 			}
 			if updateID >= offset {
 				offset = updateID + 1

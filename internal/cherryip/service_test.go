@@ -26,6 +26,22 @@ func TestAddAddressToNetplanMatchesInterfaceAndSetName(t *testing.T) {
 	}
 }
 
+func TestNewCapsCherryCommandTimeout(t *testing.T) {
+	service, err := New(fakeConnector{}, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.timeout != maxCommandTimeout {
+		t.Fatalf("timeout = %v, want %v", service.timeout, maxCommandTimeout)
+	}
+}
+
+type fakeConnector struct{}
+
+func (fakeConnector) ConnectInitial(context.Context, string, *sshclient.InitialCredentials) (*sshclient.Connection, error) {
+	return nil, ErrSSH
+}
+
 func TestConfigureAddsLiveAddressAndPersistsNetplan(t *testing.T) {
 	runner := &fakeRunner{netplan: "network:\n  version: 2\n  ethernets:\n    ens3:\n      addresses:\n      - 8.8.8.8/24\n"}
 	result, err := configure(context.Background(), runner, netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("1.1.1.1"), time.Minute)

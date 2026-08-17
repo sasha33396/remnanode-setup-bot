@@ -26,6 +26,12 @@ var (
 	ErrInterface    = errors.New("primary network interface was not found")
 )
 
+const (
+	maxCommandTimeout   = 30 * time.Second
+	maxOperationTimeout = 90 * time.Second
+	maxRollbackTimeout  = 15 * time.Second
+)
+
 type Input struct {
 	ServerIP   netip.Addr
 	FloatingIP netip.Addr
@@ -52,6 +58,9 @@ func New(ssh passwordConnector, timeout time.Duration) (*Service, error) {
 	if ssh == nil || timeout <= 0 {
 		return nil, errors.New("invalid Cherry IP service configuration")
 	}
+	if timeout > maxCommandTimeout {
+		timeout = maxCommandTimeout
+	}
 	return &Service{ssh: ssh, timeout: timeout}, nil
 }
 
@@ -62,14 +71,16 @@ func (s *Service) Configure(ctx context.Context, input Input) (Result, error) {
 	if !serverIP.IsValid() || !serverIP.Is4() || !floatingIP.IsValid() || !floatingIP.Is4() || serverIP == floatingIP || len(input.Password) == 0 {
 		return Result{}, ErrInvalidInput
 	}
+	operationCtx, cancel := context.WithTimeout(ctx, maxOperationTimeout)
+	defer cancel()
 	credentials := sshclient.NewInitialCredentials(serverIP, "root", input.Password)
 	defer credentials.Clear()
-	connection, err := s.ssh.ConnectInitial(ctx, "cherry-server:"+serverIP.String(), credentials)
+	connection, err := s.ssh.ConnectInitial(operationCtx, "cherry-server:"+serverIP.String(), credentials)
 	if err != nil {
 		return Result{}, ErrSSH
 	}
 	defer connection.Close()
-	return configure(ctx, connection, serverIP, floatingIP, s.timeout)
+	return configure(operationCtx, connection, serverIP, floatingIP, s.timeout)
 }
 
 func configure(ctx context.Context, runner sshclient.CommandRunner, serverIP, floatingIP netip.Addr, timeout time.Duration) (Result, error) {
@@ -166,8 +177,13 @@ func persistNetplan(ctx context.Context, runner sshclient.CommandRunner, iface s
 }
 
 func rollbackNetplan(ctx context.Context, runner sshclient.CommandRunner, filename, backup string, timeout time.Duration) {
-	_, _ = run(context.WithoutCancel(ctx), runner, "cp -- "+shellQuote(backup)+" "+shellQuote(filename), nil, timeout)
-	_, _ = run(context.WithoutCancel(ctx), runner, "netplan apply", nil, timeout)
+	if timeout > maxRollbackTimeout {
+		timeout = maxRollbackTimeout
+	}
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*timeout)
+	defer cancel()
+	_, _ = run(rollbackCtx, runner, "cp -- "+shellQuote(backup)+" "+shellQuote(filename), nil, timeout)
+	_, _ = run(rollbackCtx, runner, "netplan apply", nil, timeout)
 }
 
 func addAddressToNetplan(document []byte, iface, address string) ([]byte, string, bool, error) {
