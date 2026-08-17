@@ -329,7 +329,7 @@ func TestRoyalIPWizardWorksBeforeNodeIsAddedToRemnawave(t *testing.T) {
 func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
 	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
 	base := &fakeApplication{deployments: []DeploymentSummary{{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}}}
-	application := &fakeRecoveryApplication{fakeApplication: base, details: DeploymentDetails{DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}, CurrentStep: "prepare_certificate", SNI: "nl-modx-roy.nodexphere.net", CanRetryStep: true, CanRepairCert: true}, bootstrapResult: "Certificate ready"}
+	application := &fakeRecoveryApplication{fakeApplication: base, details: DeploymentDetails{DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED", CurrentStep: "prepare_certificate"}, SNI: "nl-modx-roy.nodexphere.net", CanRetryStep: true, CanRepairCert: true}, bootstrapResult: "Certificate ready"}
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuDeployments)
@@ -344,6 +344,35 @@ func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
 	controller.Wait()
 	if application.bootstrapSNI != "nl-modx-roy.nodexphere.net" || application.retryCalls != 1 {
 		t.Fatalf("repair used SNI=%q retries=%d", application.bootstrapSNI, application.retryCalls)
+	}
+}
+
+func TestDeploymentLogsButtonShowsDetailedJournalAndBackNavigation(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	started := time.Date(2026, 8, 17, 18, 20, 0, 0, time.UTC)
+	completed := started.Add(5 * time.Second)
+	summary := DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "node", Status: "FAILED", CurrentStep: "provisioning", SafeErrorCode: "PROVISIONING_FAILED", SafeError: "VPS provisioning failed", UpdatedAt: completed}
+	base := &fakeApplication{deployments: []DeploymentSummary{summary}}
+	application := &fakeRecoveryApplication{
+		fakeApplication: base,
+		details:         DeploymentDetails{DeploymentSummary: summary, CanRetryStep: true},
+		logs:            []DeploymentLogEntry{{Step: "logrotate", Status: "FAILED", Summary: "validation failed", Code: "E-PROVISIONING-LOGROTATE", StartedAt: &started, CompletedAt: &completed}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuDeployments)
+	list := messenger.lastSent()
+	handleCallback(t, controller, "open", list.keyboard.Inline[0][0].CallbackData, list.message)
+	edits := messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	handleCallback(t, controller, "logs", card.keyboard.Inline[0][0].CallbackData, list.message)
+	edits = messenger.editsSnapshot()
+	logs := edits[len(edits)-1]
+	if !strings.Contains(logs.text, "Подробный журнал") || !strings.Contains(logs.text, "E-PROVISIONING-LOGROTATE") {
+		t.Fatalf("logs = %q", logs.text)
+	}
+	if len(logs.keyboard.Inline) != 2 || logs.keyboard.Inline[0][0].Text != "🔄 Обновить журнал" || logs.keyboard.Inline[1][0].Text != "⬅️ К карточке" {
+		t.Fatalf("logs keyboard = %#v", logs.keyboard)
 	}
 }
 
@@ -580,6 +609,7 @@ type fakeRecoveryApplication struct {
 	bootstrapErr      error
 	details           DeploymentDetails
 	retryCalls        int
+	logs              []DeploymentLogEntry
 }
 
 func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error {
@@ -704,8 +734,8 @@ func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPCha
 	f.input = input
 	return "IP изменён", f.replaceErr
 }
-func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]string, error) {
-	return nil, nil
+func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error) {
+	return append([]DeploymentLogEntry(nil), f.logs...), nil
 }
 func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni string, operatorUserID int64) (string, error) {
 	f.bootstrapCalls++

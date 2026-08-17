@@ -605,6 +605,7 @@ func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) (
 		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load safe deployment logs", ErrPersistenceFailed)
 	}
 	result := make([]SafeLogEntry, 0, len(steps)+1)
+	currentRecorded := false
 	for _, step := range steps {
 		summary := ""
 		if step.SafeSummary != nil {
@@ -613,12 +614,38 @@ func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) (
 		if step.ErrorMessage != nil {
 			summary = safeText(*step.ErrorMessage, summary)
 		}
-		result = append(result, SafeLogEntry{Step: safeText(step.Name, "step"), Status: string(step.Status), Summary: summary})
+		code := ""
+		if step.Name == current.CurrentStep {
+			currentRecorded = true
+			if current.SafeErrorCode != nil {
+				code = safeText(*current.SafeErrorCode, "")
+			}
+		}
+		if step.Status == deployment.StepStatusFailed && code == "" && isProvisioningStep(step.Name) {
+			code = "E-PROVISIONING-" + strings.ToUpper(strings.ReplaceAll(step.Name, "_", "-"))
+		}
+		if step.Status == deployment.StepStatusSkipped && step.Name == stepAddDNS {
+			code = "W-DNS-DISABLED"
+		}
+		result = append(result, SafeLogEntry{Step: safeText(step.Name, "step"), Status: string(step.Status), Summary: summary, Code: code, StartedAt: step.StartedAt, CompletedAt: step.CompletedAt})
 	}
-	if current.SafeErrorMessage != nil {
-		result = append(result, SafeLogEntry{Step: safeText(current.CurrentStep, "workflow"), Status: string(current.Status), Summary: safeText(*current.SafeErrorMessage, "")})
+	if current.SafeErrorMessage != nil && !currentRecorded {
+		code := ""
+		if current.SafeErrorCode != nil {
+			code = safeText(*current.SafeErrorCode, "")
+		}
+		result = append(result, SafeLogEntry{Step: safeText(current.CurrentStep, "workflow"), Status: string(current.Status), Summary: safeText(*current.SafeErrorMessage, ""), Code: code, StartedAt: current.StartedAt, CompletedAt: current.CompletedAt})
 	}
 	return result, nil
+}
+
+func isProvisioningStep(name string) bool {
+	for _, candidate := range provisioner.StageNames {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // Cancel marks a deployment cancelled and signals an in-process active run.

@@ -156,9 +156,12 @@ type Progress struct {
 type ProgressSink func(Progress)
 
 type SafeLogEntry struct {
-	Step    string
-	Status  string
-	Summary string
+	Step        string
+	Status      string
+	Summary     string
+	Code        string
+	StartedAt   *time.Time
+	CompletedAt *time.Time
 }
 
 // SafeError exposes only an allow-listed operator message and code.

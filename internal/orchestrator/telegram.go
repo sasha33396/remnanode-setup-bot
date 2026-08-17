@@ -263,14 +263,10 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 		return telegram.DeploymentDetails{}, err
 	}
 	details := telegram.DeploymentDetails{
-		DeploymentSummary: telegram.DeploymentSummary{PanelName: panel.Name, ID: item.ID, NodeName: item.NodeName, Status: string(item.Status), UpdatedAt: item.UpdatedAt},
-		CurrentStep:       item.CurrentStep,
+		DeploymentSummary: telegramDeploymentSummary(item, panel.Name),
 		SNI:               item.SNIDomain,
 		CanRetryDNS:       item.Status == deployment.StatusDNSFailed,
 		CanCancel:         !item.Status.Terminal(),
-	}
-	if item.SafeErrorMessage != nil {
-		details.SafeError = *item.SafeErrorMessage
 	}
 	if item.Status == deployment.StatusFailed {
 		switch item.CurrentStep {
@@ -309,7 +305,7 @@ func (a *TelegramApplication) RecheckRemnawave(ctx context.Context, deploymentID
 	return result.SafeMessage, nil
 }
 
-func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID string) ([]string, error) {
+func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID string) ([]telegram.DeploymentLogEntry, error) {
 	panel, panelErr := a.panelForDeployment(ctx, deploymentID)
 	if panelErr != nil {
 		return nil, panelErr
@@ -318,13 +314,9 @@ func (a *TelegramApplication) ViewSafeLogs(ctx context.Context, deploymentID str
 	if err != nil {
 		return nil, err
 	}
-	result := make([]string, 0, len(entries))
+	result := make([]telegram.DeploymentLogEntry, 0, len(entries))
 	for _, entry := range entries {
-		line := entry.Step + " [" + entry.Status + "]"
-		if entry.Summary != "" {
-			line += ": " + entry.Summary
-		}
-		result = append(result, line)
+		result = append(result, telegram.DeploymentLogEntry{Step: entry.Step, Status: entry.Status, Summary: entry.Summary, Code: entry.Code, StartedAt: entry.StartedAt, CompletedAt: entry.CompletedAt})
 	}
 	return result, nil
 }
@@ -437,9 +429,31 @@ func (a *TelegramApplication) ListDeployments(ctx context.Context, limit int) ([
 		if panel, ok := a.panels[item.PanelID]; ok {
 			panelName = panel.Name
 		}
-		result = append(result, telegram.DeploymentSummary{PanelName: panelName, ID: item.ID, NodeName: item.NodeName, Status: string(item.Status), UpdatedAt: item.UpdatedAt})
+		result = append(result, telegramDeploymentSummary(item, panelName))
 	}
 	return result, nil
+}
+
+func telegramDeploymentSummary(item deployment.Deployment, panelName string) telegram.DeploymentSummary {
+	result := telegram.DeploymentSummary{
+		PanelName:   panelName,
+		ID:          item.ID,
+		NodeName:    item.NodeName,
+		Status:      string(item.Status),
+		CurrentStep: item.CurrentStep,
+		TargetIP:    item.TargetVPSIP,
+		CreatedAt:   item.CreatedAt,
+		UpdatedAt:   item.UpdatedAt,
+		StartedAt:   item.StartedAt,
+		CompletedAt: item.CompletedAt,
+	}
+	if item.SafeErrorCode != nil {
+		result.SafeErrorCode = *item.SafeErrorCode
+	}
+	if item.SafeErrorMessage != nil {
+		result.SafeError = *item.SafeErrorMessage
+	}
+	return result
 }
 
 func telegramCertificateReadiness(value CertificateReadiness) telegram.Readiness {

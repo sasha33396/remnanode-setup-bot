@@ -152,6 +152,19 @@ func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.
 	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "VPS provisioning failed" {
 		t.Fatalf("safe error = %#v", stored.SafeErrorMessage)
 	}
+	logs, logsErr := fixture.service.SafeLogs(context.Background(), prepared.Deployment.ID)
+	if logsErr != nil {
+		t.Fatal(logsErr)
+	}
+	foundCodedFailure := false
+	for _, entry := range logs {
+		if entry.Step == stepProvisioning && entry.Status == string(deployment.StepStatusFailed) && entry.Code == "PROVISIONING_FAILED" {
+			foundCodedFailure = true
+		}
+	}
+	if !foundCodedFailure {
+		t.Fatalf("safe logs have no coded provisioning failure: %#v", logs)
+	}
 }
 
 func TestDeploymentServicePreservesOnlyTrustedProvisioningPhase(t *testing.T) {

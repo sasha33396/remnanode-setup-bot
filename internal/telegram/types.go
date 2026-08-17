@@ -144,23 +144,37 @@ type RoyalIPResult struct {
 }
 
 type DeploymentSummary struct {
-	PanelName string
-	ID        string
-	NodeName  string
-	Status    string
-	UpdatedAt time.Time
+	PanelName     string
+	ID            string
+	NodeName      string
+	Status        string
+	CurrentStep   string
+	TargetIP      netip.Addr
+	SafeErrorCode string
+	SafeError     string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	StartedAt     *time.Time
+	CompletedAt   *time.Time
 }
 
 type DeploymentDetails struct {
 	DeploymentSummary
-	CurrentStep   string
 	SNI           string
-	SafeError     string
 	CanRetryStep  bool
 	CanRetryDNS   bool
 	CanRecheck    bool
 	CanRepairCert bool
 	CanCancel     bool
+}
+
+type DeploymentLogEntry struct {
+	Step        string
+	Status      string
+	Summary     string
+	Code        string
+	StartedAt   *time.Time
+	CompletedAt *time.Time
 }
 
 // PreflightInput contains the transient password. Implementations must not
@@ -244,7 +258,7 @@ type RecoveryApplication interface {
 	RetryFailedStep(context.Context, string) error
 	RetryDNS(context.Context, string) error
 	RecheckRemnawave(context.Context, string) (string, error)
-	ViewSafeLogs(context.Context, string) ([]string, error)
+	ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error)
 	BootstrapCertificate(context.Context, string, int64) (string, error)
 }
 

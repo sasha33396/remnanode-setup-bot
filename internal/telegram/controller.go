@@ -245,14 +245,15 @@ func (c *Controller) handleRecoveryCommand(ctx context.Context, message *Message
 		_, err = c.messenger.SendMessage(ctx, message.ChatID, safeLine(result, 300), mainKeyboard())
 		return true, err
 	case "/logs":
-		lines, err := recoveryApp.ViewSafeLogs(ctx, deploymentID)
+		entries, err := recoveryApp.ViewSafeLogs(ctx, deploymentID)
 		if err != nil {
 			return true, c.sendActionResult(ctx, message.ChatID, err, "")
 		}
-		if len(lines) == 0 {
-			lines = []string{"No safe log entries."}
+		details, err := recoveryApp.GetDeploymentDetails(ctx, deploymentID)
+		if err != nil {
+			return true, c.sendActionResult(ctx, message.ChatID, err, "")
 		}
-		_, err = c.messenger.SendMessage(ctx, message.ChatID, truncateUTF8(strings.Join(lines, "\n"), maxMessageBytes), mainKeyboard())
+		_, err = c.messenger.SendMessage(ctx, message.ChatID, renderDeploymentLogs(details, entries), mainKeyboard())
 		return true, err
 	default:
 		return false, nil
@@ -1076,33 +1077,16 @@ func (c *Controller) showNodesPage(ctx context.Context, chatID int64, messageID,
 }
 
 func (c *Controller) showDeployments(ctx context.Context, chatID int64) error {
-	deployments, err := c.app.ListDeployments(ctx, 20)
+	deployments, err := c.app.ListDeployments(ctx, 15)
 	if err != nil {
-		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Deployments are temporarily unavailable.", mainKeyboard())
+		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Развёртывания временно недоступны.", mainKeyboard())
 		return sendErr
-	}
-	var builder strings.Builder
-	builder.WriteString("📜 Deployments\n")
-	if len(deployments) == 0 {
-		builder.WriteString("No deployments found.")
-	}
-	for _, item := range deployments {
-		updated := "unknown time"
-		if !item.UpdatedAt.IsZero() {
-			updated = item.UpdatedAt.UTC().Format("2006-01-02 15:04 UTC")
-		}
-		fmt.Fprintf(&builder, "\n• [%s] %s — %s — %s", safeLine(item.PanelName, 40), safeLine(item.NodeName, 60), safeLine(item.Status, 40), updated)
-		if builder.Len() >= maxMessageBytes {
-			builder.WriteString("\n…")
-			break
-		}
 	}
 	rows := make([][]Button, 0, len(deployments))
 	for _, item := range deployments {
-		label := safeLine(item.NodeName+" — "+item.Status, 54)
-		rows = append(rows, []Button{{Text: label, CallbackData: "dep:open:" + item.ID}})
+		rows = append(rows, []Button{{Text: deploymentListButton(item), CallbackData: "dep:open:" + item.ID}})
 	}
-	_, err = c.messenger.SendMessage(ctx, chatID, truncateUTF8(builder.String(), maxMessageBytes), Keyboard{Inline: rows})
+	_, err = c.messenger.SendMessage(ctx, chatID, renderDeploymentsList(deployments), Keyboard{Inline: rows})
 	return err
 }
 
@@ -1121,14 +1105,11 @@ func (c *Controller) handleDeploymentCallback(ctx context.Context, callback *Cal
 	}
 	switch action {
 	case "logs":
-		lines, logsErr := recoveryApp.ViewSafeLogs(ctx, deploymentID)
+		entries, logsErr := recoveryApp.ViewSafeLogs(ctx, deploymentID)
 		if logsErr != nil {
 			return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Логи временно недоступны.")
 		}
-		if len(lines) == 0 {
-			lines = []string{"Нет записей."}
-		}
-		return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "Логи:\n"+strings.Join(lines, "\n"))
+		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, renderDeploymentLogs(details, entries), deploymentLogsKeyboard(deploymentID))
 	case "retry", "dns", "recheck", "repair_cert", "cancel":
 		if action == "repair_cert" && (!details.CanRepairCert || strings.TrimSpace(details.SNI) == "") {
 			return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Исправление сертификата неприменимо к текущему состоянию.")
@@ -1181,21 +1162,11 @@ func (c *Controller) showDeploymentCard(ctx context.Context, app RecoveryApplica
 	if err != nil {
 		return c.messenger.EditMessage(ctx, chatID, messageID, "Развёртывание больше недоступно.", Keyboard{})
 	}
-	var builder strings.Builder
-	if notice != "" {
-		builder.WriteString(truncateUTF8(notice, 1400))
-		builder.WriteString("\n\n")
-	}
-	builder.WriteString("📜 Развёртывание\n")
-	fmt.Fprintf(&builder, "Панель: %s\nНода: %s\nСтатус: %s\nШаг: %s", safeLine(details.PanelName, 80), safeLine(details.NodeName, 80), safeLine(details.Status, 40), safeLine(details.CurrentStep, 80))
-	if details.SafeError != "" {
-		fmt.Fprintf(&builder, "\nОшибка: %s", safeLine(details.SafeError, 500))
-	}
-	return c.messenger.EditMessage(ctx, chatID, messageID, truncateUTF8(builder.String(), maxMessageBytes), deploymentActionsKeyboard(details))
+	return c.messenger.EditMessage(ctx, chatID, messageID, renderDeploymentCard(details, notice), deploymentActionsKeyboard(details))
 }
 
 func deploymentActionsKeyboard(details DeploymentDetails) Keyboard {
-	rows := [][]Button{{{Text: "📋 Логи", CallbackData: "dep:logs:" + details.ID}}}
+	rows := [][]Button{{{Text: "📋 Подробный журнал", CallbackData: "dep:logs:" + details.ID}}}
 	if details.CanRepairCert {
 		rows = append(rows, []Button{{Text: "🛠 Исправить сертификат и продолжить", CallbackData: "dep:repair_cert:" + details.ID}})
 	}

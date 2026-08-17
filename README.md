@@ -154,6 +154,30 @@ Common blocking error families:
 Unknown internal failures are deliberately collapsed to
 `E-DEPLOYMENT-FAILED`; arbitrary error strings are never sent to Telegram.
 
+### Deployment history and detailed safe logs
+
+The **Развёртывания** screen uses the same operator model after the live run
+has finished. The recent list is localized and shows, for every Node, the
+panel, human-readable state, current workflow stage, `N/6` progress, last
+update time, and a safe error code when one exists. Raw database statuses such
+as `PROVISIONING` and `COMPLETED` are not shown to the operator.
+
+The deployment card additionally shows the target VPS IP, created/started/
+updated/completed timestamps, total duration, current stage, progress, and the
+durable safe error code/message. The **Подробный журнал** view renders every
+persisted workflow and provisioning component as a separate entry with:
+
+- `✅`, `🔄`, `⚠️`, `❌`, `⛔`, or `⬜` state;
+- localized main/component name;
+- explicit result summary;
+- warning or error code where applicable;
+- start and completion timestamps plus elapsed duration;
+- refresh and back-to-card buttons for an active deployment.
+
+Detailed logs remain deliberately safe: they contain only persisted allow-
+listed summaries and codes. Raw SSH/API output, root passwords, internal UUIDs,
+and certificate SNI values are never rendered in the history or log view.
+
 ## Deployment orchestration
 
 `internal/orchestrator` implements the resumable deployment workflow from
