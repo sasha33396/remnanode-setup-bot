@@ -192,6 +192,52 @@ func TestSyncNodeDNSRejectsLegacyNodeWithoutTargetZone(t *testing.T) {
 	}
 }
 
+func TestSyncNodeDNSInfersLegacyZoneFromMatchingHostProfileAndInbound(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID:                    testNodeUUID,
+		Name:                    "de-10-cherry",
+		Address:                 "88.216.70.55",
+		IsConnected:             true,
+		ActiveConfigProfileUUID: &profileUUID,
+		ActiveInboundUUIDs:      []string{inboundUUID},
+	}}
+	fixture.remnawave.hosts = []remnawave.Host{{
+		UUID:    testHostUUID,
+		Remark:  "VLESS-REALITY-DE-SELFST",
+		Address: "de-modx.nodexphere.net",
+		Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID},
+	}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "de-modx.nodexphere.net", Zone: dnsbalancer.Zone{IPs: []string{"9.9.9.9"}}}}
+
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "88.216.70.55")
+	if err != nil || target.Managed || !target.CanSync || target.DNSZone != "de-modx.nodexphere.net" || target.CurrentPresent {
+		t.Fatalf("inferred legacy target = %#v, %v", target, err)
+	}
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if err != nil || result.Action != DNSSyncAdded || result.DNSZone != "de-modx.nodexphere.net" {
+		t.Fatalf("legacy SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[1] != "88.216.70.55" {
+		t.Fatalf("legacy DNS IPs = %v", got)
+	}
+}
+
+func TestSyncNodeDNSRejectsAmbiguousLegacyHostSNI(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "1.1.1.1", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Address: "one.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "44444444-4444-4444-8444-444444444444", Address: "two.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+	}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "legacy")
+	if err != nil || target.CanSync || !strings.Contains(target.Note, "неоднозначен") {
+		t.Fatalf("ambiguous legacy target = %#v, %v", target, err)
+	}
+}
+
 func TestSyncNodeDNSDoesNotGuessMissingAdvancedNodeAddress(t *testing.T) {
 	fixture := newFixture(t)
 	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID)}

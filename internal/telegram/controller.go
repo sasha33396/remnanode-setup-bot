@@ -1494,6 +1494,8 @@ func renderDNSSyncTarget(target NodeDNSSyncTarget) string {
 	kind := "legacy"
 	if target.Managed {
 		kind = "создана этим ботом"
+	} else if target.DNSZone != "" {
+		kind = "legacy, зона определена по профилю + inbound"
 	}
 	zone := "не определена"
 	if target.DNSZone != "" {
@@ -1525,7 +1527,7 @@ func renderDNSSyncTarget(target NodeDNSSyncTarget) string {
 		fmt.Fprintf(&builder, "Действие: %s", safeLine(target.Note, 500))
 	}
 	if !target.CanSync {
-		builder.WriteString("\n\nАвтоматическая запись отключена: для legacy-ноды без истории развёртывания нельзя безопасно угадать целевую DNS-зону.")
+		builder.WriteString("\n\nАвтоматическая запись отключена: целевую DNS-зону или формат записи нельзя определить безопасно.")
 	}
 	return truncateUTF8(builder.String(), maxMessageBytes)
 }

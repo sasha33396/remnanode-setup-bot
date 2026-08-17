@@ -81,9 +81,24 @@ func (s *DeploymentService) FindNodeForDNSSync(ctx context.Context, query string
 	}
 	managed, err := s.repository.FindDeploymentByPanelNodeUUID(ctx, s.config.PanelID, node.UUID)
 	if errors.Is(err, repository.ErrNotFound) {
-		target.Note = "Legacy-нода не имеет сохранённой привязки к DNS-зоне"
-		if len(zoneNames) != 0 {
-			target.Note = "IP legacy-ноды уже найден в DNS; сохранённой целевой зоны нет"
+		match, inferred, note, inferErr := s.inferLegacyDNSZone(ctx, node)
+		if inferErr != nil {
+			return NodeDNSSyncTarget{}, inferErr
+		}
+		target.Note = note
+		if !inferred {
+			return target, nil
+		}
+		target.DNSZone = match.FQDN
+		target.CurrentPresent = zoneContainsIP(match.Zone, address)
+		target.CanSync = true
+		if len(match.Zone.Nodes) != 0 && !target.CurrentPresent {
+			target.CanSync = false
+			target.Note += "; в расширенной зоне нет старой записи, поэтому служебный address нельзя угадать безопасно"
+		} else if target.CurrentPresent {
+			target.Note += "; DNS уже соответствует Remnawave"
+		} else {
+			target.Note += "; актуальный IP будет добавлен, неизвестные старые адреса legacy-ноды удаляться не будут"
 		}
 		return target, nil
 	}
@@ -144,17 +159,28 @@ func (s *DeploymentService) SyncNodeDNS(ctx context.Context, input NodeDNSSyncIn
 		return NodeDNSSyncResult{}, ErrNodeIPChangeFailed
 	}
 	managed, err := s.repository.FindDeploymentByPanelNodeUUID(runCtx, s.config.PanelID, node.UUID)
+	managedDeployment := true
+	var match dnsbalancer.ZoneMatch
+	var previous netip.Addr
 	if errors.Is(err, repository.ErrNotFound) {
-		return NodeDNSSyncResult{}, ErrDNSTargetUnknown
-	}
-	if err != nil {
+		managedDeployment = false
+		var inferred bool
+		match, inferred, _, err = s.inferLegacyDNSZone(runCtx, node)
+		if err != nil {
+			return NodeDNSSyncResult{}, err
+		}
+		if !inferred {
+			return NodeDNSSyncResult{}, ErrDNSTargetUnknown
+		}
+	} else if err != nil {
 		return NodeDNSSyncResult{}, ErrPersistenceFailed
+	} else {
+		match, err = s.dns.FindZone(runCtx, managed.SNIDomain)
+		if err != nil {
+			return NodeDNSSyncResult{}, ErrDNSUpdateFailed
+		}
+		previous = managed.TargetVPSIP.Unmap()
 	}
-	match, err := s.dns.FindZone(runCtx, managed.SNIDomain)
-	if err != nil {
-		return NodeDNSSyncResult{}, ErrDNSUpdateFailed
-	}
-	previous := managed.TargetVPSIP.Unmap()
 	currentPresent := zoneContainsIP(match.Zone, address)
 	previousPresent := previous.IsValid() && previous != address && zoneContainsIP(match.Zone, previous)
 	action := DNSSyncAlreadyPresent
@@ -178,7 +204,7 @@ func (s *DeploymentService) SyncNodeDNS(ctx context.Context, input NodeDNSSyncIn
 			action = DNSSyncAdded
 		}
 	}
-	if previous != address {
+	if managedDeployment && previous != address {
 		if _, err := s.repository.SetTargetVPSIP(runCtx, managed.ID, address); err != nil {
 			// DNS already follows the source of truth. Do not roll it back; the
 			// idempotent next run will only repair persistence.
@@ -186,6 +212,58 @@ func (s *DeploymentService) SyncNodeDNS(ctx context.Context, input NodeDNSSyncIn
 		}
 	}
 	return NodeDNSSyncResult{NodeName: node.Name, Address: address, DNSZone: match.FQDN, Action: action, PreviousIP: previous}, nil
+}
+
+// inferLegacyDNSZone maps a legacy Node to a Host only when both the active
+// config profile and one active inbound match. Different Host addresses for
+// the same profile/inbound are deliberately treated as ambiguous.
+func (s *DeploymentService) inferLegacyDNSZone(ctx context.Context, node remnawave.Node) (dnsbalancer.ZoneMatch, bool, string, error) {
+	if node.ActiveConfigProfileUUID == nil || strings.TrimSpace(*node.ActiveConfigProfileUUID) == "" || len(node.ActiveInboundUUIDs) == 0 {
+		return dnsbalancer.ZoneMatch{}, false, "Legacy-нода не содержит полного профиля и inbound для определения DNS-зоны", nil
+	}
+	hosts, err := s.remnawave.GetHosts(ctx)
+	if err != nil {
+		return dnsbalancer.ZoneMatch{}, false, "", ErrNodeIPChangeFailed
+	}
+	activeInbounds := make(map[string]struct{}, len(node.ActiveInboundUUIDs))
+	for _, inbound := range node.ActiveInboundUUIDs {
+		if value := strings.TrimSpace(inbound); value != "" {
+			activeInbounds[value] = struct{}{}
+		}
+	}
+	profileUUID := strings.TrimSpace(*node.ActiveConfigProfileUUID)
+	candidates := make(map[string]string)
+	for _, host := range hosts {
+		if host.IsDisabled {
+			continue
+		}
+		profile, profileErr := remnawave.DeploymentProfileFromHost(host)
+		if profileErr != nil || profile.ActiveConfigProfileUUID != profileUUID || len(profile.ActiveInbounds) != 1 {
+			continue
+		}
+		if _, matched := activeInbounds[profile.ActiveInbounds[0]]; !matched {
+			continue
+		}
+		key := normalizeDomain(profile.SNIDomain)
+		if key != "" {
+			candidates[key] = profile.SNIDomain
+		}
+	}
+	if len(candidates) == 0 {
+		return dnsbalancer.ZoneMatch{}, false, "Для профиля и inbound legacy-ноды не найден подходящий активный Host", nil
+	}
+	if len(candidates) != 1 {
+		return dnsbalancer.ZoneMatch{}, false, "Профиль и inbound legacy-ноды соответствуют нескольким Host с разными SNI; выбор зоны неоднозначен", nil
+	}
+	var sni string
+	for _, value := range candidates {
+		sni = value
+	}
+	match, err := s.dns.FindZone(ctx, sni)
+	if err != nil {
+		return dnsbalancer.ZoneMatch{}, false, "", ErrDNSUpdateFailed
+	}
+	return match, true, "Целевая зона определена по совпадению профиля и inbound ноды с Host", nil
 }
 
 func (s *DeploymentService) findExactNode(ctx context.Context, query string) (remnawave.Node, netip.Addr, error) {

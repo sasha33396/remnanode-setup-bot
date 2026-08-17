@@ -200,6 +200,20 @@ func TestDNSSyncWizardUsesRemnawaveIPAndRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestDNSSyncCardAllowsLegacyZoneInferredFromProfile(t *testing.T) {
+	text := renderDNSSyncTarget(NodeDNSSyncTarget{
+		PanelName: "Hit",
+		Name:      "de-10-cherry",
+		Address:   netip.MustParseAddr("88.216.70.55"),
+		DNSZone:   "de-modx.nodexphere.net",
+		CanSync:   true,
+		Note:      "Целевая зона определена по совпадению профиля и inbound ноды с Host",
+	})
+	if !strings.Contains(text, "legacy, зона определена по профилю + inbound") || !strings.Contains(text, "de-modx.nodexphere.net") || strings.Contains(text, "Автоматическая запись отключена") {
+		t.Fatalf("inferred legacy card = %q", text)
+	}
+}
+
 func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
 	application := &fakeApplication{
 		panels: []Panel{{ID: "europe", Name: "Europe", DNSEnabled: true}, {ID: "test", Name: "Test", DNSEnabled: false}},

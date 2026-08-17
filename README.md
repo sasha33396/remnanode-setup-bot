@@ -105,8 +105,13 @@ The **Сменить IP** menu contains four workflows:
   Node itself is never changed. A fresh Remnawave read at confirmation prevents
   stale previews from modifying DNS. Managed Nodes use their persisted SNI
   association, so synchronization still works when the current IP is absent
-  from every DNS zone. Legacy Nodes without a deployment association are shown
-  as non-actionable because the bot cannot safely guess their target zone.
+  from every DNS zone. For a legacy Node without deployment history, the bot
+  requires an exact match between the Node's active config-profile UUID and
+  inbound UUID and one active Host's profile/inbound, then uses that Host's
+  address as SNI. Multiple different matching Host addresses are treated as
+  ambiguous and no DNS write is made. Because a legacy Node has no persisted
+  previous IP, synchronization adds its Remnawave IP but does not guess which
+  existing balancer address should be removed.
 
 The **Развёртывания** list is actionable. Opening a deployment shows only the
 buttons valid for its durable state: safe logs, step/DNS retry, Remnawave
