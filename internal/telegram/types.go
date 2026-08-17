@@ -112,6 +112,38 @@ type NodeIPChangeInput struct {
 	NewIP      netip.Addr
 }
 
+// NodeDNSSyncTarget is an operator-safe preview. Address is always the
+// canonical value read from Remnawave; DNS is never allowed to overwrite it.
+type NodeDNSSyncTarget struct {
+	PanelName       string
+	UUID            string
+	Name            string
+	Address         netip.Addr
+	Connected       bool
+	Managed         bool
+	DNSZone         string
+	PreviousIP      netip.Addr
+	CurrentZones    []string
+	CurrentPresent  bool
+	PreviousPresent bool
+	CanSync         bool
+	Note            string
+}
+
+type NodeDNSSyncInput struct {
+	PanelID    string
+	NodeUUID   string
+	ExpectedIP netip.Addr
+}
+
+type NodeDNSSyncResult struct {
+	NodeName   string
+	Address    netip.Addr
+	DNSZone    string
+	Action     string
+	PreviousIP netip.Addr
+}
+
 // CherryIPInput contains the transient root password used only for one SSH
 // connection. Implementations must not retain Password after the call returns.
 type CherryIPInput struct {
@@ -267,6 +299,13 @@ type RecoveryApplication interface {
 type NodeIPApplication interface {
 	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
+}
+
+// NodeDNSSyncApplication repairs a managed Node's DNS membership using the
+// current Remnawave address as the source of truth.
+type NodeDNSSyncApplication interface {
+	FindNodeForDNSSync(context.Context, string, string) (NodeDNSSyncTarget, error)
+	SyncNodeDNS(context.Context, NodeDNSSyncInput) (NodeDNSSyncResult, error)
 }
 
 // CherryIPApplication is optional. It powers the SSH/netplan Cherry Servers

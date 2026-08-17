@@ -137,6 +137,89 @@ func TestReplaceNodeIPSupportsLegacyNodeAndAllMatchingZones(t *testing.T) {
 	}
 }
 
+func TestSyncNodeDNSUsesRemnawaveAddressAndReplacesPersistedIP(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1", IsConnected: true}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8", "9.9.9.9"}}}}
+
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "node")
+	if err != nil || !target.CanSync || target.CurrentPresent || !target.PreviousPresent || target.Address.String() != "1.1.1.1" {
+		t.Fatalf("FindNodeForDNSSync() = %#v, %v", target, err)
+	}
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if err != nil || result.Action != DNSSyncReplaced {
+		t.Fatalf("SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[0] != "1.1.1.1" || got[1] != "9.9.9.9" {
+		t.Fatalf("DNS IPs = %v", got)
+	}
+	if got := fixture.repo.mustGet(item.ID).TargetVPSIP.String(); got != "1.1.1.1" {
+		t.Fatalf("persisted IP = %s", got)
+	}
+	if got := fixture.remnawave.nodes[0].Address; got != "1.1.1.1" {
+		t.Fatalf("Remnawave address changed = %s", got)
+	}
+}
+
+func TestSyncNodeDNSAddsRemnawaveIPWhenNoOldAddressExists(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"9.9.9.9"}}}}
+
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: netip.MustParseAddr("1.1.1.1")})
+	if err != nil || result.Action != DNSSyncAdded {
+		t.Fatalf("SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[1] != "1.1.1.1" {
+		t.Fatalf("DNS IPs = %v", got)
+	}
+}
+
+func TestSyncNodeDNSRejectsLegacyNodeWithoutTargetZone(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "1.1.1.1"}}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "legacy")
+	if err != nil || target.Managed || target.CanSync || target.Address.String() != "1.1.1.1" {
+		t.Fatalf("legacy target = %#v, %v", target, err)
+	}
+	_, err = fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if !errors.Is(err, ErrDNSTargetUnknown) {
+		t.Fatalf("SyncNodeDNS() error = %v, want ErrDNSTargetUnknown", err)
+	}
+}
+
+func TestSyncNodeDNSDoesNotGuessMissingAdvancedNodeAddress(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID)}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{Nodes: []dnsbalancer.ZoneNode{{IP: "9.9.9.9", Address: "100.64.0.1"}}}}}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "node")
+	if err != nil || target.CanSync || !strings.Contains(target.Note, "нельзя угадать") {
+		t.Fatalf("advanced target = %#v, %v", target, err)
+	}
+	_, err = fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if !errors.Is(err, ErrDNSTargetUnknown) {
+		t.Fatalf("advanced SyncNodeDNS() error = %v", err)
+	}
+}
+
+func TestSyncNodeDNSRejectsStaleRemnawavePreview(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID)}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}}}
+	_, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: netip.MustParseAddr("4.4.4.4")})
+	if !errors.Is(err, ErrNodeIPChangeFailed) || fixture.dns.addCalls != 0 {
+		t.Fatalf("stale SyncNodeDNS() error = %v, DNS adds = %d", err, fixture.dns.addCalls)
+	}
+}
+
 func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.vps.provisionErr = errors.New("protected provisioner details")
@@ -845,27 +928,56 @@ func (f *fakeDNS) FindZonesByIP(_ context.Context, ip netip.Addr) ([]dnsbalancer
 	defer f.mu.Unlock()
 	var result []dnsbalancer.ZoneMatch
 	for _, zone := range f.zones {
+		matched := false
 		for _, value := range zone.Zone.IPs {
 			parsed, err := netip.ParseAddr(value)
 			if err == nil && parsed.Unmap() == ip.Unmap() {
-				result = append(result, zone)
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			for _, node := range zone.Zone.Nodes {
+				parsed, err := netip.ParseAddr(node.IP)
+				if err == nil && parsed.Unmap() == ip.Unmap() {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			result = append(result, zone)
 		}
 	}
 	return result, nil
 }
 
-func (f *fakeDNS) FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error) {
+func (f *fakeDNS) FindZone(_ context.Context, fqdn string) (dnsbalancer.ZoneMatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, zone := range f.zones {
+		if strings.EqualFold(zone.FQDN, fqdn) {
+			return zone, nil
+		}
+	}
 	return dnsbalancer.ZoneMatch{FQDN: "edge.example.com"}, nil
 }
 
-func (f *fakeDNS) AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error) {
+func (f *fakeDNS) AddIP(_ context.Context, fqdn string, address netip.Addr) (dnsbalancer.AddIPResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addCalls++
 	f.events.add("dns.add")
-	return dnsbalancer.AddIPResult{}, f.addErr
+	if f.addErr != nil {
+		return dnsbalancer.AddIPResult{}, f.addErr
+	}
+	for index := range f.zones {
+		if f.zones[index].FQDN == fqdn {
+			f.zones[index].Zone.IPs = append(f.zones[index].Zone.IPs, address.String())
+			return dnsbalancer.AddIPResult{FQDN: fqdn, Added: true, IPs: append([]string(nil), f.zones[index].Zone.IPs...)}, nil
+		}
+	}
+	return dnsbalancer.AddIPResult{FQDN: fqdn}, nil
 }
 
 func (f *fakeDNS) ReplaceIP(_ context.Context, fqdn string, oldIP, newIP netip.Addr) (dnsbalancer.ReplaceIPResult, error) {

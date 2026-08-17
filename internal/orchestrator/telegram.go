@@ -381,6 +381,44 @@ func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, input telegram.
 	return panel.Service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
 }
 
+func (a *TelegramApplication) FindNodeForDNSSync(ctx context.Context, panelID, query string) (telegram.NodeDNSSyncTarget, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return telegram.NodeDNSSyncTarget{}, err
+	}
+	target, err := panel.Service.FindNodeForDNSSync(ctx, query)
+	if err != nil {
+		return telegram.NodeDNSSyncTarget{}, err
+	}
+	return telegram.NodeDNSSyncTarget{
+		PanelName:       panel.Name,
+		UUID:            target.UUID,
+		Name:            target.Name,
+		Address:         target.Address,
+		Connected:       target.Connected,
+		Managed:         target.Managed,
+		DNSZone:         target.DNSZone,
+		PreviousIP:      target.PreviousIP,
+		CurrentZones:    append([]string(nil), target.CurrentZones...),
+		CurrentPresent:  target.CurrentPresent,
+		PreviousPresent: target.PreviousPresent,
+		CanSync:         target.CanSync,
+		Note:            target.Note,
+	}, nil
+}
+
+func (a *TelegramApplication) SyncNodeDNS(ctx context.Context, input telegram.NodeDNSSyncInput) (telegram.NodeDNSSyncResult, error) {
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return telegram.NodeDNSSyncResult{}, err
+	}
+	result, err := panel.Service.SyncNodeDNS(ctx, NodeDNSSyncInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP})
+	if err != nil {
+		return telegram.NodeDNSSyncResult{}, err
+	}
+	return telegram.NodeDNSSyncResult{NodeName: result.NodeName, Address: result.Address, DNSZone: result.DNSZone, Action: result.Action, PreviousIP: result.PreviousIP}, nil
+}
+
 func (a *TelegramApplication) ConfigureCherryIP(ctx context.Context, input telegram.CherryIPInput) (telegram.CherryIPResult, error) {
 	if a.cherryIP == nil {
 		return telegram.CherryIPResult{}, errors.New("Cherry IP service is unavailable")

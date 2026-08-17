@@ -155,6 +155,51 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	}
 }
 
+func TestDNSSyncWizardUsesRemnawaveIPAndRequiresConfirmation(t *testing.T) {
+	application := &fakeDNSSyncApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeDNSSyncTarget{
+			PanelName:       "Hit",
+			UUID:            "internal-node-uuid",
+			Name:            "de-new-0",
+			Address:         netip.MustParseAddr("177.1.202.161"),
+			Connected:       true,
+			Managed:         true,
+			DNSZone:         "de-new.example.com",
+			PreviousIP:      netip.MustParseAddr("85.155.125.5"),
+			PreviousPresent: true,
+			CanSync:         true,
+			Note:            "Устаревший IP будет заменён актуальным IP из Remnawave",
+		},
+		result: NodeDNSSyncResult{NodeName: "de-new-0", Address: netip.MustParseAddr("177.1.202.161"), DNSZone: "de-new.example.com", Action: "REPLACED"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	if len(mode.keyboard.Inline) != 1 || !strings.Contains(mode.keyboard.Inline[0][0].Text, "Remna → DNS") {
+		t.Fatalf("DNS sync mode = %#v", mode.keyboard)
+	}
+	handleCallback(t, controller, "dns-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "de-new-0")
+	card := messenger.lastSent()
+	if !strings.Contains(card.text, "Титульный IP (Remna): 177.1.202.161") || !strings.Contains(card.text, "de-new.example.com") || strings.Contains(card.text, "internal-node-uuid") {
+		t.Fatalf("DNS sync card = %q", card.text)
+	}
+	if application.syncCalls != 0 || len(card.keyboard.Inline) != 1 {
+		t.Fatalf("sync happened before confirmation: calls=%d keyboard=%#v", application.syncCalls, card.keyboard)
+	}
+	handleCallback(t, controller, "dns-confirm", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || application.input.NodeUUID != "internal-node-uuid" || application.input.ExpectedIP.String() != "177.1.202.161" {
+		t.Fatalf("DNS sync input = %#v, calls=%d", application.input, application.syncCalls)
+	}
+	edits := messenger.editsSnapshot()
+	if !strings.Contains(edits[len(edits)-1].text, "устаревший IP заменён актуальным") {
+		t.Fatalf("DNS sync result = %q", edits[len(edits)-1].text)
+	}
+}
+
 func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
 	application := &fakeApplication{
 		panels: []Panel{{ID: "europe", Name: "Europe", DNSEnabled: true}, {ID: "test", Name: "Test", DNSEnabled: false}},
@@ -635,6 +680,16 @@ type fakeNodeIPApplication struct {
 	findPanel    string
 }
 
+type fakeDNSSyncApplication struct {
+	*fakeApplication
+	target    NodeDNSSyncTarget
+	findErr   error
+	result    NodeDNSSyncResult
+	syncErr   error
+	syncCalls int
+	input     NodeDNSSyncInput
+}
+
 type fakeCherryIPApplication struct {
 	*fakeApplication
 	calls    int
@@ -733,6 +788,16 @@ func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPCha
 	f.replaceCalls++
 	f.input = input
 	return "IP изменён", f.replaceErr
+}
+
+func (f *fakeDNSSyncApplication) FindNodeForDNSSync(context.Context, string, string) (NodeDNSSyncTarget, error) {
+	return f.target, f.findErr
+}
+
+func (f *fakeDNSSyncApplication) SyncNodeDNS(_ context.Context, input NodeDNSSyncInput) (NodeDNSSyncResult, error) {
+	f.syncCalls++
+	f.input = input
+	return f.result, f.syncErr
 }
 func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error) {
 	return append([]DeploymentLogEntry(nil), f.logs...), nil

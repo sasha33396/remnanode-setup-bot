@@ -142,7 +142,7 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
 	case stateSelectingIPMode, stateSelectingServerIPScope:
@@ -178,6 +178,11 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptServerNewIP(ctx, message, session)
 	case stateAwaitingServerIPPassword:
 		return c.acceptServerIPPassword(ctx, message, session)
+	case stateAwaitingDNSSyncQuery:
+		return c.acceptDNSSyncQuery(ctx, message, session)
+	case stateAwaitingDNSSyncConfirmation:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Подтвердите синхронизацию кнопкой под карточкой.", Keyboard{})
+		return err
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -323,6 +328,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.beginServerIPScope(ctx, callback, session, serverIPProviderCherry)
 		case 2:
 			return c.beginServerIPScope(ctx, callback, session, serverIPProviderRoyal)
+		case 3:
+			return c.beginDNSSync(ctx, callback, session)
 		default:
 			return c.expiredCallback(ctx, callback)
 		}
@@ -355,6 +362,17 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.expiredCallback(ctx, callback)
 		}
 		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+	case "dns_panel":
+		if session.state != stateSelectingDNSSyncPanel || index < 0 || index >= len(session.panels) {
+			return c.expiredCallback(ctx, callback)
+		}
+		if !c.updateSession(callback.FromUserID, nonce, stateSelectingDNSSyncPanel, func(current *wizard) {
+			current.panel = session.panels[index]
+			current.state = stateAwaitingDNSSyncQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её актуальный IP из Remnawave.", Keyboard{})
 	case "panel":
 		if session.state != stateSelectingPanel || index < 0 || index >= len(session.panels) {
 			return c.expiredCallback(ctx, callback)
@@ -409,6 +427,30 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		}
 		removed.clear()
 		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Смена IP отменена.", Keyboard{})
+	case "dns_sync":
+		if session.state != stateAwaitingDNSSyncConfirmation || session.statusMsgID != callback.Message.ID || !session.dnsSyncTarget.CanSync {
+			return c.expiredCallback(ctx, callback)
+		}
+		active := c.takeSession(callback.FromUserID, nonce, stateAwaitingDNSSyncConfirmation)
+		if active == nil {
+			return c.expiredCallback(ctx, callback)
+		}
+		defer active.clear()
+		result, err := c.app.(NodeDNSSyncApplication).SyncNodeDNS(ctx, NodeDNSSyncInput{PanelID: active.panel.ID, NodeUUID: active.dnsSyncTarget.UUID, ExpectedIP: active.dnsSyncTarget.Address})
+		if err != nil {
+			return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, "❌ Не удалось безопасно синхронизировать DNS. IP ноды в Remnawave не изменялся; запустите проверку заново.", mainKeyboard())
+		}
+		return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, renderDNSSyncResult(result), mainKeyboard())
+	case "dns_cancel":
+		if session.state != stateAwaitingDNSSyncConfirmation || session.statusMsgID != callback.Message.ID {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed := c.takeSession(callback.FromUserID, nonce, stateAwaitingDNSSyncConfirmation)
+		if removed == nil {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed.clear()
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Синхронизация DNS отменена.", Keyboard{})
 	default:
 		return c.expiredCallback(ctx, callback)
 	}
@@ -487,7 +529,8 @@ func (c *Controller) beginIPChange(ctx context.Context, message *Message) error 
 	_, nodeAvailable := c.app.(NodeIPApplication)
 	_, cherryAvailable := c.app.(CherryIPApplication)
 	_, royalAvailable := c.app.(RoyalIPApplication)
-	if !nodeAvailable && !cherryAvailable && !royalAvailable {
+	_, dnsSyncAvailable := c.app.(NodeDNSSyncApplication)
+	if !nodeAvailable && !cherryAvailable && !royalAvailable && !dnsSyncAvailable {
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Смена IP сейчас недоступна.", mainKeyboard())
 		return err
 	}
@@ -496,7 +539,7 @@ func (c *Controller) beginIPChange(ctx context.Context, message *Message) error 
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось начать смену IP. Повторите позже.", mainKeyboard())
 		return errors.Join(err, sendErr)
 	}
-	rows := make([][]Button, 0, 3)
+	rows := make([][]Button, 0, 4)
 	if nodeAvailable {
 		rows = append(rows, []Button{{Text: "Панель + DNS-балансировка", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 0)}})
 	}
@@ -506,9 +549,51 @@ func (c *Controller) beginIPChange(ctx context.Context, message *Message) error 
 	if royalAvailable {
 		rows = append(rows, []Button{{Text: "Смена IP на Royal (сервер)", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 2)}})
 	}
+	if dnsSyncAvailable {
+		rows = append(rows, []Button{{Text: "🔄 Синхронизировать Remna → DNS", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 3)}})
+	}
 	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingIPMode, expiresAt: c.now().Add(c.ttl)})
 	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Что именно нужно изменить?", Keyboard{Inline: rows})
 	return err
+}
+
+func (c *Controller) beginDNSSync(ctx context.Context, callback *CallbackQuery, session *wizard) error {
+	if _, ok := c.app.(NodeDNSSyncApplication); !ok {
+		return c.expiredCallback(ctx, callback)
+	}
+	panels, err := c.app.ListPanels(ctx)
+	if err != nil {
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Панели временно недоступны.", Keyboard{})
+	}
+	enabled := make([]Panel, 0, len(panels))
+	for _, panel := range panels {
+		if panel.DNSEnabled {
+			enabled = append(enabled, panel)
+		}
+	}
+	if len(enabled) == 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "DNS-балансировка отключена для всех панелей.", mainKeyboard())
+	}
+	if len(enabled) == 1 {
+		if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
+			current.panel = enabled[0]
+			current.state = stateAwaitingDNSSyncQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её актуальный IP из Remnawave.", Keyboard{})
+	}
+	if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
+		current.panels = enabled
+		current.state = stateSelectingDNSSyncPanel
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	rows := make([][]Button, 0, len(enabled))
+	for index, panel := range enabled {
+		rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("dns:panel:%s:%d", session.nonce, index)}})
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выберите панель, из которой взять титульный IP:", Keyboard{Inline: rows})
 }
 
 func (c *Controller) beginServerIPScope(ctx context.Context, callback *CallbackQuery, session *wizard, provider serverIPProvider) error {
@@ -631,6 +716,29 @@ func (c *Controller) acceptNewNodeIP(ctx context.Context, message *Message, sess
 	}
 	_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "✅ "+safeLine(result, 400), mainKeyboard())
 	return sendErr
+}
+
+func (c *Controller) acceptDNSSyncQuery(ctx context.Context, message *Message, session *wizard) error {
+	target, err := c.app.(NodeDNSSyncApplication).FindNodeForDNSSync(ctx, session.panel.ID, strings.TrimSpace(message.Text))
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось проверить ноду и DNS. Проверьте точное имя/IP и доступность DNS-балансировки.", Keyboard{})
+		return sendErr
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingDNSSyncQuery, func(current *wizard) {
+		current.dnsSyncTarget = target
+		current.state = stateAwaitingDNSSyncConfirmation
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	keyboard := dnsSyncKeyboard(session.nonce, target.CanSync)
+	sent, err := c.messenger.SendMessage(ctx, message.ChatID, renderDNSSyncTarget(target), keyboard)
+	if err != nil {
+		return err
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingDNSSyncConfirmation, func(current *wizard) { current.statusMsgID = sent.ID }) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	return nil
 }
 
 func (c *Controller) acceptServerCurrentIP(ctx context.Context, message *Message, session *wizard) error {
@@ -1368,6 +1476,71 @@ func ipChangeKeyboard(nonce string) Keyboard {
 	}}}
 }
 
+func dnsSyncKeyboard(nonce string, canSync bool) Keyboard {
+	if !canSync {
+		return Keyboard{Inline: [][]Button{{{Text: "Закрыть", CallbackData: "dns:cancel:" + nonce}}}}
+	}
+	return Keyboard{Inline: [][]Button{{
+		{Text: "✅ Синхронизировать", CallbackData: "dns:sync:" + nonce},
+		{Text: "❌ Отменить", CallbackData: "dns:cancel:" + nonce},
+	}}}
+}
+
+func renderDNSSyncTarget(target NodeDNSSyncTarget) string {
+	status := "не подключена"
+	if target.Connected {
+		status = "подключена"
+	}
+	kind := "legacy"
+	if target.Managed {
+		kind = "создана этим ботом"
+	}
+	zone := "не определена"
+	if target.DNSZone != "" {
+		zone = target.DNSZone
+	}
+	presence := "⚠️ актуальный IP отсутствует в целевой DNS-зоне"
+	if target.CurrentPresent {
+		presence = "✅ актуальный IP есть в целевой DNS-зоне"
+	}
+	if !target.Managed && len(target.CurrentZones) != 0 {
+		presence = "✅ IP найден в DNS-зонах: " + strings.Join(target.CurrentZones, ", ")
+	}
+	var builder strings.Builder
+	builder.WriteString("🔄 Синхронизация Remna → DNS\n")
+	fmt.Fprintf(&builder, "Панель: %s\n", safeLine(target.PanelName, 80))
+	fmt.Fprintf(&builder, "Нода: %s\n", safeLine(target.Name, 80))
+	fmt.Fprintf(&builder, "Титульный IP (Remna): %s\n", target.Address)
+	fmt.Fprintf(&builder, "Статус: %s\n", status)
+	fmt.Fprintf(&builder, "Тип: %s\n", kind)
+	fmt.Fprintf(&builder, "Целевая DNS-зона: %s\n", safeLine(zone, 255))
+	if target.PreviousIP.IsValid() && target.PreviousIP != target.Address {
+		fmt.Fprintf(&builder, "IP в истории бота: %s\n", target.PreviousIP)
+	}
+	fmt.Fprintf(&builder, "Проверка: %s\n", safeLine(presence, 800))
+	if target.Managed && !target.CurrentPresent && len(target.CurrentZones) != 0 {
+		fmt.Fprintf(&builder, "Актуальный IP также найден в: %s\n", safeLine(strings.Join(target.CurrentZones, ", "), 800))
+	}
+	if target.Note != "" {
+		fmt.Fprintf(&builder, "Действие: %s", safeLine(target.Note, 500))
+	}
+	if !target.CanSync {
+		builder.WriteString("\n\nАвтоматическая запись отключена: для legacy-ноды без истории развёртывания нельзя безопасно угадать целевую DNS-зону.")
+	}
+	return truncateUTF8(builder.String(), maxMessageBytes)
+}
+
+func renderDNSSyncResult(result NodeDNSSyncResult) string {
+	action := "DNS уже соответствовал Remnawave"
+	switch result.Action {
+	case "ADDED":
+		action = "актуальный IP добавлен в DNS"
+	case "REPLACED":
+		action = "устаревший IP заменён актуальным"
+	}
+	return fmt.Sprintf("✅ Синхронизация завершена\nНода: %s\nТитульный IP (Remna): %s\nDNS-зона: %s\nРезультат: %s", safeLine(result.NodeName, 80), result.Address, safeLine(result.DNSZone, 255), action)
+}
+
 func renderIPChangeTarget(target NodeIPChangeTarget) string {
 	status := "не подключена"
 	if target.Connected {
@@ -1467,10 +1640,25 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	}
 	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "mode" {
 		parsed, err := strconv.Atoi(parts[3])
-		if err != nil || parsed < 0 || parsed > 2 {
+		if err != nil || parsed < 0 || parsed > 3 {
 			return "", "", 0, false
 		}
 		return "ip_mode", parts[2], parsed, true
+	}
+	if parts[0] == "dns" && len(parts) == 4 && parts[1] == "panel" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 {
+			return "", "", 0, false
+		}
+		return "dns_panel", parts[2], parsed, true
+	}
+	if parts[0] == "dns" && len(parts) == 3 {
+		switch parts[1] {
+		case "sync":
+			return "dns_sync", parts[2], 0, true
+		case "cancel":
+			return "dns_cancel", parts[2], 0, true
+		}
 	}
 	if parts[0] == "ip" && len(parts) == 3 {
 		switch parts[1] {

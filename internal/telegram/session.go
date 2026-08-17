@@ -34,6 +34,9 @@ const (
 	stateAwaitingServerCurrentIP
 	stateAwaitingServerNewIP
 	stateAwaitingServerIPPassword
+	stateSelectingDNSSyncPanel
+	stateAwaitingDNSSyncQuery
+	stateAwaitingDNSSyncConfirmation
 )
 
 type wizard struct {
@@ -52,6 +55,7 @@ type wizard struct {
 	preflight        PreflightResult
 	statusMsgID      int
 	ipTarget         NodeIPChangeTarget
+	dnsSyncTarget    NodeDNSSyncTarget
 	serverIPProvider serverIPProvider
 	serverCurrentIP  netip.Addr
 	serverNewIP      netip.Addr
@@ -71,6 +75,7 @@ func (w *wizard) clone() *wizard {
 	result.expiryTimer = nil
 	result.preflight.Warnings = append([]OperatorNotice(nil), w.preflight.Warnings...)
 	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
+	result.dnsSyncTarget.CurrentZones = append([]string(nil), w.dnsSyncTarget.CurrentZones...)
 	return &result
 }
 

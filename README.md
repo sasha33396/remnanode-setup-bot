@@ -71,7 +71,7 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
-The **Сменить IP** menu contains three workflows:
+The **Сменить IP** menu contains four workflows:
 
 - **Панель + DNS-балансировка** updates the Remnawave Node and every matching
   DNS-balancer zone. It supports both Nodes created by this bot and legacy
@@ -96,6 +96,17 @@ The **Сменить IP** menu contains three workflows:
   is verified through the new address. As with Cherry, an existing managed or
   legacy Remnawave Node and its DNS zones can be updated automatically, or the
   server-only path can be used before the Node is added to Remnawave.
+- **Синхронизировать Remna → DNS** treats the current Node address returned by
+  Remnawave as the canonical (title) IP and repairs its managed DNS zone. The
+  wizard shows the panel, Node, current Remnawave IP, persisted previous IP,
+  target zone, and planned action before requiring confirmation. If the old IP
+  is still present it is replaced while every unrelated balancer address is
+  preserved; if neither address is present, the Remnawave IP is added. The
+  Node itself is never changed. A fresh Remnawave read at confirmation prevents
+  stale previews from modifying DNS. Managed Nodes use their persisted SNI
+  association, so synchronization still works when the current IP is absent
+  from every DNS zone. Legacy Nodes without a deployment association are shown
+  as non-actionable because the bot cannot safely guess their target zone.
 
 The **Развёртывания** list is actionable. Opening a deployment shows only the
 buttons valid for its durable state: safe logs, step/DNS retry, Remnawave
