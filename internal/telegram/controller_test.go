@@ -54,8 +54,8 @@ func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	panels := []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}
 	nodes := []NodeSummary{
-		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 55},
-		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 320},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 50},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 51},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000003", Name: "de-good-2", Address: "203.0.113.3", Connected: true, OnlineKnown: true, Online: 360},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000004", Name: "de-off", Address: "203.0.113.4", Disabled: true},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000005", Name: "de-disconnected", Address: "203.0.113.5"},
@@ -76,7 +76,7 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	handleCallback(t, controller, "nodes-panel", "nodes:p:0", first.message)
 	edits := messenger.editsSnapshot()
 	panel := edits[len(edits)-1]
-	if !strings.Contains(panel.text, "Критический порог: менее 128") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
+	if !strings.Contains(panel.text, "Критический порог: 50 онлайн или меньше") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
 		t.Fatalf("panel summary = %q", panel.text)
 	}
 	wantButtons := []string{"🚨 Критический онлайн — 1", "⏸ Отключённые — 1", "🟢 Активные / стабильные — 2"}
@@ -89,7 +89,7 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	handleCallback(t, controller, "nodes-critical", "nodes:g:0:c:0", first.message)
 	edits = messenger.editsSnapshot()
 	critical := edits[len(edits)-1]
-	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 55" {
+	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 50" {
 		t.Fatalf("critical list = %q %#v", critical.text, critical.keyboard)
 	}
 

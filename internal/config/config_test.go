@@ -26,8 +26,8 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
 		t.Fatalf("legacy panel = %#v", cfg.Panels)
 	}
-	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineFloor != 80 || cfg.NodeCriticalOnlineRatio != 40 || cfg.NodeCriticalOnlineCap != 200 {
-		t.Fatalf("node monitor defaults = interval %s, alert interval %s, confirmations %d, floor %d, ratio %d, cap %d", cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineFloor, cfg.NodeCriticalOnlineRatio, cfg.NodeCriticalOnlineCap)
+	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineThreshold != 50 {
+		t.Fatalf("node monitor defaults = interval %s, alert interval %s, confirmations %d, threshold %d", cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineThreshold)
 	}
 }
 
@@ -36,20 +36,18 @@ func TestLoadNodeMonitorOverrides(t *testing.T) {
 	values["NODE_MONITOR_INTERVAL"] = "45s"
 	values["NODE_CRITICAL_ALERT_INTERVAL"] = "10m"
 	values["NODE_MONITOR_CONFIRMATIONS"] = "3"
-	values["NODE_CRITICAL_ONLINE_FLOOR"] = "60"
-	values["NODE_CRITICAL_ONLINE_RATIO"] = "35"
-	values["NODE_CRITICAL_ONLINE_CAP"] = "175"
+	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "65"
 	cfg, err := load(mapLookup(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.NodeMonitorInterval != 45*time.Second || cfg.NodeCriticalAlertInterval != 10*time.Minute || cfg.NodeMonitorConfirmations != 3 || cfg.NodeCriticalOnlineFloor != 60 || cfg.NodeCriticalOnlineRatio != 35 || cfg.NodeCriticalOnlineCap != 175 {
+	if cfg.NodeMonitorInterval != 45*time.Second || cfg.NodeCriticalAlertInterval != 10*time.Minute || cfg.NodeMonitorConfirmations != 3 || cfg.NodeCriticalOnlineThreshold != 65 {
 		t.Fatalf("node monitor overrides were not loaded: %#v", cfg)
 	}
 
-	values["NODE_CRITICAL_ONLINE_CAP"] = "40"
-	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_CRITICAL_ONLINE_CAP") {
-		t.Fatalf("invalid node monitor bounds error = %v", err)
+	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "0"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_CRITICAL_ONLINE_THRESHOLD") {
+		t.Fatalf("invalid node monitor threshold error = %v", err)
 	}
 }
 

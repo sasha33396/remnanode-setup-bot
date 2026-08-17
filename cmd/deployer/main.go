@@ -235,9 +235,7 @@ func run() int {
 		return 1
 	}
 	nodePolicy := telegram.NodePolicy{
-		CriticalFloor:        cfg.NodeCriticalOnlineFloor,
-		CriticalRatioPercent: cfg.NodeCriticalOnlineRatio,
-		CriticalCap:          cfg.NodeCriticalOnlineCap,
+		CriticalOnlineThreshold: cfg.NodeCriticalOnlineThreshold,
 	}
 	controller.SetNodePolicy(nodePolicy)
 	nodeMonitor, err := telegram.NewNodeMonitor(cfg.TelegramAllowedUsers, application, bot, cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, nodePolicy)

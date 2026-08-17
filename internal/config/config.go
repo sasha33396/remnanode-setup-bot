@@ -83,9 +83,7 @@ type Config struct {
 	MaxConcurrentDeployments    int
 	MaxCertificateDistributions int
 	NodeMonitorConfirmations    int
-	NodeCriticalOnlineFloor     int
-	NodeCriticalOnlineRatio     int
-	NodeCriticalOnlineCap       int
+	NodeCriticalOnlineThreshold int
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -153,9 +151,7 @@ func load(lookup lookupFunc) (Config, error) {
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
 		NodeMonitorConfirmations:    2,
-		NodeCriticalOnlineFloor:     80,
-		NodeCriticalOnlineRatio:     40,
-		NodeCriticalOnlineCap:       200,
+		NodeCriticalOnlineThreshold: 50,
 	}
 	remnaAPIIP := legacyRequired("REMNA_API_IP")
 	if remnaAPIIP != "" {
@@ -216,9 +212,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"MAX_CONCURRENT_DEPLOYMENTS", &cfg.MaxConcurrentDeployments, 100},
 		{"MAX_CERTIFICATE_DISTRIBUTIONS", &cfg.MaxCertificateDistributions, 32},
 		{"NODE_MONITOR_CONFIRMATIONS", &cfg.NodeMonitorConfirmations, 10},
-		{"NODE_CRITICAL_ONLINE_FLOOR", &cfg.NodeCriticalOnlineFloor, 100000},
-		{"NODE_CRITICAL_ONLINE_RATIO", &cfg.NodeCriticalOnlineRatio, 100},
-		{"NODE_CRITICAL_ONLINE_CAP", &cfg.NodeCriticalOnlineCap, 100000},
+		{"NODE_CRITICAL_ONLINE_THRESHOLD", &cfg.NodeCriticalOnlineThreshold, 100000},
 	}
 	for _, item := range integers {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -230,10 +224,6 @@ func load(lookup lookupFunc) (Config, error) {
 			}
 		}
 	}
-	if cfg.NodeCriticalOnlineCap < cfg.NodeCriticalOnlineFloor {
-		validationErrors = append(validationErrors, errors.New("NODE_CRITICAL_ONLINE_CAP must be greater than or equal to NODE_CRITICAL_ONLINE_FLOOR"))
-	}
-
 	allowedUsers := required("TELEGRAM_ALLOWED_USERS")
 	if allowedUsers != "" {
 		cfg.TelegramAllowedUsers, validationErrors = parseAllowedUsers(allowedUsers, validationErrors)

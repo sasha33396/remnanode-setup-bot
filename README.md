@@ -75,7 +75,7 @@ The **Ноды** menu first separates inventory by Remnawave panel. Inside each
 panel it shows three operator groups with live counts: critically low online
 (high priority), disabled Nodes (medium priority), and active/stable Nodes.
 Each Node opens as a card with panel, address, connection state, current online,
-panel baseline and the threshold used for classification. The card and every
+and the threshold used for classification. The card and every
 critical-online alert include a direct **Изменить IP ноды** action. It resolves
 the selected Node and panel again, verifies the current address, and enters the
 existing confirmed panel/DNS replacement workflow without asking the operator
@@ -84,12 +84,11 @@ and Nodes without a fresh online metric are shown in the panel summary but are
 excluded from low-online classification because connection loss is monitored
 separately.
 
-The baseline is the median online count of connected, enabled Nodes in that
-panel. The critical threshold is `baseline × NODE_CRITICAL_ONLINE_RATIO / 100`,
-bounded by `NODE_CRITICAL_ONLINE_FLOOR` and `NODE_CRITICAL_ONLINE_CAP` (defaults:
-40%, 80, and 200). This follows load changes as Nodes are added or removed while
-still recognizing the usual 50–70 online symptom of a blocked IP. The background
-monitor samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
+The critical threshold is fixed and configured by
+`NODE_CRITICAL_ONLINE_THRESHOLD` (50 by default). A connected, enabled Node is
+critical when its current online count is equal to or below this value; panel
+median and Node count do not affect classification. The background monitor
+samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
 `NODE_MONITOR_CONFIRMATIONS` consecutive critical samples (2 by default), and
 sends an incident alert to every `TELEGRAM_ALLOWED_USERS` operator. While the
 Node remains critical, the warning repeats every `NODE_CRITICAL_ALERT_INTERVAL`

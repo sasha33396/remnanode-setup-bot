@@ -11,25 +11,17 @@ import (
 const nodeGroupPageSize = 12
 
 type NodePolicy struct {
-	CriticalFloor        int
-	CriticalRatioPercent int
-	CriticalCap          int
+	CriticalOnlineThreshold int
 }
 
 func DefaultNodePolicy() NodePolicy {
-	return NodePolicy{CriticalFloor: 80, CriticalRatioPercent: 40, CriticalCap: 200}
+	return NodePolicy{CriticalOnlineThreshold: 50}
 }
 
 func normalizeNodePolicy(policy NodePolicy) NodePolicy {
 	defaults := DefaultNodePolicy()
-	if policy.CriticalFloor < 1 {
-		policy.CriticalFloor = defaults.CriticalFloor
-	}
-	if policy.CriticalRatioPercent < 1 || policy.CriticalRatioPercent > 100 {
-		policy.CriticalRatioPercent = defaults.CriticalRatioPercent
-	}
-	if policy.CriticalCap < policy.CriticalFloor {
-		policy.CriticalCap = defaults.CriticalCap
+	if policy.CriticalOnlineThreshold < 1 {
+		policy.CriticalOnlineThreshold = defaults.CriticalOnlineThreshold
 	}
 	return policy
 }
@@ -50,7 +42,6 @@ type nodePanelSnapshot struct {
 	Disabled  []NodeSummary
 	Active    []NodeSummary
 	Ignored   []NodeSummary
-	Baseline  int
 	Threshold int
 }
 
@@ -73,29 +64,14 @@ func classifyNodePanels(panels []Panel, nodes []NodeSummary, policy NodePolicy) 
 		}
 	}
 	for index := range result {
-		onlineValues := make([]int, 0, len(result[index].All))
-		for _, node := range result[index].All {
-			if !node.Disabled && node.Connected && node.OnlineKnown {
-				onlineValues = append(onlineValues, node.Online)
-			}
-		}
-		sort.Ints(onlineValues)
-		result[index].Baseline = medianOnline(onlineValues)
-		threshold := result[index].Baseline * policy.CriticalRatioPercent / 100
-		if threshold < policy.CriticalFloor {
-			threshold = policy.CriticalFloor
-		}
-		if threshold > policy.CriticalCap {
-			threshold = policy.CriticalCap
-		}
-		result[index].Threshold = threshold
+		result[index].Threshold = policy.CriticalOnlineThreshold
 		for _, node := range result[index].All {
 			switch {
 			case node.Disabled:
 				// Already classified above.
 			case !node.Connected || !node.OnlineKnown:
 				result[index].Ignored = append(result[index].Ignored, node)
-			case node.Online < threshold:
+			case node.Online <= result[index].Threshold:
 				result[index].Critical = append(result[index].Critical, node)
 			default:
 				result[index].Active = append(result[index].Active, node)
@@ -117,17 +93,6 @@ func classifyNodePanels(panels []Panel, nodes []NodeSummary, policy NodePolicy) 
 		sort.Slice(result[index].Ignored, func(a, b int) bool { return result[index].Ignored[a].Name < result[index].Ignored[b].Name })
 	}
 	return result
-}
-
-func medianOnline(values []int) int {
-	if len(values) == 0 {
-		return 0
-	}
-	middle := len(values) / 2
-	if len(values)%2 == 1 {
-		return values[middle]
-	}
-	return (values[middle-1] + values[middle]) / 2
 }
 
 func (s nodePanelSnapshot) nodes(group nodeGroup) []NodeSummary {
@@ -180,7 +145,7 @@ func (c *Controller) showNodePanel(ctx context.Context, chatID int64, messageID,
 		return c.renderNodeInventoryFailure(ctx, chatID, messageID)
 	}
 	snapshot := snapshots[panelIndex]
-	text := fmt.Sprintf("📡 Ноды — %s\nВсего: %d\n🚨 Критический порог: менее %d онлайн\nОриентир панели (медиана): %d\n\nНоды без связи или без свежей метрики не участвуют в тревогах: %d.", safeLine(snapshot.Panel.Name, 80), len(snapshot.All), snapshot.Threshold, snapshot.Baseline, len(snapshot.Ignored))
+	text := fmt.Sprintf("📡 Ноды — %s\nВсего: %d\n🚨 Критический порог: %d онлайн или меньше\n\nНоды без связи или без свежей метрики не участвуют в тревогах: %d.", safeLine(snapshot.Panel.Name, 80), len(snapshot.All), snapshot.Threshold, len(snapshot.Ignored))
 	rows := [][]Button{
 		{{Text: fmt.Sprintf("🚨 Критический онлайн — %d", len(snapshot.Critical)), CallbackData: fmt.Sprintf("nodes:g:%d:%s:0", panelIndex, nodeGroupCritical)}},
 		{{Text: fmt.Sprintf("⏸ Отключённые — %d", len(snapshot.Disabled)), CallbackData: fmt.Sprintf("nodes:g:%d:%s:0", panelIndex, nodeGroupDisabled)}},
@@ -296,7 +261,7 @@ func renderNodeCard(snapshot nodePanelSnapshot, node NodeSummary, group nodeGrou
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "%s\nПанель: %s\nНода: %s\nIP: %s\nСостояние: %s\nОнлайн: %s\nГруппа: %s", nodeGroupLabel(group), safeLine(node.PanelName, 80), safeLine(node.Name, 80), safeLine(node.Address, 80), status, online, nodeGroupDescription(group))
 	if group == nodeGroupCritical || group == nodeGroupActive {
-		fmt.Fprintf(&builder, "\nКритический порог панели: менее %d\nОриентир панели: %d", snapshot.Threshold, snapshot.Baseline)
+		fmt.Fprintf(&builder, "\nКритический порог: %d онлайн или меньше", snapshot.Threshold)
 	}
 	if node.LastStatusChange != nil {
 		fmt.Fprintf(&builder, "\nПоследнее изменение статуса: %s UTC", node.LastStatusChange.UTC().Format("2006-01-02 15:04:05"))
@@ -449,9 +414,9 @@ func (c *Controller) renderNodeIPStartFailure(ctx context.Context, callback *Cal
 }
 
 func formatNodeAlert(snapshot nodePanelSnapshot, node NodeSummary) string {
-	return fmt.Sprintf("🚨 Критически низкий онлайн ноды\nПанель: %s\nНода: %s\nIP: %s\nОнлайн: %d\nКритический порог: менее %d\nОриентир панели: %d\n\nПроверьте блокировку IP и при необходимости замените его.", safeLine(node.PanelName, 80), safeLine(node.Name, 80), safeLine(node.Address, 80), node.Online, snapshot.Threshold, snapshot.Baseline)
+	return fmt.Sprintf("🚨 Критически низкий онлайн ноды\nПанель: %s\nНода: %s\nIP: %s\nОнлайн: %d\nКритический порог: %d или меньше\n\nПроверьте блокировку IP и при необходимости замените его.", safeLine(node.PanelName, 80), safeLine(node.Name, 80), safeLine(node.Address, 80), node.Online, snapshot.Threshold)
 }
 
 func formatNodeRecovery(snapshot nodePanelSnapshot, node NodeSummary) string {
-	return fmt.Sprintf("✅ Онлайн ноды восстановился\nПанель: %s\nНода: %s\nОнлайн: %d\nКритический порог: менее %d", safeLine(node.PanelName, 80), safeLine(node.Name, 80), node.Online, snapshot.Threshold)
+	return fmt.Sprintf("✅ Онлайн ноды восстановился\nПанель: %s\nНода: %s\nОнлайн: %d\nКритический порог: %d или меньше", safeLine(node.PanelName, 80), safeLine(node.Name, 80), node.Online, snapshot.Threshold)
 }
