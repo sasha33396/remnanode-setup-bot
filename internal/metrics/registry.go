@@ -4,6 +4,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -135,6 +136,17 @@ func (c *RemnawaveClient) GenerateSecretKey(ctx context.Context) (string, error)
 }
 func (c *RemnawaveClient) GetNodes(ctx context.Context) ([]remnawave.Node, error) {
 	value, err := c.next.GetNodes(ctx)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) GetNodesMetrics(ctx context.Context) ([]remnawave.NodeMetric, error) {
+	provider, ok := c.next.(interface {
+		GetNodesMetrics(context.Context) ([]remnawave.NodeMetric, error)
+	})
+	if !ok {
+		return nil, errors.New("Remnawave node metrics are unavailable")
+	}
+	value, err := provider.GetNodesMetrics(ctx)
 	c.observe(err)
 	return value, err
 }

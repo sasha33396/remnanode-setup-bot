@@ -86,10 +86,18 @@ type Panel struct {
 }
 
 type NodeSummary struct {
-	PanelName string
-	Name      string
-	Address   string
-	Connected bool
+	PanelID           string
+	PanelName         string
+	UUID              string
+	Name              string
+	Address           string
+	Connected         bool
+	Connecting        bool
+	Disabled          bool
+	Online            int
+	OnlineKnown       bool
+	LastStatusMessage string
+	LastStatusChange  *time.Time
 }
 
 // NodeIPChangeTarget is an operator-safe projection used by the IP-change

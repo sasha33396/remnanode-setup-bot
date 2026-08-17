@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadValidConfiguration(t *testing.T) {
@@ -24,6 +25,30 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
 		t.Fatalf("legacy panel = %#v", cfg.Panels)
+	}
+	if cfg.NodeMonitorInterval != 2*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineFloor != 80 || cfg.NodeCriticalOnlineRatio != 40 || cfg.NodeCriticalOnlineCap != 200 {
+		t.Fatalf("node monitor defaults = interval %s, confirmations %d, floor %d, ratio %d, cap %d", cfg.NodeMonitorInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineFloor, cfg.NodeCriticalOnlineRatio, cfg.NodeCriticalOnlineCap)
+	}
+}
+
+func TestLoadNodeMonitorOverrides(t *testing.T) {
+	values := validValues()
+	values["NODE_MONITOR_INTERVAL"] = "45s"
+	values["NODE_MONITOR_CONFIRMATIONS"] = "3"
+	values["NODE_CRITICAL_ONLINE_FLOOR"] = "60"
+	values["NODE_CRITICAL_ONLINE_RATIO"] = "35"
+	values["NODE_CRITICAL_ONLINE_CAP"] = "175"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodeMonitorInterval != 45*time.Second || cfg.NodeMonitorConfirmations != 3 || cfg.NodeCriticalOnlineFloor != 60 || cfg.NodeCriticalOnlineRatio != 35 || cfg.NodeCriticalOnlineCap != 175 {
+		t.Fatalf("node monitor overrides were not loaded: %#v", cfg)
+	}
+
+	values["NODE_CRITICAL_ONLINE_CAP"] = "40"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_CRITICAL_ONLINE_CAP") {
+		t.Fatalf("invalid node monitor bounds error = %v", err)
 	}
 }
 

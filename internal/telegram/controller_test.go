@@ -49,60 +49,66 @@ func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 	if confirmation.Inline[0][0].Text != "🚀 Развернуть" || confirmation.Inline[1][0].Text != "❌ Отмена" {
 		t.Fatalf("confirmation keyboard = %#v", confirmation)
 	}
-	pagination := nodesPageKeyboard(1, 3)
-	if pagination.Inline[0][0].Text != "⬅️ Назад" || pagination.Inline[0][1].Text != "Вперёд ➡️" {
-		t.Fatalf("pagination keyboard = %#v", pagination)
-	}
 }
 
-func TestNodesPaginationShowsEveryPanelNode(t *testing.T) {
-	nodes := make([]NodeSummary, 37)
-	for index := range nodes {
-		nodes[index] = NodeSummary{
-			PanelName: []string{"Основная", "Вторая"}[index%2],
-			Name:      fmt.Sprintf("node-%02d", index),
-			Address:   fmt.Sprintf("203.0.113.%d", index+1),
-			Connected: index%2 == 0,
-		}
+func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
+	panels := []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}
+	nodes := []NodeSummary{
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 55},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 320},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000003", Name: "de-good-2", Address: "203.0.113.3", Connected: true, OnlineKnown: true, Online: 360},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000004", Name: "de-off", Address: "203.0.113.4", Disabled: true},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000005", Name: "de-disconnected", Address: "203.0.113.5"},
+		{PanelID: "horda", PanelName: "Horda", UUID: "00000000-0000-0000-0000-000000000006", Name: "nl-good", Address: "203.0.113.6", Connected: true, OnlineKnown: true, Online: 250},
 	}
-	application := &fakeApplication{nodes: nodes}
+	application := &fakeApplication{panels: panels, nodes: nodes}
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 
 	handleMessage(t, controller, 1, MenuNodes)
 	first := messenger.lastSent()
-	assertNodePage(t, first.text, 1, "[Основная] node-00", "node-14", "node-15")
-	if got := first.keyboard.Inline[0][0]; got.Text != "Вперёд ➡️" || got.CallbackData != "nodes:1" {
-		t.Fatalf("first page keyboard = %#v", first.keyboard)
+	if !strings.Contains(first.text, "Выберите Remnawave-панель") || len(first.keyboard.Inline) != 2 {
+		t.Fatalf("panel picker = %q %#v", first.text, first.keyboard)
 	}
-
-	handleCallback(t, controller, "nodes-page-2", "nodes:1", first.message)
+	if got := first.keyboard.Inline[0][0]; got.Text != "Hit — 5" || got.CallbackData != "nodes:p:0" {
+		t.Fatalf("Hit button = %#v", got)
+	}
+	handleCallback(t, controller, "nodes-panel", "nodes:p:0", first.message)
 	edits := messenger.editsSnapshot()
-	second := edits[len(edits)-1]
-	assertNodePage(t, second.text, 2, "node-15", "node-29", "node-30")
-	if len(second.keyboard.Inline) != 1 || len(second.keyboard.Inline[0]) != 2 || second.keyboard.Inline[0][0].CallbackData != "nodes:0" || second.keyboard.Inline[0][1].CallbackData != "nodes:2" {
-		t.Fatalf("second page keyboard = %#v", second.keyboard)
+	panel := edits[len(edits)-1]
+	if !strings.Contains(panel.text, "Критический порог: менее 128") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
+		t.Fatalf("panel summary = %q", panel.text)
+	}
+	wantButtons := []string{"🚨 Критический онлайн — 1", "⏸ Отключённые — 1", "🟢 Активные / стабильные — 2"}
+	for index, want := range wantButtons {
+		if got := panel.keyboard.Inline[index][0].Text; got != want {
+			t.Fatalf("group button %d = %q, want %q", index, got, want)
+		}
 	}
 
-	handleCallback(t, controller, "nodes-page-3", "nodes:2", first.message)
+	handleCallback(t, controller, "nodes-critical", "nodes:g:0:c:0", first.message)
 	edits = messenger.editsSnapshot()
-	third := edits[len(edits)-1]
-	assertNodePage(t, third.text, 3, "node-30", "node-36", "node-29")
-	if len(third.keyboard.Inline) != 1 || len(third.keyboard.Inline[0]) != 1 || third.keyboard.Inline[0][0].CallbackData != "nodes:1" {
-		t.Fatalf("third page keyboard = %#v", third.keyboard)
+	critical := edits[len(edits)-1]
+	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 55" {
+		t.Fatalf("critical list = %q %#v", critical.text, critical.keyboard)
 	}
-	if application.listNodeCalls != 3 {
-		t.Fatalf("ListNodes calls = %d, want 3", application.listNodeCalls)
+
+	handleCallback(t, controller, "nodes-card", critical.keyboard.Inline[0][0].CallbackData, first.message)
+	edits = messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	if !strings.Contains(card.text, "Нода: de-low") || !strings.Contains(card.text, "Рекомендация") || strings.Contains(card.text, nodes[0].UUID) {
+		t.Fatalf("node card = %q", card.text)
 	}
 }
 
-func assertNodePage(t *testing.T, text string, page int, first, last, excluded string) {
-	t.Helper()
-	if !strings.Contains(text, fmt.Sprintf("страница %d из 3", page)) || !strings.Contains(text, first) || !strings.Contains(text, last) {
-		t.Fatalf("page %d contents are incomplete:\n%s", page, text)
-	}
-	if strings.Contains(text, excluded) {
-		t.Fatalf("page %d unexpectedly contains %q:\n%s", page, excluded, text)
+func TestDisconnectedNodeIsIgnoredByLowOnlineClassification(t *testing.T) {
+	snapshots := classifyNodePanels(
+		[]Panel{{ID: "hit", Name: "Hit"}},
+		[]NodeSummary{{PanelID: "hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "lost", OnlineKnown: true, Online: 0}},
+		DefaultNodePolicy(),
+	)
+	if len(snapshots) != 1 || len(snapshots[0].Critical) != 0 || len(snapshots[0].Ignored) != 1 {
+		t.Fatalf("classification = %#v", snapshots)
 	}
 }
 

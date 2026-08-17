@@ -73,6 +73,7 @@ type Config struct {
 	NodeConnectTimeout          time.Duration
 	TelegramPollTimeout         time.Duration
 	TelegramSessionTTL          time.Duration
+	NodeMonitorInterval         time.Duration
 	CertificateRenewBefore      time.Duration
 	CertificateRenewInterval    time.Duration
 	CertificateIssueTimeout     time.Duration
@@ -80,6 +81,10 @@ type Config struct {
 	DNSPropagationInterval      time.Duration
 	MaxConcurrentDeployments    int
 	MaxCertificateDistributions int
+	NodeMonitorConfirmations    int
+	NodeCriticalOnlineFloor     int
+	NodeCriticalOnlineRatio     int
+	NodeCriticalOnlineCap       int
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -137,6 +142,7 @@ func load(lookup lookupFunc) (Config, error) {
 		NodeConnectTimeout:          5 * time.Minute,
 		TelegramPollTimeout:         30 * time.Second,
 		TelegramSessionTTL:          15 * time.Minute,
+		NodeMonitorInterval:         2 * time.Minute,
 		CertificateRenewBefore:      30 * 24 * time.Hour,
 		CertificateRenewInterval:    12 * time.Hour,
 		CertificateIssueTimeout:     10 * time.Minute,
@@ -144,6 +150,10 @@ func load(lookup lookupFunc) (Config, error) {
 		DNSPropagationInterval:      5 * time.Second,
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
+		NodeMonitorConfirmations:    2,
+		NodeCriticalOnlineFloor:     80,
+		NodeCriticalOnlineRatio:     40,
+		NodeCriticalOnlineCap:       200,
 	}
 	remnaAPIIP := legacyRequired("REMNA_API_IP")
 	if remnaAPIIP != "" {
@@ -180,6 +190,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"HTTP_TIMEOUT", &cfg.HTTPTimeout}, {"SSH_CONNECT_TIMEOUT", &cfg.SSHConnectTimeout},
 		{"SSH_COMMAND_TIMEOUT", &cfg.SSHCommandTimeout}, {"NODE_CONNECT_TIMEOUT", &cfg.NodeConnectTimeout},
 		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
+		{"NODE_MONITOR_INTERVAL", &cfg.NodeMonitorInterval},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
 		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
@@ -201,6 +212,10 @@ func load(lookup lookupFunc) (Config, error) {
 	}{
 		{"MAX_CONCURRENT_DEPLOYMENTS", &cfg.MaxConcurrentDeployments, 100},
 		{"MAX_CERTIFICATE_DISTRIBUTIONS", &cfg.MaxCertificateDistributions, 32},
+		{"NODE_MONITOR_CONFIRMATIONS", &cfg.NodeMonitorConfirmations, 10},
+		{"NODE_CRITICAL_ONLINE_FLOOR", &cfg.NodeCriticalOnlineFloor, 100000},
+		{"NODE_CRITICAL_ONLINE_RATIO", &cfg.NodeCriticalOnlineRatio, 100},
+		{"NODE_CRITICAL_ONLINE_CAP", &cfg.NodeCriticalOnlineCap, 100000},
 	}
 	for _, item := range integers {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -211,6 +226,9 @@ func load(lookup lookupFunc) (Config, error) {
 				*item.target = parsed
 			}
 		}
+	}
+	if cfg.NodeCriticalOnlineCap < cfg.NodeCriticalOnlineFloor {
+		validationErrors = append(validationErrors, errors.New("NODE_CRITICAL_ONLINE_CAP must be greater than or equal to NODE_CRITICAL_ONLINE_FLOOR"))
 	}
 
 	allowedUsers := required("TELEGRAM_ALLOWED_USERS")

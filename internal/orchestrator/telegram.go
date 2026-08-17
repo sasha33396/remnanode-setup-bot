@@ -449,8 +449,40 @@ func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSum
 		if err != nil {
 			return nil, errors.New("list Nodes failed")
 		}
+		metricsProvider, hasMetrics := panel.Service.remnawave.(interface {
+			GetNodesMetrics(context.Context) ([]remnawave.NodeMetric, error)
+		})
+		var nodeMetrics []remnawave.NodeMetric
+		if hasMetrics {
+			// Keep inventory and disabled-node controls available during a
+			// temporary metrics outage. Such nodes are explicitly marked as
+			// missing fresh metrics and excluded from low-online alerts.
+			nodeMetrics, _ = metricsProvider.GetNodesMetrics(ctx)
+		}
+		online := make(map[string]int, len(nodeMetrics))
+		for _, metric := range nodeMetrics {
+			online[metric.NodeUUID] = metric.UsersOnline
+		}
 		for _, node := range nodes {
-			result = append(result, telegram.NodeSummary{PanelName: panel.Name, Name: node.Name, Address: node.Address, Connected: node.IsConnected})
+			usersOnline, onlineKnown := online[node.UUID]
+			lastMessage := ""
+			if node.LastStatusMessage != nil {
+				lastMessage = *node.LastStatusMessage
+			}
+			result = append(result, telegram.NodeSummary{
+				PanelID:           id,
+				PanelName:         panel.Name,
+				UUID:              node.UUID,
+				Name:              node.Name,
+				Address:           node.Address,
+				Connected:         node.IsConnected,
+				Connecting:        node.IsConnecting,
+				Disabled:          node.IsDisabled,
+				Online:            usersOnline,
+				OnlineKnown:       onlineKnown,
+				LastStatusMessage: lastMessage,
+				LastStatusChange:  node.LastStatusChange,
+			})
 		}
 	}
 	return result, nil

@@ -36,6 +36,8 @@ func TestClientNormalResponses(t *testing.T) {
 			fmt.Fprint(w, `{"response":[`+nodeJSON(testNodeUUID, "node-1", "192.0.2.10", true)+`]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/"+testNodeUUID:
 			fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "192.0.2.10", true)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/system/nodes/metrics":
+			fmt.Fprint(w, `{"response":{"nodes":[{"nodeUuid":"`+testNodeUUID+`","nodeName":"node-1","countryEmoji":"🇩🇪","providerName":"test","usersOnline":347,"inboundsStats":[],"outboundsStats":[]}]}}`)
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/nodes/"+testNodeUUID:
 			fmt.Fprint(w, `{"response":{"isDeleted":true}}`)
 		default:
@@ -61,6 +63,10 @@ func TestClientNormalResponses(t *testing.T) {
 	node, err := client.GetNode(ctx, testNodeUUID)
 	if err != nil || node.UUID != testNodeUUID || node.LastStatusChange == nil {
 		t.Fatalf("GetNode() = %#v, %v", node, err)
+	}
+	metrics, err := client.GetNodesMetrics(ctx)
+	if err != nil || len(metrics) != 1 || metrics[0].NodeUUID != testNodeUUID || metrics[0].UsersOnline != 347 {
+		t.Fatalf("GetNodesMetrics() = %#v, %v", metrics, err)
 	}
 	deleted, err := client.DeleteNode(ctx, testNodeUUID)
 	if err != nil || !deleted {

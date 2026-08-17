@@ -234,6 +234,17 @@ func run() int {
 		logger.Error("Telegram controller initialization failed")
 		return 1
 	}
+	nodePolicy := telegram.NodePolicy{
+		CriticalFloor:        cfg.NodeCriticalOnlineFloor,
+		CriticalRatioPercent: cfg.NodeCriticalOnlineRatio,
+		CriticalCap:          cfg.NodeCriticalOnlineCap,
+	}
+	controller.SetNodePolicy(nodePolicy)
+	nodeMonitor, err := telegram.NewNodeMonitor(cfg.TelegramAllowedUsers, application, bot, cfg.NodeMonitorInterval, cfg.NodeMonitorConfirmations, nodePolicy)
+	if err != nil {
+		logger.Error("node monitor initialization failed")
+		return 1
+	}
 	defer func() { controller.Close(); controller.Wait() }()
 
 	healthServer := health.NewServerWithOptions(cfg.HealthAddr, logger, func(checkCtx context.Context) error {
@@ -245,6 +256,7 @@ func run() int {
 	group, runCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return healthServer.Run(runCtx) })
 	group.Go(func() error { return bot.Run(runCtx, controller) })
+	group.Go(func() error { return nodeMonitor.Run(runCtx) })
 	for _, manager := range certificateManagers {
 		manager := manager
 		group.Go(func() error { return manager.Run(runCtx) })

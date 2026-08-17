@@ -71,6 +71,26 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
+The **Ноды** menu first separates inventory by Remnawave panel. Inside each
+panel it shows three operator groups with live counts: critically low online
+(high priority), disabled Nodes (medium priority), and active/stable Nodes.
+Each Node opens as a card with panel, address, connection state, current online,
+panel baseline and the threshold used for classification. Disconnected Nodes
+and Nodes without a fresh online metric are shown in the panel summary but are
+excluded from low-online classification because connection loss is monitored
+separately.
+
+The baseline is the median online count of connected, enabled Nodes in that
+panel. The critical threshold is `baseline × NODE_CRITICAL_ONLINE_RATIO / 100`,
+bounded by `NODE_CRITICAL_ONLINE_FLOOR` and `NODE_CRITICAL_ONLINE_CAP` (defaults:
+40%, 80, and 200). This follows load changes as Nodes are added or removed while
+still recognizing the usual 50–70 online symptom of a blocked IP. The background
+monitor samples every `NODE_MONITOR_INTERVAL` (2 minutes by default), requires
+`NODE_MONITOR_CONFIRMATIONS` consecutive critical samples (2 by default), and
+sends one incident alert to every `TELEGRAM_ALLOWED_USERS` operator. It does not
+repeat the alert while the incident remains active and sends a recovery message
+after online returns above the current threshold.
+
 The **Сменить IP** menu contains four workflows:
 
 - **Панель + DNS-балансировка** updates the Remnawave Node and every matching

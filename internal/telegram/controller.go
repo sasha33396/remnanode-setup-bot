@@ -18,7 +18,6 @@ const (
 	cancelTimeout     = 10 * time.Second
 	maxPasswordBytes  = 4096
 	maxMessageBytes   = 3900
-	nodesPageSize     = 15
 	legacyMenuAddNode = "➕ Add Node"
 	legacyMenuNodes   = "📡 Nodes"
 	legacyMenuDeploys = "📜 Deployments"
@@ -27,12 +26,13 @@ const (
 // Controller owns Telegram authorization, presentation and transient wizard
 // state. It contains no infrastructure implementations.
 type Controller struct {
-	app       Application
-	messenger Messenger
-	allowed   map[int64]struct{}
-	ttl       time.Duration
-	now       func() time.Time
-	nonce     func() (string, error)
+	app        Application
+	messenger  Messenger
+	allowed    map[int64]struct{}
+	ttl        time.Duration
+	now        func() time.Time
+	nonce      func() (string, error)
+	nodePolicy NodePolicy
 
 	mu       sync.Mutex
 	sessions map[int64]*wizard
@@ -60,14 +60,20 @@ func newController(allowedUsers []int64, app Application, messenger Messenger, s
 		allowed[userID] = struct{}{}
 	}
 	return &Controller{
-		app:       app,
-		messenger: messenger,
-		allowed:   allowed,
-		ttl:       sessionTTL,
-		now:       now,
-		nonce:     nonce,
-		sessions:  make(map[int64]*wizard),
+		app:        app,
+		messenger:  messenger,
+		allowed:    allowed,
+		ttl:        sessionTTL,
+		now:        now,
+		nonce:      nonce,
+		nodePolicy: DefaultNodePolicy(),
+		sessions:   make(map[int64]*wizard),
 	}, nil
+}
+
+// SetNodePolicy configures how the Nodes screen classifies low online counts.
+func (c *Controller) SetNodePolicy(policy NodePolicy) {
+	c.nodePolicy = normalizeNodePolicy(policy)
 }
 
 // Handle processes one update. Callers may invoke Handle concurrently.
@@ -304,9 +310,18 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	if callback.Message == nil || callback.Message.ChatID == 0 {
 		return c.messenger.AnswerCallback(ctx, callback.ID, "This action is no longer available.")
 	}
-	if page, valid := parseNodesPageCallback(callback.Data); valid {
+	if action, valid := parseNodesCallback(callback.Data); valid {
 		_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
-		return c.showNodesPage(ctx, callback.Message.ChatID, callback.Message.ID, page)
+		switch action.action {
+		case "root":
+			return c.showNodePanels(ctx, callback.Message.ChatID, callback.Message.ID)
+		case "panel":
+			return c.showNodePanel(ctx, callback.Message.ChatID, callback.Message.ID, action.panelIndex)
+		case "group":
+			return c.showNodeGroup(ctx, callback.Message.ChatID, callback.Message.ID, action.panelIndex, action.group, action.page)
+		case "open":
+			return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, action.uuid)
+		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {
 		return c.handleDeploymentCallback(ctx, callback, action, deploymentID)
@@ -1154,54 +1169,7 @@ func (c *Controller) showMainMenu(ctx context.Context, chatID int64) error {
 }
 
 func (c *Controller) showNodes(ctx context.Context, chatID int64) error {
-	return c.showNodesPage(ctx, chatID, 0, 0)
-}
-
-func (c *Controller) showNodesPage(ctx context.Context, chatID int64, messageID, requestedPage int) error {
-	nodes, err := c.app.ListNodes(ctx)
-	if err != nil {
-		if messageID != 0 {
-			return c.messenger.EditMessage(ctx, chatID, messageID, "Ноды временно недоступны.", Keyboard{})
-		}
-		_, sendErr := c.messenger.SendMessage(ctx, chatID, "Ноды временно недоступны.", mainKeyboard())
-		return sendErr
-	}
-	totalPages := (len(nodes) + nodesPageSize - 1) / nodesPageSize
-	if totalPages == 0 {
-		totalPages = 1
-	}
-	page := requestedPage
-	if page < 0 {
-		page = 0
-	}
-	if page >= totalPages {
-		page = totalPages - 1
-	}
-	start := page * nodesPageSize
-	end := start + nodesPageSize
-	if end > len(nodes) {
-		end = len(nodes)
-	}
-
-	var builder strings.Builder
-	fmt.Fprintf(&builder, "📡 Ноды — страница %d из %d\n", page+1, totalPages)
-	if len(nodes) == 0 {
-		builder.WriteString("Ноды не найдены.")
-	}
-	for _, node := range nodes[start:end] {
-		state := "не в сети"
-		if node.Connected {
-			state = "подключена"
-		}
-		fmt.Fprintf(&builder, "\n• [%s] %s — %s — %s", safeLine(node.PanelName, 40), safeLine(node.Name, 60), safeLine(node.Address, 80), state)
-	}
-	keyboard := nodesPageKeyboard(page, totalPages)
-	text := truncateUTF8(builder.String(), maxMessageBytes)
-	if messageID != 0 {
-		return c.messenger.EditMessage(ctx, chatID, messageID, text, keyboard)
-	}
-	_, err = c.messenger.SendMessage(ctx, chatID, text, keyboard)
-	return err
+	return c.showNodePanels(ctx, chatID, 0)
 }
 
 func (c *Controller) showDeployments(ctx context.Context, chatID int64) error {
@@ -1475,20 +1443,6 @@ func mainKeyboard() Keyboard {
 	return Keyboard{Reply: [][]string{{MenuAddNode, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
 }
 
-func nodesPageKeyboard(page, totalPages int) Keyboard {
-	if totalPages <= 1 {
-		return mainKeyboard()
-	}
-	row := make([]Button, 0, 2)
-	if page > 0 {
-		row = append(row, Button{Text: "⬅️ Назад", CallbackData: fmt.Sprintf("nodes:%d", page-1)})
-	}
-	if page+1 < totalPages {
-		row = append(row, Button{Text: "Вперёд ➡️", CallbackData: fmt.Sprintf("nodes:%d", page+1)})
-	}
-	return Keyboard{Inline: [][]Button{row}}
-}
-
 func ipChangeKeyboard(nonce string) Keyboard {
 	return Keyboard{Inline: [][]Button{{
 		{Text: "🔄 Сменить", CallbackData: "ip:change:" + nonce},
@@ -1735,15 +1689,6 @@ func parseDeploymentCallback(data string) (action, deploymentID string, valid bo
 	default:
 		return "", "", false
 	}
-}
-
-func parseNodesPageCallback(data string) (int, bool) {
-	parts := strings.Split(data, ":")
-	if len(parts) != 2 || parts[0] != "nodes" {
-		return 0, false
-	}
-	page, err := strconv.Atoi(parts[1])
-	return page, err == nil && page >= 0
 }
 
 func randomNonce() (string, error) {
