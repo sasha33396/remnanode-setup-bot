@@ -322,7 +322,13 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		case "open":
 			return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, action.uuid)
 		case "change_ip":
-			return c.beginNodeCardIPChange(ctx, callback, action.uuid)
+			return c.showNodeIPOptions(ctx, callback, action.uuid)
+		case "change_ip_panel":
+			return c.beginNodeCardPanelIPChange(ctx, callback, action.uuid)
+		case "change_ip_cherry":
+			return c.beginNodeCardServerIPChange(ctx, callback, action.uuid, serverIPProviderCherry)
+		case "change_ip_royal":
+			return c.beginNodeCardServerIPChange(ctx, callback, action.uuid, serverIPProviderRoyal)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {

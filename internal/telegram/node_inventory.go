@@ -356,32 +356,44 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "ip" && validDeploymentID(parts[2]) {
 		return nodesCallback{action: "change_ip", uuid: parts[2]}, true
 	}
+	if len(parts) == 4 && parts[0] == "nodes" && parts[1] == "ip" && validDeploymentID(parts[3]) {
+		action := ""
+		switch parts[2] {
+		case "panel":
+			action = "change_ip_panel"
+		case "cherry":
+			action = "change_ip_cherry"
+		case "royal":
+			action = "change_ip_royal"
+		}
+		return nodesCallback{action: action, uuid: parts[3]}, action != ""
+	}
 	return nodesCallback{}, false
 }
 
-func (c *Controller) beginNodeCardIPChange(ctx context.Context, callback *CallbackQuery, uuid string) error {
-	application, available := c.app.(NodeIPApplication)
-	if !available {
-		return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, "Смена IP ноды сейчас недоступна.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + uuid}}}})
-	}
-	nodes, err := c.app.ListNodes(ctx)
+func (c *Controller) showNodeIPOptions(ctx context.Context, callback *CallbackQuery, uuid string) error {
+	selected, target, err := c.resolveNodeCardIPTarget(ctx, uuid)
 	if err != nil {
 		return c.renderNodeIPStartFailure(ctx, callback, uuid)
 	}
-	var selected NodeSummary
-	found := false
-	for _, node := range nodes {
-		if node.UUID == uuid {
-			selected = node
-			found = true
-			break
-		}
+	if target.PanelName == "" {
+		target.PanelName = selected.PanelName
 	}
-	if !found || selected.PanelID == "" || selected.Name == "" {
-		return c.renderNodeIPStartFailure(ctx, callback, uuid)
+	rows := [][]Button{{{Text: "Панель + DNS-балансировка", CallbackData: "nodes:ip:panel:" + uuid}}}
+	if c.serverProviderAvailable(serverIPProviderCherry) {
+		rows = append(rows, []Button{{Text: "Смена IP на Cherry (сервер)", CallbackData: "nodes:ip:cherry:" + uuid}})
 	}
-	target, err := application.FindNodeForIPChange(ctx, selected.PanelID, selected.Name)
-	if err != nil || target.UUID != uuid {
+	if c.serverProviderAvailable(serverIPProviderRoyal) {
+		rows = append(rows, []Button{{Text: "Смена IP на Royal (сервер)", CallbackData: "nodes:ip:royal:" + uuid}})
+	}
+	rows = append(rows, []Button{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + uuid}})
+	text := "🔄 Смена IP выбранной ноды\n" + renderIPChangeTarget(target) + "\n\nВыберите способ смены IP. Панель и нода уже определены автоматически."
+	return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, text, Keyboard{Inline: rows})
+}
+
+func (c *Controller) beginNodeCardPanelIPChange(ctx context.Context, callback *CallbackQuery, uuid string) error {
+	selected, target, err := c.resolveNodeCardIPTarget(ctx, uuid)
+	if err != nil {
 		return c.renderNodeIPStartFailure(ctx, callback, uuid)
 	}
 	nonce, err := c.nonce()
@@ -407,6 +419,72 @@ func (c *Controller) beginNodeCardIPChange(ctx context.Context, callback *Callba
 		return err
 	}
 	return nil
+}
+
+func (c *Controller) beginNodeCardServerIPChange(ctx context.Context, callback *CallbackQuery, uuid string, provider serverIPProvider) error {
+	if !c.serverProviderAvailable(provider) {
+		return c.renderNodeIPStartFailure(ctx, callback, uuid)
+	}
+	selected, target, err := c.resolveNodeCardIPTarget(ctx, uuid)
+	if err != nil {
+		return c.renderNodeIPStartFailure(ctx, callback, uuid)
+	}
+	serverIP, valid := parsePublicIPv4(target.Address.String())
+	if !valid {
+		return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, "Для смены IP на сервере нужен текущий публичный IPv4 ноды.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К вариантам", CallbackData: "nodes:ip:" + uuid}}}})
+	}
+	nonce, err := c.nonce()
+	if err != nil {
+		return c.renderNodeIPStartFailure(ctx, callback, uuid)
+	}
+	c.cancelExisting(ctx, callback.FromUserID)
+	session := &wizard{
+		userID:           callback.FromUserID,
+		chatID:           callback.Message.ChatID,
+		nonce:            nonce,
+		state:            stateAwaitingServerNewIP,
+		expiresAt:        c.now().Add(c.ttl),
+		panel:            Panel{ID: selected.PanelID, Name: selected.PanelName},
+		ipTarget:         target,
+		statusMsgID:      callback.Message.ID,
+		serverIPProvider: provider,
+		serverCurrentIP:  serverIP,
+		serverUpdateNode: true,
+	}
+	c.putSession(session)
+	text := renderIPChangeTarget(target) + "\n\n" + serverNewIPPrompt(provider, true)
+	if err := c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{}); err != nil {
+		if active := c.takeSession(session.userID, nonce, stateAwaitingServerNewIP); active != nil {
+			active.clear()
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *Controller) resolveNodeCardIPTarget(ctx context.Context, uuid string) (NodeSummary, NodeIPChangeTarget, error) {
+	application, available := c.app.(NodeIPApplication)
+	if !available {
+		return NodeSummary{}, NodeIPChangeTarget{}, fmt.Errorf("Node IP changes are unavailable")
+	}
+	nodes, err := c.app.ListNodes(ctx)
+	if err != nil {
+		return NodeSummary{}, NodeIPChangeTarget{}, err
+	}
+	for _, node := range nodes {
+		if node.UUID != uuid {
+			continue
+		}
+		if node.PanelID == "" || node.Name == "" {
+			break
+		}
+		target, findErr := application.FindNodeForIPChange(ctx, node.PanelID, node.Name)
+		if findErr != nil || target.UUID != uuid {
+			break
+		}
+		return node, target, nil
+	}
+	return NodeSummary{}, NodeIPChangeTarget{}, fmt.Errorf("Node changed or is unavailable")
 }
 
 func (c *Controller) renderNodeIPStartFailure(ctx context.Context, callback *CallbackQuery, uuid string) error {

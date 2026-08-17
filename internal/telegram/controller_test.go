@@ -185,6 +185,12 @@ func TestNodeCardStartsPrefilledIPChange(t *testing.T) {
 		t.Fatalf("prefilled lookup = panel %q, query %q", application.findPanel, application.findQuery)
 	}
 	edits := messenger.editsSnapshot()
+	options := edits[len(edits)-1]
+	if !strings.Contains(options.text, "Выберите способ смены IP") || options.keyboard.Inline[0][0].CallbackData != "nodes:ip:panel:"+uuid {
+		t.Fatalf("IP options = %#v", options)
+	}
+	handleCallback(t, controller, "node-ip-panel", options.keyboard.Inline[0][0].CallbackData, card.message)
+	edits = messenger.editsSnapshot()
 	confirmation := edits[len(edits)-1]
 	if !strings.Contains(confirmation.text, "de-low") || !strings.Contains(confirmation.text, "8.8.8.8") || confirmation.keyboard.Inline[0][0].Text != "🔄 Сменить" {
 		t.Fatalf("IP confirmation = %#v", confirmation)
@@ -193,6 +199,41 @@ func TestNodeCardStartsPrefilledIPChange(t *testing.T) {
 	handleMessage(t, controller, 2, "1.1.1.1")
 	if application.replaceCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.ExpectedIP.String() != "8.8.8.8" || application.input.NewIP.String() != "1.1.1.1" {
 		t.Fatalf("prefilled replace input = %#v", application.input)
+	}
+}
+
+func TestNodeCardIPOptionsIncludeHosterWorkflows(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	base := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit", DNSEnabled: true}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "de-low", Address: "8.8.8.8", Connected: true, OnlineKnown: true, Online: 40}},
+		},
+		target: NodeIPChangeTarget{PanelName: "Hit", DNSEnabled: true, UUID: uuid, Name: "de-low", Address: netip.MustParseAddr("8.8.8.8"), Connected: true},
+	}
+	application := &fakeAllNodeIPApplication{fakeNodeIPApplication: base}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	message := Message{ID: 50, ChatID: testChatID}
+	handleCallback(t, controller, "node-ip-options", "nodes:ip:"+uuid, message)
+	edits := messenger.editsSnapshot()
+	options := edits[len(edits)-1]
+	want := []string{"Панель + DNS-балансировка", "Смена IP на Cherry (сервер)", "Смена IP на Royal (сервер)"}
+	for index, label := range want {
+		if options.keyboard.Inline[index][0].Text != label {
+			t.Fatalf("option %d = %#v, want %q", index, options.keyboard.Inline[index][0], label)
+		}
+	}
+	handleCallback(t, controller, "node-ip-royal", options.keyboard.Inline[2][0].CallbackData, message)
+	edits = messenger.editsSnapshot()
+	prompt := edits[len(edits)-1]
+	if !strings.Contains(prompt.text, "новый основной публичный IPv4 сервера Royal") || strings.Contains(prompt.text, "Введите точное имя ноды") {
+		t.Fatalf("prefilled Royal prompt = %q", prompt.text)
+	}
+	session, found, expired := controller.loadSession(testAllowedUser)
+	if !found || expired || session.state != stateAwaitingServerNewIP || session.serverIPProvider != serverIPProviderRoyal || session.ipTarget.UUID != uuid || session.serverCurrentIP.String() != "8.8.8.8" || !session.serverUpdateNode {
+		t.Fatalf("prefilled Royal session = %#v, found=%t expired=%t", session, found, expired)
 	}
 }
 
@@ -764,6 +805,10 @@ type fakeNodeIPApplication struct {
 	findQuery    string
 }
 
+type fakeAllNodeIPApplication struct {
+	*fakeNodeIPApplication
+}
+
 type fakeDNSSyncApplication struct {
 	*fakeApplication
 	target    NodeDNSSyncTarget
@@ -862,6 +907,14 @@ func (f *fakeRoyalIPApplication) ConfigureRoyalIP(_ context.Context, input Royal
 	f.input.Password = nil
 	f.password = append([]byte(nil), input.Password...)
 	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
+}
+
+func (f *fakeAllNodeIPApplication) ConfigureCherryIP(context.Context, CherryIPInput) (CherryIPResult, error) {
+	return CherryIPResult{Interface: "eth0", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeAllNodeIPApplication) ConfigureRoyalIP(context.Context, RoyalIPInput) (RoyalIPResult, error) {
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("8.8.8.1")}, nil
 }
 
 func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, query string) (NodeIPChangeTarget, error) {

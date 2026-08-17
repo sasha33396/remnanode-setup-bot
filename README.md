@@ -77,9 +77,12 @@ panel it shows three operator groups with live counts: critically low online
 Each Node opens as a card with panel, address, connection state, current online,
 and the threshold used for classification. The card and every
 critical-online alert include a direct **Изменить IP ноды** action. It resolves
-the selected Node and panel again, verifies the current address, and enters the
-existing confirmed panel/DNS replacement workflow without asking the operator
-to search for the Node manually. Disconnected Nodes
+the selected Node and panel again and offers the same available methods as the
+main IP menu: panel/DNS replacement, Cherry server, and Royal server. Managed
+and legacy Nodes are both supported. The hoster paths reuse the Node's current
+IPv4 as the SSH target and continue directly with the new server IP, password,
+and automatic Remnawave/DNS update, without asking the operator to search for
+the Node manually. Disconnected Nodes
 and Nodes without a fresh online metric are shown in the panel summary but are
 excluded from low-online classification because connection loss is monitored
 separately.
