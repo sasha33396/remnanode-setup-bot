@@ -71,7 +71,7 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
-The **Сменить IP** menu contains two independent workflows:
+The **Сменить IP** menu contains two workflows:
 
 - **Панель + DNS-балансировка** updates the Remnawave Node and every matching
   DNS-balancer zone. It supports both Nodes created by this bot and legacy
@@ -81,6 +81,11 @@ The **Сменить IP** menu contains two independent workflows:
   adds an already assigned floating IPv4 address live, and persists it in
   netplan. The existing network addresses and routes are not removed. A backup
   is created before writing netplan and a failed generate/apply restores it.
+  The wizard then asks whether the Node already exists in Remnawave. For an
+  existing managed or legacy Node it obtains the current server IP from the
+  selected panel and updates the Node plus matching DNS zones after the server
+  is ready. If the Node has not been added yet, the server IP is entered
+  manually and only the server network configuration is changed.
   This workflow does not order or assign an address through the Cherry API; the
   floating IP must already be assigned to that server in Cherry Servers.
 

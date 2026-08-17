@@ -204,6 +204,9 @@ func TestCherryIPWizardDeletesPasswordAndConfiguresServer(t *testing.T) {
 	handleMessage(t, controller, 1, MenuChangeIP)
 	mode := messenger.lastSent()
 	handleCallback(t, controller, "cherry-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	cherryMode := edits[len(edits)-1]
+	handleCallback(t, controller, "without-node", cherryMode.keyboard.Inline[1][0].CallbackData, mode.message)
 	handleMessage(t, controller, 2, "8.8.8.8")
 	handleMessage(t, controller, 3, "1.1.1.1")
 	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
@@ -216,6 +219,43 @@ func TestCherryIPWizardDeletesPasswordAndConfiguresServer(t *testing.T) {
 	}
 	if application.calls != 1 || application.input.ServerIP.String() != "8.8.8.8" || application.input.FloatingIP.String() != "1.1.1.1" || string(application.password) != "root-secret" {
 		t.Fatalf("Cherry input = %#v password=%q calls=%d", application.input, application.password, application.calls)
+	}
+}
+
+func TestCherryIPWizardUpdatesExistingRemnawaveNodeAndDNS(t *testing.T) {
+	application := &fakeCherryNodeApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeIPChangeTarget{
+			PanelName: "Hit",
+			UUID:      "node-uuid",
+			Name:      "legacy-node",
+			Address:   netip.MustParseAddr("8.8.8.8"),
+			DNSZones:  []string{"edge.example.com"},
+		},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "cherry-mode", mode.keyboard.Inline[1][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	cherryMode := edits[len(edits)-1]
+	handleCallback(t, controller, "with-node", cherryMode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "legacy-node")
+	if got := messenger.lastSent().text; !strings.Contains(got, "legacy-node") || !strings.Contains(got, "обновит ноду и DNS") {
+		t.Fatalf("existing-node prompt = %q", got)
+	}
+	handleMessage(t, controller, 3, "1.1.1.1")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.cherryCalls != 1 || application.cherryInput.ServerIP.String() != "8.8.8.8" || application.cherryInput.FloatingIP.String() != "1.1.1.1" {
+		t.Fatalf("Cherry input = %#v calls=%d", application.cherryInput, application.cherryCalls)
+	}
+	if application.replaceCalls != 1 || application.replaceInput.PanelID != "default" || application.replaceInput.NodeUUID != "node-uuid" || application.replaceInput.ExpectedIP.String() != "8.8.8.8" || application.replaceInput.NewIP.String() != "1.1.1.1" {
+		t.Fatalf("replace input = %#v calls=%d", application.replaceInput, application.replaceCalls)
 	}
 }
 
@@ -505,11 +545,43 @@ type fakeCherryIPApplication struct {
 	password []byte
 }
 
+type fakeCherryNodeApplication struct {
+	*fakeApplication
+	target         NodeIPChangeTarget
+	findErr        error
+	replaceErr     error
+	findPanel      string
+	replaceCalls   int
+	replaceInput   NodeIPChangeInput
+	cherryCalls    int
+	cherryInput    CherryIPInput
+	cherryPassword []byte
+}
+
 func (f *fakeCherryIPApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
 	f.calls++
 	f.input = input
 	f.input.Password = nil
 	f.password = append([]byte(nil), input.Password...)
+	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeCherryNodeApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {
+	f.findPanel = panelID
+	return f.target, f.findErr
+}
+
+func (f *fakeCherryNodeApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
+	f.replaceCalls++
+	f.replaceInput = input
+	return "Нода и DNS обновлены", f.replaceErr
+}
+
+func (f *fakeCherryNodeApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
+	f.cherryCalls++
+	f.cherryInput = input
+	f.cherryInput.Password = nil
+	f.cherryPassword = append([]byte(nil), input.Password...)
 	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
 }
 

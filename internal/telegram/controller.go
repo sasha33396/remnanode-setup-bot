@@ -142,10 +142,10 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingCherryPanel:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
-	case stateSelectingIPMode:
+	case stateSelectingIPMode, stateSelectingCherryMode:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите вариант смены IP кнопкой.", Keyboard{})
 		return err
 	case stateSelectingHost:
@@ -170,6 +170,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return err
 	case stateAwaitingNewIP:
 		return c.acceptNewNodeIP(ctx, message, session)
+	case stateAwaitingCherryNodeQuery:
+		return c.acceptCherryNodeQuery(ctx, message, session)
 	case stateAwaitingCherryServerIP:
 		return c.acceptCherryServerIP(ctx, message, session)
 	case stateAwaitingCherryFloatingIP:
@@ -320,13 +322,46 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			if _, ok := c.app.(CherryIPApplication); !ok {
 				return c.expiredCallback(ctx, callback)
 			}
-			if !c.updateSession(callback.FromUserID, nonce, stateSelectingIPMode, func(current *wizard) { current.state = stateAwaitingCherryServerIP }) {
+			if !c.updateSession(callback.FromUserID, nonce, stateSelectingIPMode, func(current *wizard) { current.state = stateSelectingCherryMode }) {
+				return c.expiredCallback(ctx, callback)
+			}
+			rows := [][]Button{
+				{{Text: "Нода уже в Remnawave", CallbackData: fmt.Sprintf("ip:cherry:%s:%d", nonce, 0)}},
+				{{Text: "Нода ещё не добавлена", CallbackData: fmt.Sprintf("ip:cherry:%s:%d", nonce, 1)}},
+			}
+			return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Добавлена ли эта нода в Remnawave?", Keyboard{Inline: rows})
+		default:
+			return c.expiredCallback(ctx, callback)
+		}
+	case "cherry_mode":
+		if session.state != stateSelectingCherryMode {
+			return c.expiredCallback(ctx, callback)
+		}
+		switch index {
+		case 0:
+			return c.beginCherryNodeIPChange(ctx, callback, session)
+		case 1:
+			if !c.updateSession(callback.FromUserID, nonce, stateSelectingCherryMode, func(current *wizard) {
+				current.cherryUpdateNode = false
+				current.state = stateAwaitingCherryServerIP
+			}) {
 				return c.expiredCallback(ctx, callback)
 			}
 			return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите основной IPv4 сервера Cherry, по которому бот подключится по SSH.", Keyboard{})
 		default:
 			return c.expiredCallback(ctx, callback)
 		}
+	case "cherry_panel":
+		if session.state != stateSelectingCherryPanel || index < 0 || index >= len(session.panels) {
+			return c.expiredCallback(ctx, callback)
+		}
+		if !c.updateSession(callback.FromUserID, nonce, stateSelectingCherryPanel, func(current *wizard) {
+			current.panel = session.panels[index]
+			current.state = stateAwaitingCherryNodeQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
 	case "panel":
 		if session.state != stateSelectingPanel || index < 0 || index >= len(session.panels) {
 			return c.expiredCallback(ctx, callback)
@@ -509,6 +544,39 @@ func (c *Controller) beginPanelIPChange(ctx context.Context, callback *CallbackQ
 	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
 }
 
+func (c *Controller) beginCherryNodeIPChange(ctx context.Context, callback *CallbackQuery, session *wizard) error {
+	if _, ok := c.app.(NodeIPApplication); !ok {
+		button := Button{Text: "Нода ещё не добавлена", CallbackData: fmt.Sprintf("ip:cherry:%s:%d", session.nonce, 1)}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Поиск нод Remnawave сейчас недоступен. Укажите IP сервера вручную.", Keyboard{Inline: [][]Button{{button}}})
+	}
+	panels, err := c.app.ListPanels(ctx)
+	if err != nil || len(panels) == 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Панели временно недоступны.", Keyboard{})
+	}
+	if len(panels) == 1 {
+		if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingCherryMode, func(current *wizard) {
+			current.panel = panels[0]
+			current.cherryUpdateNode = true
+			current.state = stateAwaitingCherryNodeQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+	}
+	if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingCherryMode, func(current *wizard) {
+		current.panels = panels
+		current.cherryUpdateNode = true
+		current.state = stateSelectingCherryPanel
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	rows := make([][]Button, 0, len(panels))
+	for index, panel := range panels {
+		rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("ip:cpanel:%s:%d", session.nonce, index)}})
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
+}
+
 func (c *Controller) acceptIPChangeQuery(ctx context.Context, message *Message, session *wizard) error {
 	target, err := c.app.(NodeIPApplication).FindNodeForIPChange(ctx, session.panel.ID, strings.TrimSpace(message.Text))
 	if err != nil {
@@ -567,6 +635,30 @@ func (c *Controller) acceptCherryServerIP(ctx context.Context, message *Message,
 	return err
 }
 
+func (c *Controller) acceptCherryNodeQuery(ctx context.Context, message *Message, session *wizard) error {
+	target, err := c.app.(NodeIPApplication).FindNodeForIPChange(ctx, session.panel.ID, strings.TrimSpace(message.Text))
+	if err != nil {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Нода не найдена или запрос неоднозначен. Проверьте имя/IP и повторите.", Keyboard{})
+		return sendErr
+	}
+	serverIP := target.Address.Unmap()
+	if !serverIP.IsValid() || !serverIP.Is4() {
+		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Для Cherry нужен текущий публичный IPv4 ноды.", Keyboard{})
+		return sendErr
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingCherryNodeQuery, func(current *wizard) {
+		current.ipTarget = target
+		current.cherryServerIP = serverIP
+		current.cherryUpdateNode = true
+		current.state = stateAwaitingCherryFloatingIP
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	text := renderIPChangeTarget(target) + "\n\nВведите новый floating IPv4, уже назначенный этому серверу в Cherry Servers. После настройки сервера бот также обновит ноду и DNS."
+	_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, text, Keyboard{})
+	return sendErr
+}
+
 func (c *Controller) acceptCherryFloatingIP(ctx context.Context, message *Message, session *wizard) error {
 	address, valid := parsePublicIPv4(message.Text)
 	if !valid || address == session.cherryServerIP {
@@ -599,7 +691,11 @@ func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message,
 	}
 	active.password = append(active.password[:0], password...)
 	clearBytes(password)
-	status, err := c.messenger.SendMessage(ctx, message.ChatID, "Подключаюсь к Cherry-серверу и настраиваю floating IP… Обычно это занимает меньше минуты, общий лимит — 90 секунд.", Keyboard{})
+	statusText := "Подключаюсь к Cherry-серверу и настраиваю floating IP… Обычно это занимает меньше минуты, общий лимит — 90 секунд."
+	if active.cherryUpdateNode {
+		statusText += " После этого обновлю ноду и DNS."
+	}
+	status, err := c.messenger.SendMessage(ctx, message.ChatID, statusText, Keyboard{})
 	if err != nil {
 		active.clear()
 		return err
@@ -620,6 +716,20 @@ func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message,
 		text := fmt.Sprintf("✅ Floating IP %s настроен на %s\nИнтерфейс: %s\nПостоянная настройка: %s", active.cherryFloatingIP, active.cherryServerIP, safeLine(result.Interface, 64), persistent)
 		if note := safeLine(result.PersistentNote, 500); note != "" {
 			text += "\n" + note
+		}
+		if active.cherryUpdateNode {
+			panelResult, replaceErr := c.app.(NodeIPApplication).ReplaceNodeIP(ctx, NodeIPChangeInput{
+				PanelID:    active.panel.ID,
+				NodeUUID:   active.ipTarget.UUID,
+				ExpectedIP: active.ipTarget.Address,
+				NewIP:      active.cherryFloatingIP,
+			})
+			if replaceErr != nil {
+				text += "\n\n⚠️ IP на сервере настроен, но ноду и DNS обновить не удалось. Запустите «Панель + DNS-балансировка» отдельно для этой ноды."
+				_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, Keyboard{})
+				return
+			}
+			text += "\n\n✅ " + safeLine(panelResult, 400)
 		}
 		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, Keyboard{})
 	}()
@@ -1304,6 +1414,20 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 			return "", "", 0, false
 		}
 		return "ip_panel", parts[2], parsed, true
+	}
+	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "cpanel" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 {
+			return "", "", 0, false
+		}
+		return "cherry_panel", parts[2], parsed, true
+	}
+	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "cherry" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 || parsed > 1 {
+			return "", "", 0, false
+		}
+		return "cherry_mode", parts[2], parsed, true
 	}
 	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "mode" {
 		parsed, err := strconv.Atoi(parts[3])

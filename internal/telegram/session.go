@@ -21,6 +21,9 @@ const (
 	stateAwaitingIPChangeConfirmation
 	stateAwaitingNewIP
 	stateSelectingIPMode
+	stateSelectingCherryMode
+	stateSelectingCherryPanel
+	stateAwaitingCherryNodeQuery
 	stateAwaitingCherryServerIP
 	stateAwaitingCherryFloatingIP
 	stateAwaitingCherryPassword
@@ -44,6 +47,7 @@ type wizard struct {
 	ipTarget         NodeIPChangeTarget
 	cherryServerIP   netip.Addr
 	cherryFloatingIP netip.Addr
+	cherryUpdateNode bool
 	expiryTimer      *time.Timer
 }
 
