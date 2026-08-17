@@ -112,12 +112,39 @@ type NodeIPChangeInput struct {
 	NewIP      netip.Addr
 }
 
+// CherryIPInput contains the transient root password used only for one SSH
+// connection. Implementations must not retain Password after the call returns.
+type CherryIPInput struct {
+	ServerIP   netip.Addr
+	FloatingIP netip.Addr
+	Password   []byte
+}
+
+type CherryIPResult struct {
+	Interface      string
+	LiveConfigured bool
+	Persistent     bool
+	PersistentNote string
+}
+
 type DeploymentSummary struct {
 	PanelName string
 	ID        string
 	NodeName  string
 	Status    string
 	UpdatedAt time.Time
+}
+
+type DeploymentDetails struct {
+	DeploymentSummary
+	CurrentStep   string
+	SNI           string
+	SafeError     string
+	CanRetryStep  bool
+	CanRetryDNS   bool
+	CanRecheck    bool
+	CanRepairCert bool
+	CanCancel     bool
 }
 
 // PreflightInput contains the transient password. Implementations must not
@@ -180,6 +207,7 @@ type Application interface {
 // RecoveryApplication is optional. Controller exposes these operations only
 // when the application implements the safe production-recovery contract.
 type RecoveryApplication interface {
+	GetDeploymentDetails(context.Context, string) (DeploymentDetails, error)
 	RetryFailedStep(context.Context, string) error
 	RetryDNS(context.Context, string) error
 	RecheckRemnawave(context.Context, string) (string, error)
@@ -192,4 +220,10 @@ type RecoveryApplication interface {
 type NodeIPApplication interface {
 	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
+}
+
+// CherryIPApplication is optional. It powers the SSH/netplan Cherry Servers
+// floating-IP wizard and keeps the temporary password outside durable state.
+type CherryIPApplication interface {
+	ConfigureCherryIP(context.Context, CherryIPInput) (CherryIPResult, error)
 }

@@ -311,6 +311,26 @@ func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *test
 	}
 }
 
+func TestManagerBootstrapAcknowledgesLegacyWhenCertificateIsAlreadyActive(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	fixture.resolver.unmanaged = []netip.Addr{netip.MustParseAddr("203.0.113.51")}
+	result, err := fixture.manager.Bootstrap(context.Background(), testSNI, 42)
+	if err != nil {
+		t.Fatalf("Bootstrap() with active certificate error = %v", err)
+	}
+	if result.Version == "" || result.AcknowledgedLegacyIPs != 1 {
+		t.Fatalf("Bootstrap() result = %#v", result)
+	}
+	if fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("bootstrap created another ACME order; calls=%d", fixture.issuer.calls.Load())
+	}
+}
+
 func (r *fakeResolver) Resolve(context.Context, string) (TargetResolution, error) {
 	return TargetResolution{
 		Managed:            append([]Target(nil), r.targets...),

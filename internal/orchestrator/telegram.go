@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"remnanode-setup-bot/internal/certmanager"
+	"remnanode-setup-bot/internal/cherryip"
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/telegram"
@@ -18,6 +20,15 @@ type TelegramApplication struct {
 	panels     map[string]PanelApplicationConfig
 	order      []string
 	repository DeploymentRepository
+	cherryIP   *cherryip.Service
+}
+
+func (a *TelegramApplication) SetCherryIPService(service *cherryip.Service) error {
+	if a == nil || service == nil {
+		return errors.New("Cherry IP service is required")
+	}
+	a.cherryIP = service
+	return nil
 }
 
 type PanelApplicationConfig struct {
@@ -211,6 +222,42 @@ func (a *TelegramApplication) RetryFailedStep(ctx context.Context, deploymentID 
 	return panel.Service.RetryFailedStep(ctx, deploymentID, nil)
 }
 
+func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deploymentID string) (telegram.DeploymentDetails, error) {
+	item, err := a.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return telegram.DeploymentDetails{}, err
+	}
+	panel, err := a.panel(item.PanelID)
+	if err != nil {
+		return telegram.DeploymentDetails{}, err
+	}
+	details := telegram.DeploymentDetails{
+		DeploymentSummary: telegram.DeploymentSummary{PanelName: panel.Name, ID: item.ID, NodeName: item.NodeName, Status: string(item.Status), UpdatedAt: item.UpdatedAt},
+		CurrentStep:       item.CurrentStep,
+		SNI:               item.SNIDomain,
+		CanRetryDNS:       item.Status == deployment.StatusDNSFailed,
+		CanCancel:         !item.Status.Terminal(),
+	}
+	if item.SafeErrorMessage != nil {
+		details.SafeError = *item.SafeErrorMessage
+	}
+	if item.Status == deployment.StatusFailed {
+		switch item.CurrentStep {
+		case stepPrepareCertificate, stepProvisioning, stepCreateNode, stepWaitNode, stepAddDNS:
+			details.CanRetryStep = true
+		}
+		switch item.CurrentStep {
+		case stepCreateNode, stepWaitNode, stepAddDNS:
+			details.CanRecheck = true
+		}
+		details.CanRepairCert = item.CurrentStep == stepPrepareCertificate && strings.TrimSpace(item.SNIDomain) != ""
+	}
+	if item.Status == deployment.StatusManualReview {
+		details.CanRecheck = true
+	}
+	return details, nil
+}
+
 func (a *TelegramApplication) RetryDNS(ctx context.Context, deploymentID string) error {
 	panel, err := a.panelForDeployment(ctx, deploymentID)
 	if err != nil {
@@ -309,6 +356,17 @@ func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, input telegram.
 		return "", err
 	}
 	return panel.Service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
+}
+
+func (a *TelegramApplication) ConfigureCherryIP(ctx context.Context, input telegram.CherryIPInput) (telegram.CherryIPResult, error) {
+	if a.cherryIP == nil {
+		return telegram.CherryIPResult{}, errors.New("Cherry IP service is unavailable")
+	}
+	result, err := a.cherryIP.Configure(ctx, cherryip.Input{ServerIP: input.ServerIP, FloatingIP: input.FloatingIP, Password: input.Password})
+	if err != nil {
+		return telegram.CherryIPResult{}, err
+	}
+	return telegram.CherryIPResult{Interface: result.Interface, LiveConfigured: result.LiveConfigured, Persistent: result.Persistent, PersistentNote: result.PersistentNote}, nil
 }
 
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {

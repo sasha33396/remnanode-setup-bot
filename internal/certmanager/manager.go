@@ -157,9 +157,17 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 		return BootstrapResult{}, safe("Certificate bootstrap lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
-	if _, material, activeErr := m.loadActive(ctx, domain, true); activeErr == nil {
+	if active, material, activeErr := m.loadActive(ctx, domain, true); activeErr == nil {
 		material.Destroy()
-		return BootstrapResult{}, safe("Certificate is already active", ErrActivationFailed)
+		resolution, resolveErr := m.resolver.Resolve(ctx, domain)
+		if resolveErr != nil {
+			return BootstrapResult{}, safe(SafeMessage(resolveErr, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
+		}
+		acknowledged, acknowledgeErr := m.acknowledgeLegacyTargets(ctx, domain, resolution, operatorUserID)
+		if acknowledgeErr != nil {
+			return BootstrapResult{}, acknowledgeErr
+		}
+		return BootstrapResult{SNI: domain, Version: active.ActiveVersion, ManagedTargets: len(resolution.Managed), AcknowledgedLegacyIPs: acknowledged}, nil
 	} else if !errors.Is(activeErr, ErrNotFound) && !errors.Is(activeErr, certificates.ErrInvalidMaterial) {
 		return BootstrapResult{}, safe("Active certificate state could not be checked", ErrPersistenceFailed)
 	}
@@ -195,15 +203,9 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 	if err != nil {
 		return BootstrapResult{}, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
 	}
-	for _, ip := range resolution.Unmanaged {
-		operator := operatorUserID
-		if err := m.repository.RecordTargetReview(ctx, TargetReview{
-			SNI: domain, IP: ip, State: TargetLegacyAcknowledged,
-			Reason:         "Legacy DNS target explicitly acknowledged during certificate bootstrap",
-			AcknowledgedBy: &operator,
-		}); err != nil {
-			return BootstrapResult{}, safe("Legacy target acknowledgement could not be saved", ErrPersistenceFailed)
-		}
+	acknowledged, err := m.acknowledgeLegacyTargets(ctx, domain, resolution, operatorUserID)
+	if err != nil {
+		return BootstrapResult{}, err
 	}
 	if err := m.distributeTargets(ctx, domain, candidate.Version, material, resolution.Managed); err != nil {
 		return BootstrapResult{}, err
@@ -221,8 +223,22 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 	m.observeExpiry(Record{SNI: domain, ExpiresAt: candidate.ExpiresAt})
 	return BootstrapResult{
 		SNI: domain, Version: candidate.Version, ManagedTargets: len(resolution.Managed),
-		AcknowledgedLegacyIPs: len(resolution.Unmanaged) + len(resolution.LegacyAcknowledged),
+		AcknowledgedLegacyIPs: acknowledged,
 	}, nil
+}
+
+func (m *Manager) acknowledgeLegacyTargets(ctx context.Context, domain string, resolution TargetResolution, operatorUserID int64) (int, error) {
+	for _, ip := range resolution.Unmanaged {
+		operator := operatorUserID
+		if err := m.repository.RecordTargetReview(ctx, TargetReview{
+			SNI: domain, IP: ip, State: TargetLegacyAcknowledged,
+			Reason:         "Legacy DNS target explicitly acknowledged during certificate bootstrap",
+			AcknowledgedBy: &operator,
+		}); err != nil {
+			return 0, safe("Legacy target acknowledgement could not be saved", ErrPersistenceFailed)
+		}
+	}
+	return len(resolution.Unmanaged) + len(resolution.LegacyAcknowledged), nil
 }
 
 // Rollback redistributes and activates a previously stored valid version. The

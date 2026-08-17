@@ -71,6 +71,26 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
+The **Сменить IP** menu contains two independent workflows:
+
+- **Панель + DNS-балансировка** updates the Remnawave Node and every matching
+  DNS-balancer zone. It supports both Nodes created by this bot and legacy
+  Nodes that exist only in Remnawave.
+- **Смена IP на Cherry (сервер)** performs the operating-system step from the
+  Cherry IP helper: it connects to the server with a transient root password,
+  adds an already assigned floating IPv4 address live, and persists it in
+  netplan. The existing network addresses and routes are not removed. A backup
+  is created before writing netplan and a failed generate/apply restores it.
+  This workflow does not order or assign an address through the Cherry API; the
+  floating IP must already be assigned to that server in Cherry Servers.
+
+The **Развёртывания** list is actionable. Opening a deployment shows only the
+buttons valid for its durable state: safe logs, step/DNS retry, Remnawave
+recheck, cancellation, or certificate repair. Certificate repair obtains the
+deployment UUID and SNI from PostgreSQL, acknowledges reviewed legacy DNS
+targets, and resumes the failed certificate step without requiring commands or
+manual database queries.
+
 ## Deployment orchestration
 
 `internal/orchestrator` implements the resumable deployment workflow from

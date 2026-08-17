@@ -138,6 +138,8 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
 	handleMessage(t, controller, 2, "legacy-node")
 	card := messenger.lastSent()
 	if !strings.Contains(card.text, "legacy-node") || !strings.Contains(card.text, "8.8.8.8") || !strings.Contains(card.text, "legacy") {
@@ -180,8 +182,11 @@ func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuChangeIP)
-	picker := messenger.lastSent()
-	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, picker.message)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	picker := edits[len(edits)-1]
+	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, mode.message)
 	handleMessage(t, controller, 2, "legacy")
 	if application.findPanel != "test" {
 		t.Fatalf("find panel = %q", application.findPanel)
@@ -189,6 +194,49 @@ func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
 	card := messenger.lastSent()
 	if !strings.Contains(card.text, "Панель: Test") {
 		t.Fatalf("card = %q", card.text)
+	}
+}
+
+func TestCherryIPWizardDeletesPasswordAndConfiguresServer(t *testing.T) {
+	application := &fakeCherryIPApplication{fakeApplication: &fakeApplication{}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "cherry-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "8.8.8.8")
+	handleMessage(t, controller, 3, "1.1.1.1")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if password.Text != "" || !messenger.wasDeleted(testChatID, 4) {
+		t.Fatal("Cherry root password was not removed from Telegram update")
+	}
+	if application.calls != 1 || application.input.ServerIP.String() != "8.8.8.8" || application.input.FloatingIP.String() != "1.1.1.1" || string(application.password) != "root-secret" {
+		t.Fatalf("Cherry input = %#v password=%q calls=%d", application.input, application.password, application.calls)
+	}
+}
+
+func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	base := &fakeApplication{deployments: []DeploymentSummary{{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}}}
+	application := &fakeRecoveryApplication{fakeApplication: base, details: DeploymentDetails{DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}, CurrentStep: "prepare_certificate", SNI: "nl-modx-roy.nodexphere.net", CanRetryStep: true, CanRepairCert: true}, bootstrapResult: "Certificate ready"}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuDeployments)
+	list := messenger.lastSent()
+	handleCallback(t, controller, "open", list.keyboard.Inline[0][0].CallbackData, list.message)
+	edits := messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	if strings.Contains(card.text, deploymentID) || strings.Contains(card.text, "nl-modx-roy.nodexphere.net") {
+		t.Fatalf("card exposed values the operator should not copy manually: %q", card.text)
+	}
+	handleCallback(t, controller, "repair", card.keyboard.Inline[1][0].CallbackData, list.message)
+	controller.Wait()
+	if application.bootstrapSNI != "nl-modx-roy.nodexphere.net" || application.retryCalls != 1 {
+		t.Fatalf("repair used SNI=%q retries=%d", application.bootstrapSNI, application.retryCalls)
 	}
 }
 
@@ -413,6 +461,7 @@ type fakeApplication struct {
 	preflightPassword   []byte
 	deploymentPassword  []byte
 	deploymentInput     DeploymentInput
+	deployments         []DeploymentSummary
 }
 
 type fakeRecoveryApplication struct {
@@ -422,10 +471,18 @@ type fakeRecoveryApplication struct {
 	bootstrapOperator int64
 	bootstrapResult   string
 	bootstrapErr      error
+	details           DeploymentDetails
+	retryCalls        int
 }
 
-func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
-func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error        { return nil }
+func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error {
+	f.retryCalls++
+	return nil
+}
+func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error { return nil }
+func (f *fakeRecoveryApplication) GetDeploymentDetails(context.Context, string) (DeploymentDetails, error) {
+	return f.details, nil
+}
 
 func (f *fakeRecoveryApplication) RecheckRemnawave(context.Context, string) (string, error) {
 	return "checked", nil
@@ -439,6 +496,21 @@ type fakeNodeIPApplication struct {
 	replaceCalls int
 	input        NodeIPChangeInput
 	findPanel    string
+}
+
+type fakeCherryIPApplication struct {
+	*fakeApplication
+	calls    int
+	input    CherryIPInput
+	password []byte
+}
+
+func (f *fakeCherryIPApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
+	f.calls++
+	f.input = input
+	f.input.Password = nil
+	f.password = append([]byte(nil), input.Password...)
+	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
 }
 
 func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {
@@ -530,7 +602,7 @@ func (f *fakeApplication) ListDeployments(context.Context, int) ([]DeploymentSum
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listDeploymentCalls++
-	return nil, nil
+	return append([]DeploymentSummary(nil), f.deployments...), nil
 }
 
 func (f *fakeApplication) totalCalls() int {

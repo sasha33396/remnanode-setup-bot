@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"remnanode-setup-bot/internal/certmanager"
+	"remnanode-setup-bot/internal/cherryip"
 	"remnanode-setup-bot/internal/config"
 	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/health"
@@ -72,6 +73,16 @@ func run() int {
 	ssh, err := sshclient.NewClient(repository, signer, cfg.SSHConnectTimeout, cfg.SSHCommandTimeout, 1<<20, 1<<20)
 	if err != nil {
 		logger.Error("SSH client initialization failed")
+		return 1
+	}
+	cherrySSH, err := sshclient.NewClient(sshclient.NewMemoryHostKeyStore(), signer, cfg.SSHConnectTimeout, cfg.SSHCommandTimeout, 1<<20, 1<<20)
+	if err != nil {
+		logger.Error("Cherry SSH client initialization failed")
+		return 1
+	}
+	cherryIPService, err := cherryip.New(cherrySSH, cfg.SSHCommandTimeout)
+	if err != nil {
+		logger.Error("Cherry IP service initialization failed")
 		return 1
 	}
 
@@ -197,6 +208,10 @@ func run() int {
 	application, err := orchestrator.NewMultiPanelTelegramApplication(panelApplications)
 	if err != nil {
 		logger.Error("Telegram application initialization failed")
+		return 1
+	}
+	if err := application.SetCherryIPService(cherryIPService); err != nil {
+		logger.Error("Cherry IP application initialization failed")
 		return 1
 	}
 	bot, err := telegram.NewBotAPI(cfg.TelegramBotToken, cfg.TelegramPollTimeout)

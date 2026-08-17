@@ -145,6 +145,9 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case stateSelectingPanel, stateSelectingIPPanel:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
+	case stateSelectingIPMode:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите вариант смены IP кнопкой.", Keyboard{})
+		return err
 	case stateSelectingHost:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Select a Host using the inline buttons.", Keyboard{})
 		return err
@@ -167,6 +170,12 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return err
 	case stateAwaitingNewIP:
 		return c.acceptNewNodeIP(ctx, message, session)
+	case stateAwaitingCherryServerIP:
+		return c.acceptCherryServerIP(ctx, message, session)
+	case stateAwaitingCherryFloatingIP:
+		return c.acceptCherryFloatingIP(ctx, message, session)
+	case stateAwaitingCherryPassword:
+		return c.acceptCherryPassword(ctx, message, session)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -286,6 +295,9 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 		return c.showNodesPage(ctx, callback.Message.ChatID, callback.Message.ID, page)
 	}
+	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {
+		return c.handleDeploymentCallback(ctx, callback, action, deploymentID)
+	}
 	action, nonce, index, valid := parseCallbackData(callback.Data)
 	if !valid {
 		return c.expiredCallback(ctx, callback)
@@ -297,6 +309,24 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 
 	switch action {
+	case "ip_mode":
+		if session.state != stateSelectingIPMode {
+			return c.expiredCallback(ctx, callback)
+		}
+		switch index {
+		case 0:
+			return c.beginPanelIPChange(ctx, callback, session)
+		case 1:
+			if _, ok := c.app.(CherryIPApplication); !ok {
+				return c.expiredCallback(ctx, callback)
+			}
+			if !c.updateSession(callback.FromUserID, nonce, stateSelectingIPMode, func(current *wizard) { current.state = stateAwaitingCherryServerIP }) {
+				return c.expiredCallback(ctx, callback)
+			}
+			return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите основной IPv4 сервера Cherry, по которому бот подключится по SSH.", Keyboard{})
+		default:
+			return c.expiredCallback(ctx, callback)
+		}
 	case "panel":
 		if session.state != stateSelectingPanel || index < 0 || index >= len(session.panels) {
 			return c.expiredCallback(ctx, callback)
@@ -426,32 +456,57 @@ func (c *Controller) showHostPicker(ctx context.Context, userID, chatID int64, n
 
 func (c *Controller) beginIPChange(ctx context.Context, message *Message) error {
 	c.cancelExisting(ctx, message.FromUserID)
-	if _, ok := c.app.(NodeIPApplication); !ok {
+	_, nodeAvailable := c.app.(NodeIPApplication)
+	_, cherryAvailable := c.app.(CherryIPApplication)
+	if !nodeAvailable && !cherryAvailable {
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Смена IP сейчас недоступна.", mainKeyboard())
 		return err
-	}
-	panels, err := c.app.ListPanels(ctx)
-	if err != nil || len(panels) == 0 {
-		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Панели временно недоступны.", mainKeyboard())
-		return sendErr
 	}
 	nonce, err := c.nonce()
 	if err != nil {
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось начать смену IP. Повторите позже.", mainKeyboard())
 		return errors.Join(err, sendErr)
 	}
-	if len(panels) > 1 {
-		c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingIPPanel, expiresAt: c.now().Add(c.ttl), panels: panels})
-		rows := make([][]Button, 0, len(panels))
-		for index, panel := range panels {
-			rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("ip:panel:%s:%d", nonce, index)}})
-		}
-		_, err = c.messenger.SendMessage(ctx, message.ChatID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
-		return err
+	rows := make([][]Button, 0, 2)
+	if nodeAvailable {
+		rows = append(rows, []Button{{Text: "Панель + DNS-балансировка", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 0)}})
 	}
-	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateAwaitingIPChangeQuery, expiresAt: c.now().Add(c.ttl), panel: panels[0]})
-	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+	if cherryAvailable {
+		rows = append(rows, []Button{{Text: "Смена IP на Cherry (сервер)", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 1)}})
+	}
+	c.putSession(&wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingIPMode, expiresAt: c.now().Add(c.ttl)})
+	_, err = c.messenger.SendMessage(ctx, message.ChatID, "Что именно нужно изменить?", Keyboard{Inline: rows})
 	return err
+}
+
+func (c *Controller) beginPanelIPChange(ctx context.Context, callback *CallbackQuery, session *wizard) error {
+	if _, ok := c.app.(NodeIPApplication); !ok {
+		return c.expiredCallback(ctx, callback)
+	}
+	panels, err := c.app.ListPanels(ctx)
+	if err != nil || len(panels) == 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Панели временно недоступны.", mainKeyboard())
+	}
+	if len(panels) == 1 {
+		if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
+			current.panel = panels[0]
+			current.state = stateAwaitingIPChangeQuery
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её текущий IP-адрес.", Keyboard{})
+	}
+	if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
+		current.panels = panels
+		current.state = stateSelectingIPPanel
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	rows := make([][]Button, 0, len(panels))
+	for index, panel := range panels {
+		rows = append(rows, []Button{{Text: safeLine(panel.Name, 48), CallbackData: fmt.Sprintf("ip:panel:%s:%d", session.nonce, index)}})
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выберите Remnawave-панель:", Keyboard{Inline: rows})
 }
 
 func (c *Controller) acceptIPChangeQuery(ctx context.Context, message *Message, session *wizard) error {
@@ -494,6 +549,81 @@ func (c *Controller) acceptNewNodeIP(ctx context.Context, message *Message, sess
 	}
 	_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "✅ "+safeLine(result, 400), mainKeyboard())
 	return sendErr
+}
+
+func (c *Controller) acceptCherryServerIP(ctx context.Context, message *Message, session *wizard) error {
+	address, valid := parsePublicIPv4(message.Text)
+	if !valid {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Неверный адрес. Введите публичный IPv4 сервера Cherry.", Keyboard{})
+		return err
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingCherryServerIP, func(current *wizard) {
+		current.cherryServerIP = address
+		current.state = stateAwaitingCherryFloatingIP
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите новый floating IPv4, уже назначенный этому серверу в Cherry Servers.", Keyboard{})
+	return err
+}
+
+func (c *Controller) acceptCherryFloatingIP(ctx context.Context, message *Message, session *wizard) error {
+	address, valid := parsePublicIPv4(message.Text)
+	if !valid || address == session.cherryServerIP {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Неверный floating IP. Он должен быть публичным IPv4 и отличаться от основного адреса сервера.", Keyboard{})
+		return err
+	}
+	if !c.updateSession(message.FromUserID, session.nonce, stateAwaitingCherryFloatingIP, func(current *wizard) {
+		current.cherryFloatingIP = address
+		current.state = stateAwaitingCherryPassword
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Отправьте временный root-пароль. Сообщение будет сразу удалено; пароль не сохраняется.", Keyboard{})
+	return err
+}
+
+func (c *Controller) acceptCherryPassword(ctx context.Context, message *Message, session *wizard) error {
+	password := []byte(message.Text)
+	message.Text = ""
+	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
+	if len(password) == 0 || len(password) > maxPasswordBytes {
+		clearBytes(password)
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Пароль пустой или слишком длинный. Отправьте его ещё раз.", Keyboard{})
+		return err
+	}
+	active := c.takeSession(message.FromUserID, session.nonce, stateAwaitingCherryPassword)
+	if active == nil {
+		clearBytes(password)
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	active.password = append(active.password[:0], password...)
+	clearBytes(password)
+	status, err := c.messenger.SendMessage(ctx, message.ChatID, "Подключаюсь к Cherry-серверу и настраиваю floating IP…", Keyboard{})
+	if err != nil {
+		active.clear()
+		return err
+	}
+	c.workers.Add(1)
+	go func() {
+		defer c.workers.Done()
+		defer active.clear()
+		result, configureErr := c.app.(CherryIPApplication).ConfigureCherryIP(ctx, CherryIPInput{ServerIP: active.cherryServerIP, FloatingIP: active.cherryFloatingIP, Password: active.password})
+		if configureErr != nil {
+			_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, "❌ Не удалось настроить IP на Cherry-сервере. Проверьте root-пароль, доступность SSH и назначение floating IP.", mainKeyboard())
+			return
+		}
+		persistent := "не сохранён в netplan"
+		if result.Persistent {
+			persistent = "сохранён в netplan"
+		}
+		text := fmt.Sprintf("✅ Floating IP %s настроен на %s\nИнтерфейс: %s\nПостоянная настройка: %s", active.cherryFloatingIP, active.cherryServerIP, safeLine(result.Interface, 64), persistent)
+		if note := safeLine(result.PersistentNote, 500); note != "" {
+			text += "\n" + note
+		}
+		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, mainKeyboard())
+	}()
+	return nil
 }
 
 func (c *Controller) acceptNodeName(ctx context.Context, message *Message, session *wizard) error {
@@ -776,8 +906,121 @@ func (c *Controller) showDeployments(ctx context.Context, chatID int64) error {
 			break
 		}
 	}
-	_, err = c.messenger.SendMessage(ctx, chatID, truncateUTF8(builder.String(), maxMessageBytes), mainKeyboard())
+	rows := make([][]Button, 0, len(deployments))
+	for _, item := range deployments {
+		label := safeLine(item.NodeName+" — "+item.Status, 54)
+		rows = append(rows, []Button{{Text: label, CallbackData: "dep:open:" + item.ID}})
+	}
+	_, err = c.messenger.SendMessage(ctx, chatID, truncateUTF8(builder.String(), maxMessageBytes), Keyboard{Inline: rows})
 	return err
+}
+
+func (c *Controller) handleDeploymentCallback(ctx context.Context, callback *CallbackQuery, action, deploymentID string) error {
+	recoveryApp, ok := c.app.(RecoveryApplication)
+	if !ok {
+		return c.messenger.AnswerCallback(ctx, callback.ID, "Действия восстановления недоступны.")
+	}
+	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
+	if action == "open" {
+		return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "")
+	}
+	details, err := recoveryApp.GetDeploymentDetails(ctx, deploymentID)
+	if err != nil {
+		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Развёртывание больше недоступно.", mainKeyboard())
+	}
+	switch action {
+	case "logs":
+		lines, logsErr := recoveryApp.ViewSafeLogs(ctx, deploymentID)
+		if logsErr != nil {
+			return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Логи временно недоступны.")
+		}
+		if len(lines) == 0 {
+			lines = []string{"Нет записей."}
+		}
+		return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "Логи:\n"+strings.Join(lines, "\n"))
+	case "retry", "dns", "recheck", "repair_cert", "cancel":
+		if action == "repair_cert" && (!details.CanRepairCert || strings.TrimSpace(details.SNI) == "") {
+			return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Исправление сертификата неприменимо к текущему состоянию.")
+		}
+		if err := c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "⏳ Выполняю безопасное восстановление…", Keyboard{}); err != nil {
+			return err
+		}
+		c.workers.Add(1)
+		go c.runDeploymentAction(ctx, recoveryApp, callback, action, deploymentID, details)
+		return nil
+	default:
+		return c.expiredCallback(ctx, callback)
+	}
+}
+
+func (c *Controller) runDeploymentAction(ctx context.Context, app RecoveryApplication, callback *CallbackQuery, action, deploymentID string, details DeploymentDetails) {
+	defer c.workers.Done()
+	var result string
+	var err error
+	switch action {
+	case "retry":
+		err = app.RetryFailedStep(ctx, deploymentID)
+	case "dns":
+		err = app.RetryDNS(ctx, deploymentID)
+	case "recheck":
+		result, err = app.RecheckRemnawave(ctx, deploymentID)
+	case "repair_cert":
+		result, err = app.BootstrapCertificate(ctx, details.SNI, callback.FromUserID)
+		if err == nil {
+			err = app.RetryFailedStep(ctx, deploymentID)
+			if err == nil {
+				result = safeLine(result, 350) + "\nРазвёртывание продолжено."
+			}
+		}
+	case "cancel":
+		err = c.app.CancelDeployment(ctx, deploymentID)
+	}
+	message := "✅ Действие выполнено."
+	if result != "" {
+		message = "✅ " + safeLine(result, 500)
+	}
+	if err != nil {
+		message = "❌ Действие не выполнено безопасно. Откройте логи этой карточки."
+	}
+	_ = c.showDeploymentCard(ctx, app, callback.Message.ChatID, callback.Message.ID, deploymentID, message)
+}
+
+func (c *Controller) showDeploymentCard(ctx context.Context, app RecoveryApplication, chatID int64, messageID int, deploymentID, notice string) error {
+	details, err := app.GetDeploymentDetails(ctx, deploymentID)
+	if err != nil {
+		return c.messenger.EditMessage(ctx, chatID, messageID, "Развёртывание больше недоступно.", mainKeyboard())
+	}
+	var builder strings.Builder
+	if notice != "" {
+		builder.WriteString(truncateUTF8(notice, 1400))
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("📜 Развёртывание\n")
+	fmt.Fprintf(&builder, "Панель: %s\nНода: %s\nСтатус: %s\nШаг: %s", safeLine(details.PanelName, 80), safeLine(details.NodeName, 80), safeLine(details.Status, 40), safeLine(details.CurrentStep, 80))
+	if details.SafeError != "" {
+		fmt.Fprintf(&builder, "\nОшибка: %s", safeLine(details.SafeError, 500))
+	}
+	return c.messenger.EditMessage(ctx, chatID, messageID, truncateUTF8(builder.String(), maxMessageBytes), deploymentActionsKeyboard(details))
+}
+
+func deploymentActionsKeyboard(details DeploymentDetails) Keyboard {
+	rows := [][]Button{{{Text: "📋 Логи", CallbackData: "dep:logs:" + details.ID}}}
+	if details.CanRepairCert {
+		rows = append(rows, []Button{{Text: "🛠 Исправить сертификат и продолжить", CallbackData: "dep:repair_cert:" + details.ID}})
+	}
+	if details.CanRetryDNS {
+		rows = append(rows, []Button{{Text: "🔁 Повторить DNS", CallbackData: "dep:dns:" + details.ID}})
+	}
+	if details.CanRetryStep && !details.CanRepairCert {
+		rows = append(rows, []Button{{Text: "🔁 Повторить шаг", CallbackData: "dep:retry:" + details.ID}})
+	}
+	if details.CanRecheck {
+		rows = append(rows, []Button{{Text: "🔎 Перепроверить ноду", CallbackData: "dep:recheck:" + details.ID}})
+	}
+	if details.CanCancel {
+		rows = append(rows, []Button{{Text: "❌ Отменить развёртывание", CallbackData: "dep:cancel:" + details.ID}})
+	}
+	return Keyboard{Inline: rows}
 }
 
 func (c *Controller) authorized(userID int64) bool {
@@ -1062,6 +1305,13 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		}
 		return "ip_panel", parts[2], parsed, true
 	}
+	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "mode" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 || parsed > 1 {
+			return "", "", 0, false
+		}
+		return "ip_mode", parts[2], parsed, true
+	}
 	if parts[0] == "ip" && len(parts) == 3 {
 		switch parts[1] {
 		case "change":
@@ -1090,6 +1340,19 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		return parts[1], parts[2], 0, true
 	default:
 		return "", "", 0, false
+	}
+}
+
+func parseDeploymentCallback(data string) (action, deploymentID string, valid bool) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 || parts[0] != "dep" || !validDeploymentID(parts[2]) {
+		return "", "", false
+	}
+	switch parts[1] {
+	case "open", "logs", "retry", "dns", "recheck", "repair_cert", "cancel":
+		return parts[1], parts[2], true
+	default:
+		return "", "", false
 	}
 }
 

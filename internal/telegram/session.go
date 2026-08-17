@@ -20,25 +20,31 @@ const (
 	stateAwaitingIPChangeQuery
 	stateAwaitingIPChangeConfirmation
 	stateAwaitingNewIP
+	stateSelectingIPMode
+	stateAwaitingCherryServerIP
+	stateAwaitingCherryFloatingIP
+	stateAwaitingCherryPassword
 )
 
 type wizard struct {
-	userID      int64
-	chatID      int64
-	nonce       string
-	state       wizardState
-	expiresAt   time.Time
-	hosts       []Host
-	panels      []Panel
-	panel       Panel
-	selected    Host
-	nodeName    string
-	vpsIP       netip.Addr
-	password    []byte
-	preflight   PreflightResult
-	statusMsgID int
-	ipTarget    NodeIPChangeTarget
-	expiryTimer *time.Timer
+	userID           int64
+	chatID           int64
+	nonce            string
+	state            wizardState
+	expiresAt        time.Time
+	hosts            []Host
+	panels           []Panel
+	panel            Panel
+	selected         Host
+	nodeName         string
+	vpsIP            netip.Addr
+	password         []byte
+	preflight        PreflightResult
+	statusMsgID      int
+	ipTarget         NodeIPChangeTarget
+	cherryServerIP   netip.Addr
+	cherryFloatingIP netip.Addr
+	expiryTimer      *time.Timer
 }
 
 func (w *wizard) clone() *wizard {
