@@ -7,28 +7,31 @@ import (
 )
 
 const (
-	defaultNodeMonitorInterval      = 2 * time.Minute
+	defaultNodeMonitorInterval      = 5 * time.Minute
+	defaultNodeAlertRepeatInterval  = 15 * time.Minute
 	defaultNodeMonitorConfirmations = 2
 )
 
 type nodeAlertState struct {
-	consecutive int
-	delivered   map[int64]bool
+	consecutive      int
+	lastNotification map[int64]time.Time
 }
 
 // NodeMonitor periodically checks connected nodes and notifies every allowed
 // operator when a node remains below its panel-relative online threshold.
 type NodeMonitor struct {
-	app           Application
-	messenger     Messenger
-	users         []int64
-	interval      time.Duration
-	confirmations int
-	policy        NodePolicy
-	states        map[string]*nodeAlertState
+	app            Application
+	messenger      Messenger
+	users          []int64
+	interval       time.Duration
+	repeatInterval time.Duration
+	confirmations  int
+	policy         NodePolicy
+	states         map[string]*nodeAlertState
+	now            func() time.Time
 }
 
-func NewNodeMonitor(allowedUsers []int64, app Application, messenger Messenger, interval time.Duration, confirmations int, policy NodePolicy) (*NodeMonitor, error) {
+func NewNodeMonitor(allowedUsers []int64, app Application, messenger Messenger, interval, repeatInterval time.Duration, confirmations int, policy NodePolicy) (*NodeMonitor, error) {
 	if len(allowedUsers) == 0 || app == nil || messenger == nil {
 		return nil, errors.New("invalid node monitor configuration")
 	}
@@ -47,17 +50,22 @@ func NewNodeMonitor(allowedUsers []int64, app Application, messenger Messenger, 
 	if interval <= 0 {
 		interval = defaultNodeMonitorInterval
 	}
+	if repeatInterval <= 0 {
+		repeatInterval = defaultNodeAlertRepeatInterval
+	}
 	if confirmations <= 0 {
 		confirmations = defaultNodeMonitorConfirmations
 	}
 	return &NodeMonitor{
-		app:           app,
-		messenger:     messenger,
-		users:         users,
-		interval:      interval,
-		confirmations: confirmations,
-		policy:        normalizeNodePolicy(policy),
-		states:        make(map[string]*nodeAlertState),
+		app:            app,
+		messenger:      messenger,
+		users:          users,
+		interval:       interval,
+		repeatInterval: repeatInterval,
+		confirmations:  confirmations,
+		policy:         normalizeNodePolicy(policy),
+		states:         make(map[string]*nodeAlertState),
+		now:            time.Now,
 	}, nil
 }
 
@@ -88,6 +96,7 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 		return err
 	}
 	snapshots := classifyNodePanels(panels, nodes, m.policy)
+	now := m.now()
 	seenNodes := make(map[string]struct{}, len(nodes))
 	for _, snapshot := range snapshots {
 		for _, node := range snapshot.All {
@@ -97,7 +106,7 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 			key := nodeMonitorKey(node)
 			state := m.states[key]
 			if state == nil {
-				state = &nodeAlertState{delivered: make(map[int64]bool)}
+				state = &nodeAlertState{lastNotification: make(map[int64]time.Time)}
 				m.states[key] = state
 			}
 			state.consecutive++
@@ -106,11 +115,12 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 			}
 			keyboard := Keyboard{Inline: [][]Button{{{Text: "📡 Открыть карточку ноды", CallbackData: "nodes:o:" + node.UUID}}}}
 			for _, userID := range m.users {
-				if state.delivered[userID] {
+				lastNotification := state.lastNotification[userID]
+				if !lastNotification.IsZero() && now.Before(lastNotification.Add(m.repeatInterval)) {
 					continue
 				}
 				if _, sendErr := m.messenger.SendMessage(ctx, userID, formatNodeAlert(snapshot, node), keyboard); sendErr == nil {
-					state.delivered[userID] = true
+					state.lastNotification[userID] = now
 				}
 			}
 		}
@@ -121,7 +131,7 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 				continue
 			}
 			for _, userID := range m.users {
-				if !state.delivered[userID] {
+				if state.lastNotification[userID].IsZero() {
 					continue
 				}
 				_, _ = m.messenger.SendMessage(ctx, userID, formatNodeRecovery(snapshot, node), Keyboard{Inline: [][]Button{{{Text: "📡 Открыть карточку ноды", CallbackData: "nodes:o:" + node.UUID}}}})

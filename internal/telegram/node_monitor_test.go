@@ -17,10 +17,12 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 		},
 	}
 	messenger := &fakeMessenger{}
-	monitor, err := NewNodeMonitor([]int64{101, 202}, application, messenger, time.Minute, 2, DefaultNodePolicy())
+	monitor, err := NewNodeMonitor([]int64{101, 202}, application, messenger, time.Minute, 15*time.Minute, 2, DefaultNodePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	monitor.now = func() time.Time { return now }
 
 	if err := monitor.sample(context.Background()); err != nil {
 		t.Fatal(err)
@@ -46,6 +48,20 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 	if got := sentRecords(messenger); len(got) != 2 {
 		t.Fatalf("duplicate alerts sent: %d", len(got))
 	}
+	now = now.Add(14 * time.Minute)
+	if err := monitor.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sentRecords(messenger); len(got) != 2 {
+		t.Fatalf("alert repeated before 15 minutes: %d", len(got))
+	}
+	now = now.Add(time.Minute)
+	if err := monitor.sample(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sentRecords(messenger); len(got) != 4 {
+		t.Fatalf("15-minute reminder count = %d, want 4", len(got))
+	}
 
 	application.mu.Lock()
 	application.nodes[0].Connected = false
@@ -61,7 +77,7 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 	if err := monitor.sample(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := sentRecords(messenger); len(got) != 2 {
+	if got := sentRecords(messenger); len(got) != 4 {
 		t.Fatalf("telemetry gap caused duplicate alert: %d", len(got))
 	}
 
@@ -72,7 +88,7 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 		t.Fatal(err)
 	}
 	records := sentRecords(messenger)
-	if len(records) != 4 || !strings.Contains(records[2].text, "восстановился") || !strings.Contains(records[3].text, "восстановился") {
+	if len(records) != 6 || !strings.Contains(records[4].text, "восстановился") || !strings.Contains(records[5].text, "восстановился") {
 		t.Fatalf("recovery records = %#v", records)
 	}
 }
@@ -86,7 +102,7 @@ func TestNodeMonitorIgnoresDisconnectedAndDisabledNodes(t *testing.T) {
 		},
 	}
 	messenger := &fakeMessenger{}
-	monitor, err := NewNodeMonitor([]int64{101}, application, messenger, time.Minute, 1, DefaultNodePolicy())
+	monitor, err := NewNodeMonitor([]int64{101}, application, messenger, time.Minute, 15*time.Minute, 1, DefaultNodePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}

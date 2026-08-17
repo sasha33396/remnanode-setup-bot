@@ -240,7 +240,7 @@ func run() int {
 		CriticalCap:          cfg.NodeCriticalOnlineCap,
 	}
 	controller.SetNodePolicy(nodePolicy)
-	nodeMonitor, err := telegram.NewNodeMonitor(cfg.TelegramAllowedUsers, application, bot, cfg.NodeMonitorInterval, cfg.NodeMonitorConfirmations, nodePolicy)
+	nodeMonitor, err := telegram.NewNodeMonitor(cfg.TelegramAllowedUsers, application, bot, cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, nodePolicy)
 	if err != nil {
 		logger.Error("node monitor initialization failed")
 		return 1

@@ -85,11 +85,13 @@ panel. The critical threshold is `baseline × NODE_CRITICAL_ONLINE_RATIO / 100`,
 bounded by `NODE_CRITICAL_ONLINE_FLOOR` and `NODE_CRITICAL_ONLINE_CAP` (defaults:
 40%, 80, and 200). This follows load changes as Nodes are added or removed while
 still recognizing the usual 50–70 online symptom of a blocked IP. The background
-monitor samples every `NODE_MONITOR_INTERVAL` (2 minutes by default), requires
+monitor samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
 `NODE_MONITOR_CONFIRMATIONS` consecutive critical samples (2 by default), and
-sends one incident alert to every `TELEGRAM_ALLOWED_USERS` operator. It does not
-repeat the alert while the incident remains active and sends a recovery message
-after online returns above the current threshold.
+sends an incident alert to every `TELEGRAM_ALLOWED_USERS` operator. While the
+Node remains critical, the warning repeats every `NODE_CRITICAL_ALERT_INTERVAL`
+(15 minutes by default). A temporary connection or metrics gap does not create
+a duplicate warning; a recovery message is sent after online returns above the
+current threshold.
 
 The **Сменить IP** menu contains four workflows:
 
