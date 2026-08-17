@@ -183,6 +183,11 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case stateAwaitingDNSSyncConfirmation:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Подтвердите синхронизацию кнопкой под карточкой.", Keyboard{})
 		return err
+	case stateDNSSyncRunning:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "⏳ Синхронизация DNS уже выполняется.", Keyboard{})
+		return err
+	case stateDNSSyncCompleted:
+		return c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, session.dnsSyncResult)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -428,19 +433,34 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		removed.clear()
 		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Смена IP отменена.", Keyboard{})
 	case "dns_sync":
-		if session.state != stateAwaitingDNSSyncConfirmation || session.statusMsgID != callback.Message.ID || !session.dnsSyncTarget.CanSync {
+		if session.statusMsgID != callback.Message.ID || !session.dnsSyncTarget.CanSync {
 			return c.expiredCallback(ctx, callback)
 		}
-		active := c.takeSession(callback.FromUserID, nonce, stateAwaitingDNSSyncConfirmation)
-		if active == nil {
+		if session.state == stateDNSSyncCompleted {
+			return c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, session.dnsSyncResult)
+		}
+		if session.state == stateDNSSyncRunning {
+			_, err := c.messenger.SendMessage(ctx, session.chatID, "⏳ Синхронизация DNS уже выполняется.", Keyboard{})
+			return err
+		}
+		if session.state != stateAwaitingDNSSyncConfirmation || !c.updateSession(callback.FromUserID, nonce, stateAwaitingDNSSyncConfirmation, func(current *wizard) {
+			current.state = stateDNSSyncRunning
+		}) {
 			return c.expiredCallback(ctx, callback)
 		}
-		defer active.clear()
-		result, err := c.app.(NodeDNSSyncApplication).SyncNodeDNS(ctx, NodeDNSSyncInput{PanelID: active.panel.ID, NodeUUID: active.dnsSyncTarget.UUID, ExpectedIP: active.dnsSyncTarget.Address})
+		_ = c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, "⏳ Синхронизирую DNS с актуальным IP из Remnawave…")
+		result, err := c.app.(NodeDNSSyncApplication).SyncNodeDNS(ctx, NodeDNSSyncInput{PanelID: session.panel.ID, NodeUUID: session.dnsSyncTarget.UUID, ExpectedIP: session.dnsSyncTarget.Address})
+		text := renderDNSSyncResult(result)
 		if err != nil {
-			return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, "❌ Не удалось безопасно синхронизировать DNS. IP ноды в Remnawave не изменялся; запустите проверку заново.", mainKeyboard())
+			text = "❌ Не удалось безопасно синхронизировать DNS. IP ноды в Remnawave не изменялся; запустите проверку заново."
 		}
-		return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, renderDNSSyncResult(result), mainKeyboard())
+		if !c.updateSession(callback.FromUserID, nonce, stateDNSSyncRunning, func(current *wizard) {
+			current.state = stateDNSSyncCompleted
+			current.dnsSyncResult = text
+		}) {
+			return c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, text)
+		}
+		return c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, text)
 	case "dns_cancel":
 		if session.state != stateAwaitingDNSSyncConfirmation || session.statusMsgID != callback.Message.ID {
 			return c.expiredCallback(ctx, callback)
@@ -572,7 +592,7 @@ func (c *Controller) beginDNSSync(ctx context.Context, callback *CallbackQuery, 
 		}
 	}
 	if len(enabled) == 0 {
-		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "DNS-балансировка отключена для всех панелей.", mainKeyboard())
+		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "DNS-балансировка отключена для всех панелей.", Keyboard{})
 	}
 	if len(enabled) == 1 {
 		if !c.updateSession(callback.FromUserID, session.nonce, stateSelectingIPMode, func(current *wizard) {
@@ -1541,6 +1561,17 @@ func renderDNSSyncResult(result NodeDNSSyncResult) string {
 		action = "устаревший IP заменён актуальным"
 	}
 	return fmt.Sprintf("✅ Синхронизация завершена\nНода: %s\nТитульный IP (Remna): %s\nDNS-зона: %s\nРезультат: %s", safeLine(result.NodeName, 80), result.Address, safeLine(result.DNSZone, 255), action)
+}
+
+// deliverDNSSyncResult first updates the callback card without an unsupported
+// reply keyboard. If Telegram rejects the edit, a separate message guarantees
+// that the operator still receives the durable outcome.
+func (c *Controller) deliverDNSSyncResult(ctx context.Context, chatID int64, messageID int, text string) error {
+	if err := c.messenger.EditMessage(ctx, chatID, messageID, text, Keyboard{}); err == nil {
+		return nil
+	}
+	_, err := c.messenger.SendMessage(ctx, chatID, text, mainKeyboard())
+	return err
 }
 
 func renderIPChangeTarget(target NodeIPChangeTarget) string {

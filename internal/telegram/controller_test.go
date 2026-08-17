@@ -214,6 +214,34 @@ func TestDNSSyncCardAllowsLegacyZoneInferredFromProfile(t *testing.T) {
 	}
 }
 
+func TestDNSSyncAlwaysSendsResultAndReplaysCompletedCallback(t *testing.T) {
+	application := &fakeDNSSyncApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeDNSSyncTarget{
+			PanelName: "Hit", UUID: "node-uuid", Name: "node", Address: netip.MustParseAddr("88.216.70.55"),
+			Managed: true, DNSZone: "de-modx.nodexphere.net", CanSync: true,
+		},
+		result: NodeDNSSyncResult{NodeName: "node", Address: netip.MustParseAddr("88.216.70.55"), DNSZone: "de-modx.nodexphere.net", Action: "ADDED"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "dns-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "node")
+	card := messenger.lastSent()
+
+	messenger.editErr = errors.New("Telegram rejected edit")
+	handleCallback(t, controller, "dns-confirm", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || !strings.Contains(messenger.lastSent().text, "актуальный IP добавлен в DNS") {
+		t.Fatalf("fallback result: calls=%d message=%q", application.syncCalls, messenger.lastSent().text)
+	}
+	handleCallback(t, controller, "dns-confirm-repeat", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || !strings.Contains(messenger.lastSent().text, "актуальный IP добавлен в DNS") || strings.Contains(messenger.lastSent().text, "expired") {
+		t.Fatalf("replayed result: calls=%d message=%q", application.syncCalls, messenger.lastSent().text)
+	}
+}
+
 func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
 	application := &fakeApplication{
 		panels: []Panel{{ID: "europe", Name: "Europe", DNSEnabled: true}, {ID: "test", Name: "Test", DNSEnabled: false}},
@@ -929,6 +957,7 @@ type fakeMessenger struct {
 	deleted   [][2]int64
 	answers   []callbackAnswer
 	deleteErr error
+	editErr   error
 }
 
 func (f *fakeMessenger) SendMessage(_ context.Context, chatID int64, text string, keyboard Keyboard) (Message, error) {
@@ -944,7 +973,7 @@ func (f *fakeMessenger) EditMessage(_ context.Context, chatID int64, messageID i
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, editRecord{chatID: chatID, messageID: messageID, text: text, keyboard: keyboard})
-	return nil
+	return f.editErr
 }
 
 func (f *fakeMessenger) DeleteMessage(_ context.Context, chatID int64, messageID int) error {

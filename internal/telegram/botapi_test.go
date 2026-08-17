@@ -87,6 +87,34 @@ func TestBotAPISendsInlineKeyboard(t *testing.T) {
 	}
 }
 
+func TestBotAPIEditMessageNeverSendsReplyKeyboard(t *testing.T) {
+	var requestPath string
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestPath = request.URL.Path
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	baseURL, err := url.Parse(server.URL + "/bot-test-token/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &BotAPI{baseURL: baseURL, httpClient: server.Client()}
+	if err := client.EditMessage(context.Background(), 42, 7, "completed", mainKeyboard()); err != nil {
+		t.Fatalf("EditMessage() error = %v", err)
+	}
+	if requestPath != "/bot-test-token/editMessageText" {
+		t.Fatalf("request path = %q", requestPath)
+	}
+	if _, exists := payload["reply_markup"]; exists {
+		t.Fatalf("edit payload contains unsupported reply markup: %#v", payload["reply_markup"])
+	}
+}
+
 func TestBotAPINetworkErrorsNeverExposeToken(t *testing.T) {
 	const secretToken = "123456:very-secret-token"
 	baseURL, err := url.Parse("http://127.0.0.1:1/bot" + secretToken + "/")

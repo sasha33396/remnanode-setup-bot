@@ -111,7 +111,11 @@ The **Сменить IP** menu contains four workflows:
   address as SNI. Multiple different matching Host addresses are treated as
   ambiguous and no DNS write is made. Because a legacy Node has no persisted
   previous IP, synchronization adds its Remnawave IP but does not guess which
-  existing balancer address should be removed.
+  existing balancer address should be removed. Telegram first marks the card
+  as running and then replaces it with the final result. If Telegram rejects
+  the edit, the same result is sent as a separate message; the receipt remains
+  replayable for the wizard TTL, so a repeated callback cannot execute the DNS
+  mutation twice or degrade into a generic expired-dialog response.
 
 The **Развёртывания** list is actionable. Opening a deployment shows only the
 buttons valid for its durable state: safe logs, step/DNS retry, Remnawave

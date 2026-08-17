@@ -37,6 +37,8 @@ const (
 	stateSelectingDNSSyncPanel
 	stateAwaitingDNSSyncQuery
 	stateAwaitingDNSSyncConfirmation
+	stateDNSSyncRunning
+	stateDNSSyncCompleted
 )
 
 type wizard struct {
@@ -56,6 +58,7 @@ type wizard struct {
 	statusMsgID      int
 	ipTarget         NodeIPChangeTarget
 	dnsSyncTarget    NodeDNSSyncTarget
+	dnsSyncResult    string
 	serverIPProvider serverIPProvider
 	serverCurrentIP  netip.Addr
 	serverNewIP      netip.Addr
@@ -86,6 +89,7 @@ func (w *wizard) clear() {
 	}
 	clearBytes(w.password)
 	w.password = nil
+	w.dnsSyncResult = ""
 }
 
 func clearBytes(value []byte) {

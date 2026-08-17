@@ -94,6 +94,10 @@ func (b *BotAPI) SendMessage(ctx context.Context, chatID int64, text string, key
 }
 
 func (b *BotAPI) EditMessage(ctx context.Context, chatID int64, messageID int, text string, keyboard Keyboard) error {
+	// Telegram editMessageText accepts only InlineKeyboardMarkup. Reply
+	// keyboards belong to sendMessage and would make an otherwise successful
+	// operation look failed after its side effect has already completed.
+	keyboard.Reply = nil
 	payload := editMessageRequest{ChatID: chatID, MessageID: messageID, Text: truncateUTF8(text, maxMessageBytes), ReplyMarkup: keyboardWire(keyboard)}
 	var result json.RawMessage
 	return b.call(ctx, "editMessageText", payload, &result)
