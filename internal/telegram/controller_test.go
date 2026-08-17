@@ -161,6 +161,41 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	}
 }
 
+func TestNodeCardStartsPrefilledIPChange(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	application := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit", DNSEnabled: true}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "de-low", Address: "8.8.8.8", Connected: true, OnlineKnown: true, Online: 55}},
+		},
+		target: NodeIPChangeTarget{PanelName: "Hit", DNSEnabled: true, UUID: uuid, Name: "de-low", Address: netip.MustParseAddr("8.8.8.8"), Connected: true, DNSZones: []string{"de.example.com"}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	if err := controller.showNodeCard(context.Background(), testChatID, 0, uuid); err != nil {
+		t.Fatal(err)
+	}
+	card := messenger.lastSent()
+	if got := card.keyboard.Inline[0][0]; got.Text != "🔄 Изменить IP ноды" || got.CallbackData != "nodes:ip:"+uuid {
+		t.Fatalf("IP change card button = %#v", got)
+	}
+	handleCallback(t, controller, "node-ip", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.findPanel != "hit" || application.findQuery != "de-low" {
+		t.Fatalf("prefilled lookup = panel %q, query %q", application.findPanel, application.findQuery)
+	}
+	edits := messenger.editsSnapshot()
+	confirmation := edits[len(edits)-1]
+	if !strings.Contains(confirmation.text, "de-low") || !strings.Contains(confirmation.text, "8.8.8.8") || confirmation.keyboard.Inline[0][0].Text != "🔄 Сменить" {
+		t.Fatalf("IP confirmation = %#v", confirmation)
+	}
+	handleCallback(t, controller, "node-ip-confirm", confirmation.keyboard.Inline[0][0].CallbackData, card.message)
+	handleMessage(t, controller, 2, "1.1.1.1")
+	if application.replaceCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.ExpectedIP.String() != "8.8.8.8" || application.input.NewIP.String() != "1.1.1.1" {
+		t.Fatalf("prefilled replace input = %#v", application.input)
+	}
+}
+
 func TestDNSSyncWizardUsesRemnawaveIPAndRequiresConfirmation(t *testing.T) {
 	application := &fakeDNSSyncApplication{
 		fakeApplication: &fakeApplication{},
@@ -726,6 +761,7 @@ type fakeNodeIPApplication struct {
 	replaceCalls int
 	input        NodeIPChangeInput
 	findPanel    string
+	findQuery    string
 }
 
 type fakeDNSSyncApplication struct {
@@ -828,8 +864,9 @@ func (f *fakeRoyalIPApplication) ConfigureRoyalIP(_ context.Context, input Royal
 	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
 }
 
-func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {
+func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, query string) (NodeIPChangeTarget, error) {
 	f.findPanel = panelID
+	f.findQuery = query
 	return f.target, f.findErr
 }
 func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {

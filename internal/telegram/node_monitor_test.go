@@ -8,7 +8,7 @@ import (
 )
 
 func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing.T) {
-	application := &fakeApplication{
+	baseApplication := &fakeApplication{
 		panels: []Panel{{ID: "hit", Name: "Hit"}},
 		nodes: []NodeSummary{
 			{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 55},
@@ -16,6 +16,7 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 			{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000003", Name: "de-good-2", Address: "203.0.113.3", Connected: true, OnlineKnown: true, Online: 360},
 		},
 	}
+	application := &fakeNodeIPApplication{fakeApplication: baseApplication}
 	messenger := &fakeMessenger{}
 	monitor, err := NewNodeMonitor([]int64{101, 202}, application, messenger, time.Minute, 15*time.Minute, 2, DefaultNodePolicy())
 	if err != nil {
@@ -38,7 +39,7 @@ func TestNodeMonitorAlertsAllUsersAfterConfirmationAndReportsRecovery(t *testing
 		t.Fatalf("alerts = %#v", alerts)
 	}
 	for _, alert := range alerts {
-		if !strings.Contains(alert.text, "Критически низкий онлайн") || !strings.Contains(alert.text, "Онлайн: 55") || alert.keyboard.Inline[0][0].CallbackData != "nodes:o:00000000-0000-0000-0000-000000000001" {
+		if !strings.Contains(alert.text, "Критически низкий онлайн") || !strings.Contains(alert.text, "Онлайн: 55") || alert.keyboard.Inline[0][0].CallbackData != "nodes:ip:00000000-0000-0000-0000-000000000001" || alert.keyboard.Inline[1][0].CallbackData != "nodes:o:00000000-0000-0000-0000-000000000001" {
 			t.Fatalf("alert = %#v", alert)
 		}
 	}

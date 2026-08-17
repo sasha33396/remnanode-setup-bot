@@ -113,7 +113,12 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 			if state.consecutive < m.confirmations {
 				continue
 			}
-			keyboard := Keyboard{Inline: [][]Button{{{Text: "📡 Открыть карточку ноды", CallbackData: "nodes:o:" + node.UUID}}}}
+			rows := make([][]Button, 0, 2)
+			if _, available := m.app.(NodeIPApplication); available {
+				rows = append(rows, []Button{{Text: "🔄 Изменить IP ноды", CallbackData: "nodes:ip:" + node.UUID}})
+			}
+			rows = append(rows, []Button{{Text: "📡 Открыть карточку ноды", CallbackData: "nodes:o:" + node.UUID}})
+			keyboard := Keyboard{Inline: rows}
 			for _, userID := range m.users {
 				lastNotification := state.lastNotification[userID]
 				if !lastNotification.IsZero() && now.Before(lastNotification.Add(m.repeatInterval)) {

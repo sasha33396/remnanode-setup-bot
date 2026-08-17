@@ -321,6 +321,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.showNodeGroup(ctx, callback.Message.ChatID, callback.Message.ID, action.panelIndex, action.group, action.page)
 		case "open":
 			return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, action.uuid)
+		case "change_ip":
+			return c.beginNodeCardIPChange(ctx, callback, action.uuid)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {

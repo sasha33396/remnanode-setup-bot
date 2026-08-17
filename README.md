@@ -75,7 +75,11 @@ The **Ноды** menu first separates inventory by Remnawave panel. Inside each
 panel it shows three operator groups with live counts: critically low online
 (high priority), disabled Nodes (medium priority), and active/stable Nodes.
 Each Node opens as a card with panel, address, connection state, current online,
-panel baseline and the threshold used for classification. Disconnected Nodes
+panel baseline and the threshold used for classification. The card and every
+critical-online alert include a direct **Изменить IP ноды** action. It resolves
+the selected Node and panel again, verifies the current address, and enters the
+existing confirmed panel/DNS replacement workflow without asking the operator
+to search for the Node manually. Disconnected Nodes
 and Nodes without a fresh online metric are shown in the panel summary but are
 excluded from low-online classification because connection loss is monitored
 separately.
