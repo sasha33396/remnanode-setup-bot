@@ -91,10 +91,17 @@ Every managed or legacy Node card, including cards opened from critical-online
 alerts, also has **Переместить между Host**. The operator selects another
 enabled Host from the same Remnawave panel and confirms the preview. Immediately
 before writing, the service re-reads the Node and Host and rejects the action if
-the active profile/inbound fingerprint changed. The Remnawave update uses the
-target Host's validated config profile and inbound mapping; the Node IP is not
-changed. Hosts with disabled or incomplete mappings and Hosts that resolve to
-the Node's already active profile/inbound are not offered.
+the active profile/inbound fingerprint changed. After receiving a transient
+root password, it verifies the current xray-sni state, obtains the target SNI
+certificate, atomically replaces `/opt/xray-sni/.env` and the certificate pair,
+runs `docker compose up -d`, and validates local TLS for the new SNI. A failed
+activation restores the previous environment and certificates before the
+Remnawave profile is touched. Only after server validation succeeds does the
+service apply the target Host's config profile/inbound mapping in Remnawave.
+For a managed Node, the service also persists the new Host/SNI binding so later
+certificate and Remna-to-DNS workflows use the new subdomain.
+The Node IP is not changed. Hosts with disabled or incomplete mappings and
+Hosts that resolve to the already active profile/inbound are not offered.
 
 The critical threshold is fixed and configured by
 `NODE_CRITICAL_ONLINE_THRESHOLD` (50 by default). A connected, enabled Node is

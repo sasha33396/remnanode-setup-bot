@@ -160,9 +160,13 @@ func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
 		NodeUUID: testNodeUUID, TargetHostUUID: secondHostUUID,
 		ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID,
 		ExpectedInboundUUIDs:      target.ExpectedInboundUUIDs,
+		Password:                  []byte("temporary-password"),
 	})
 	if err != nil || result.Managed || result.TargetHost != "new-host" || !result.PreviousHostKnown {
 		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+	if len(fixture.sni.inputs) != 1 || fixture.sni.inputs[0].PreviousSNI != "old.example.com" || fixture.sni.inputs[0].TargetSNI != "new.example.com" || string(fixture.sni.inputs[0].Password) != "temporary-password" {
+		t.Fatalf("SNI switch inputs = %#v", fixture.sni.inputs)
 	}
 	if got := fixture.remnawave.nodes[0]; got.ActiveConfigProfileUUID == nil || *got.ActiveConfigProfileUUID != secondProfileUUID || len(got.ActiveInboundUUIDs) != 1 || got.ActiveInboundUUIDs[0] != secondInboundUUID || got.Address != "8.8.8.8" {
 		t.Fatalf("updated Node = %#v", got)
@@ -171,19 +175,30 @@ func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
 
 func TestMoveNodeToHostMarksManagedNode(t *testing.T) {
 	fixture := newFixture(t)
-	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	item := deployment.Deployment{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default",
+		SelectedRemnawaveHostUUID: testHostUUID, SelectedHostRemark: "old", SNIDomain: "old.example.com",
+		RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted,
+	}
 	fixture.repo.items[item.ID] = item
 	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
 	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
 	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "managed", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
-	fixture.remnawave.hosts = []remnawave.Host{{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
 	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
 	if err != nil || !target.Managed || len(options) != 1 {
 		t.Fatalf("PrepareNodeHostMove() = %#v, %#v, %v", target, options, err)
 	}
-	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs})
+	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
 	if err != nil || !result.Managed {
 		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+	persisted := fixture.repo.items[item.ID]
+	if persisted.SelectedRemnawaveHostUUID != options[0].UUID || persisted.SelectedHostRemark != "target" || persisted.SNIDomain != "new.example.com" {
+		t.Fatalf("persisted Host binding = %#v", persisted)
 	}
 }
 
@@ -192,16 +207,39 @@ func TestMoveNodeToHostRejectsStaleProfile(t *testing.T) {
 	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
 	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
 	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
-	fixture.remnawave.hosts = []remnawave.Host{{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
 	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
 	if err != nil || len(options) != 1 {
 		t.Fatal(err)
 	}
 	newInbound := "88888888-8888-4888-8888-888888888888"
 	fixture.remnawave.nodes[0].ActiveInboundUUIDs = []string{newInbound}
-	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs})
+	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
 	if !errors.Is(err, ErrNodeStateChanged) || len(fixture.remnawave.profileUpdates) != 0 {
 		t.Fatalf("MoveNodeToHost() error = %v, updates = %d", err, len(fixture.remnawave.profileUpdates))
+	}
+}
+
+func TestMoveNodeToHostDoesNotChangeRemnawaveWhenServerSNIFails(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+	fixture.sni.err = ErrNodeSNISwitchFailed
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || len(options) != 1 {
+		t.Fatal(err)
+	}
+	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
+	if !errors.Is(err, ErrNodeSNISwitchFailed) || len(fixture.remnawave.profileUpdates) != 0 {
+		t.Fatalf("MoveNodeToHost() error = %v, profile updates = %d", err, len(fixture.remnawave.profileUpdates))
 	}
 }
 
@@ -606,6 +644,7 @@ type fixture struct {
 	cert      *fakeCertificateProvider
 	dns       *fakeDNS
 	events    *eventLog
+	sni       *fakeNodeSNISwitcher
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -628,11 +667,23 @@ func newFixture(t *testing.T) *fixture {
 	vps := &fakeVPS{events: events, preflightResult: provisioner.PreflightResult{SSHConnected: true}}
 	cert := &fakeCertificateProvider{events: events, readiness: CertificateReady, material: certificates.Material{FullchainPEM: []byte("certificate"), PrivateKeyPEM: []byte("private-key")}}
 	dns := &fakeDNS{events: events}
-	service, err := NewDeploymentService(repo, remnawaveAPI, dns, cert, vps, Config{MaxConcurrentDeployments: 2, NodeConnectTimeout: time.Second, InitialPollBackoff: time.Millisecond, MaxPollBackoff: 2 * time.Millisecond})
+	sni := &fakeNodeSNISwitcher{}
+	service, err := NewDeploymentService(repo, remnawaveAPI, dns, cert, vps, Config{MaxConcurrentDeployments: 2, NodeConnectTimeout: time.Second, InitialPollBackoff: time.Millisecond, MaxPollBackoff: 2 * time.Millisecond, NodeSNISwitcher: sni})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{service: service, repo: repo, remnawave: remnawaveAPI, vps: vps, cert: cert, dns: dns, events: events}
+	return &fixture{service: service, repo: repo, remnawave: remnawaveAPI, vps: vps, cert: cert, dns: dns, events: events, sni: sni}
+}
+
+type fakeNodeSNISwitcher struct {
+	inputs []NodeSNISwitchInput
+	err    error
+}
+
+func (f *fakeNodeSNISwitcher) SwitchNodeSNI(_ context.Context, input NodeSNISwitchInput) error {
+	input.Password = append([]byte(nil), input.Password...)
+	f.inputs = append(f.inputs, input)
+	return f.err
 }
 
 func (f *fixture) prepare(t *testing.T, name, ip string) PreparedDeployment {
@@ -765,6 +816,21 @@ func (r *memoryRepository) SetTargetVPSIP(_ context.Context, id string, address 
 		return deployment.Deployment{}, repository.ErrNotFound
 	}
 	item.TargetVPSIP = address.Unmap()
+	r.items[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) SetNodeHostBinding(_ context.Context, id string, params repository.SetNodeHostBindingParams) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[id]
+	if !found {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.SelectedRemnawaveHostUUID = params.HostUUID
+	item.SelectedHostRemark = params.HostRemark
+	item.SNIDomain = params.SNIDomain
+	item.UpdatedAt = time.Now()
 	r.items[id] = item
 	return item, nil
 }

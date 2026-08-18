@@ -54,4 +54,11 @@ func TestRepositoryRejectsInvalidInputBeforeQuery(t *testing.T) {
 	if !errors.Is(err, repositorycontract.ErrInvalidArgument) {
 		t.Fatalf("ListRecentDeployments() error = %v, want ErrInvalidArgument", err)
 	}
+
+	_, err = repo.SetNodeHostBinding(ctx, "a60d725f-17e9-4a50-9242-3dc223d5a0c9", repositorycontract.SetNodeHostBindingParams{
+		HostUUID: "invalid", HostRemark: "target", SNIDomain: "new.example.com",
+	})
+	if !errors.Is(err, repositorycontract.ErrInvalidArgument) {
+		t.Fatalf("SetNodeHostBinding() error = %v, want ErrInvalidArgument", err)
+	}
 }

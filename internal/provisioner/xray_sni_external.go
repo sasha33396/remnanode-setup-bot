@@ -210,6 +210,92 @@ func (a *ExternalXraySNIInstaller) UpdateCertificate(ctx context.Context) error 
 	return a.rollbackFailedCertificateActivation(ctx)
 }
 
+// SwitchSNI atomically replaces the managed environment and certificate pair,
+// recreates the Compose service, and validates TLS for the new domain. The
+// previous environment and certificates are restored if activation fails.
+func (a *ExternalXraySNIInstaller) SwitchSNI(ctx context.Context, previousDomain string) error {
+	previousDomain = strings.TrimSpace(previousDomain)
+	if !validSNIDomain(previousDomain) || strings.EqualFold(previousDomain, a.config.SNIDomain) {
+		return ErrInvalidXraySNIConfiguration
+	}
+	if err := validateCertificateMaterial(a.material, a.config.SNIDomain, a.now()); err != nil {
+		return err
+	}
+	state, err := a.inspectState(ctx)
+	if err != nil {
+		return err
+	}
+	if !state.RepositoryExists || !state.RemoteMatches || !state.RefMatches || !state.WorktreeClean ||
+		!state.ComposeExists || !state.DeployedCommitMatches || !state.ContainerExists || !state.ContainerRunning {
+		return ErrXraySNIValidationFailed
+	}
+	staged := []managedFile{
+		{path: xraySNIInstallDirectory + "/.env.sni-new", mode: "0600", content: a.environment()},
+		{path: xraySNIInstallDirectory + "/certs/fullchain.pem.sni-new", mode: "0644", content: a.material.FullchainPEM},
+		{path: xraySNIInstallDirectory + "/certs/privkey.pem.sni-new", mode: "0600", content: a.material.PrivateKeyPEM},
+	}
+	for _, file := range staged {
+		if err := a.writeManagedFile(ctx, file); err != nil {
+			return err
+		}
+	}
+	newDomain, _ := shellQuote(a.config.SNIDomain)
+	oldDomain, _ := shellQuote(previousDomain)
+	command := fmt.Sprintf(`# xray-sni:switch-sni
+set -eu
+cd /opt/xray-sni
+backup=.sni-switch-previous
+test ! -e "$backup"
+test -f .env
+test -f certs/fullchain.pem
+test -f certs/privkey.pem
+test -f .env.sni-new
+test -f certs/fullchain.pem.sni-new
+test -f certs/privkey.pem.sni-new
+install -d -o root -g root -m 0700 "$backup"
+committed=false
+rollback() {
+    committed=true
+    if [ -f "$backup/env" ]; then rm -f .env; mv "$backup/env" .env; fi
+    if [ -f "$backup/fullchain.pem" ]; then rm -f certs/fullchain.pem; mv "$backup/fullchain.pem" certs/fullchain.pem; fi
+    if [ -f "$backup/privkey.pem" ]; then rm -f certs/privkey.pem; mv "$backup/privkey.pem" certs/privkey.pem; fi
+    rm -f .env.sni-new certs/fullchain.pem.sni-new certs/privkey.pem.sni-new
+    chown root:root .env certs/fullchain.pem certs/privkey.pem
+    chmod 0600 .env certs/privkey.pem
+    chmod 0644 certs/fullchain.pem
+    docker compose up -d --remove-orphans
+    old_domain=%s
+    old_code=$(curl --silent --show-error --output /dev/null --write-out '%%{http_code}' --resolve "$old_domain:%d:127.0.0.1" --cacert certs/fullchain.pem "https://$old_domain:%d/health")
+    test "$old_code" = 200
+    rmdir "$backup"
+}
+trap 'if [ "$committed" != true ]; then rollback || true; fi' EXIT HUP INT TERM
+mv .env "$backup/env"
+mv certs/fullchain.pem "$backup/fullchain.pem"
+mv certs/privkey.pem "$backup/privkey.pem"
+mv .env.sni-new .env
+mv certs/fullchain.pem.sni-new certs/fullchain.pem
+mv certs/privkey.pem.sni-new certs/privkey.pem
+chown root:root .env certs/fullchain.pem certs/privkey.pem
+chmod 0600 .env certs/privkey.pem
+chmod 0644 certs/fullchain.pem
+docker compose config >/dev/null
+docker compose up -d --remove-orphans
+new_domain=%s
+new_code=$(curl --silent --show-error --output /dev/null --write-out '%%{http_code}' --resolve "$new_domain:%d:127.0.0.1" --cacert certs/fullchain.pem "https://$new_domain:%d/health" || true)
+if [ "$new_code" != 200 ]; then
+    exit 1
+fi
+rm -f "$backup/env" "$backup/fullchain.pem" "$backup/privkey.pem"
+rmdir "$backup"
+committed=true
+trap - EXIT HUP INT TERM`, oldDomain, xraySNIPort, xraySNIPort, newDomain, xraySNIPort, xraySNIPort)
+	if err := a.runSafe(ctx, command, ErrXraySNIValidationFailed); err != nil {
+		return err
+	}
+	return a.Validate(ctx)
+}
+
 func (a *ExternalXraySNIInstaller) rollbackFailedCertificateActivation(ctx context.Context) error {
 	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.config.Timeout)
 	defer cancel()

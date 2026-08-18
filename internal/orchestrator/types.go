@@ -76,6 +76,19 @@ type ProvisionVPSInput struct {
 	Certificate        certificates.Material
 }
 
+type NodeSNISwitchInput struct {
+	Address             netip.Addr
+	PreviousSNI         string
+	TargetSNI           string
+	Password            []byte
+	PreviousCertificate certificates.Material
+	Certificate         certificates.Material
+}
+
+type NodeSNISwitcher interface {
+	SwitchNodeSNI(context.Context, NodeSNISwitchInput) error
+}
+
 type RemnawaveAPI interface {
 	GetHosts(context.Context) ([]remnawave.Host, error)
 	GenerateSecretKey(context.Context) (string, error)
@@ -105,6 +118,7 @@ type Config struct {
 	InitialPollBackoff       time.Duration
 	MaxPollBackoff           time.Duration
 	Observer                 Observer
+	NodeSNISwitcher          NodeSNISwitcher
 }
 
 type Observer interface {

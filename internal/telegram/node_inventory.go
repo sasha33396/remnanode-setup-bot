@@ -436,7 +436,7 @@ func renderNodeMoveTarget(target NodeHostMoveTarget) string {
 }
 
 func renderNodeMoveConfirmation(target NodeHostMoveTarget, host Host) string {
-	return renderNodeMoveTarget(target) + fmt.Sprintf("\nНовый Host: %s (%s)\n\nБудут изменены активный профиль и inbound ноды в Remnawave. IP ноды не изменится.", safeLine(host.Remark, 80), safeLine(host.Address, 180))
+	return renderNodeMoveTarget(target) + fmt.Sprintf("\nНовый Host: %s (%s)\n\nБот установит сертификат нового SNI, заменит SNI_DOMAIN в /opt/xray-sni/.env, пересоздаст контейнер с проверкой и только затем изменит профиль/inbound в Remnawave. IP ноды не изменится.", safeLine(host.Remark, 80), safeLine(host.Address, 180))
 }
 
 func renderNodeMoveResult(result NodeHostMoveResult) string {
@@ -448,7 +448,7 @@ func renderNodeMoveResult(result NodeHostMoveResult) string {
 	if result.Managed {
 		kind = "создана этим ботом"
 	}
-	return fmt.Sprintf("✅ Нода перемещена между Host\nНода: %s\nТип: %s\nПредыдущий Host: %s\nНовый Host: %s\nSNI Host: %s\n\nПрофиль и inbound подтверждены ответом Remnawave. IP ноды не изменялся.", safeLine(result.NodeName, 80), kind, previous, safeLine(result.TargetHost, 80), safeLine(result.TargetAddress, 180))
+	return fmt.Sprintf("✅ Нода перемещена между Host\nНода: %s\nТип: %s\nПредыдущий Host: %s\nНовый Host: %s\nSNI Host: %s\n\nxray-sni: SNI_DOMAIN и сертификат обновлены, контейнер перезапущен и проверен. Профиль и inbound подтверждены ответом Remnawave. IP ноды не изменялся.", safeLine(result.NodeName, 80), kind, previous, safeLine(result.TargetHost, 80), safeLine(result.TargetAddress, 180))
 }
 
 func (c *Controller) renderNodeMoveFailure(ctx context.Context, callback *CallbackQuery, uuid string) error {

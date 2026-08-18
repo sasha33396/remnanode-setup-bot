@@ -53,14 +53,23 @@ git pull --ff-only
 - Managed and legacy Node cards, including cards opened from critical alerts,
   expose **Переместить между Host**. The picker contains only enabled Hosts with
   a complete profile/inbound mapping from the Node's current panel.
-- A Host move changes only the Node's active config profile and inbound through
-  `PATCH /api/nodes`; its address is left untouched. UUIDs stay in transient
-  server-side state. The Node and Host are fetched again at confirmation and a
-  stale profile fingerprint aborts the operation safely.
+- A Host move requests a transient root password, verifies the old xray-sni
+  state, prepares the new Host certificate, atomically changes
+  `/opt/xray-sni/.env` plus the certificate pair, recreates the Compose service,
+  and validates local TLS. Only then does it change the Node's active config
+  profile and inbound through `PATCH /api/nodes`; its IP remains untouched.
+  Managed deployments also persist the new Host UUID, remark, and SNI so later
+  certificate and DNS-sync operations do not reuse the previous subdomain.
+  Failed server activation restores the old environment/certificate, and a
+  failed Remnawave update triggers a best-effort rollback to the old Host.
+- UUIDs and the password stay in transient server-side state. The Node and Host
+  are fetched again at confirmation and a stale profile fingerprint aborts the
+  operation safely.
 
 Relevant recent commits:
 
 ```text
+0ed6b9f feat: move nodes between panel hosts
 8837950 feat: offer hoster IP workflows from node alerts
 e7ac3c5 fix: use fixed critical node online threshold
 580b147 feat: start node IP changes from health cards

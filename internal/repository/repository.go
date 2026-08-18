@@ -36,6 +36,14 @@ type UpdateDeploymentStateParams struct {
 	SafeErrorMessage *string
 }
 
+// SetNodeHostBindingParams updates the Host metadata used by later managed
+// Node operations such as certificate distribution and Remna-to-DNS sync.
+type SetNodeHostBindingParams struct {
+	HostUUID   string
+	HostRemark string
+	SNIDomain  string
+}
+
 // RecordStepParams contains the latest safe outcome of a provisioning step.
 type RecordStepParams struct {
 	DeploymentID string
@@ -52,6 +60,7 @@ type DeploymentRepository interface {
 	UpdateDeploymentState(context.Context, string, UpdateDeploymentStateParams) (deployment.Deployment, error)
 	SetRemnawaveNodeUUID(context.Context, string, string) (deployment.Deployment, error)
 	SetTargetVPSIP(context.Context, string, netip.Addr) (deployment.Deployment, error)
+	SetNodeHostBinding(context.Context, string, SetNodeHostBindingParams) (deployment.Deployment, error)
 	RecordDeploymentStep(context.Context, RecordStepParams) (deployment.Step, error)
 	ListDeploymentSteps(context.Context, string) ([]deployment.Step, error)
 	ListRecentDeployments(context.Context, int) ([]deployment.Deployment, error)

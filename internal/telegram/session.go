@@ -41,8 +41,7 @@ const (
 	stateDNSSyncCompleted
 	stateSelectingNodeMoveHost
 	stateAwaitingNodeMoveConfirmation
-	stateNodeMoveRunning
-	stateNodeMoveCompleted
+	stateAwaitingNodeMovePassword
 )
 
 type wizard struct {
@@ -64,7 +63,6 @@ type wizard struct {
 	dnsSyncTarget    NodeDNSSyncTarget
 	dnsSyncResult    string
 	nodeMoveTarget   NodeHostMoveTarget
-	nodeMoveResult   string
 	serverIPProvider serverIPProvider
 	serverCurrentIP  netip.Addr
 	serverNewIP      netip.Addr
@@ -97,7 +95,6 @@ func (w *wizard) clear() {
 	clearBytes(w.password)
 	w.password = nil
 	w.dnsSyncResult = ""
-	w.nodeMoveResult = ""
 }
 
 func clearBytes(value []byte) {

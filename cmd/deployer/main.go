@@ -91,6 +91,11 @@ func run() int {
 		logger.Error("Royal IP service initialization failed")
 		return 1
 	}
+	nodeSNISwitcher, err := orchestrator.NewPasswordNodeSNISwitcher(serverIPSSH, cfg.XraySNIRepoURL, cfg.XraySNIRef, cfg.SSHCommandTimeout)
+	if err != nil {
+		logger.Error("Node SNI switcher initialization failed")
+		return 1
+	}
 
 	registry := metrics.New()
 	distributor, err := certmanager.NewSSHDistributor(ssh, certmanager.SSHDistributorConfig{RepositoryURL: cfg.XraySNIRepoURL, Ref: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MaxConcurrent: cfg.MaxCertificateDistributions})
@@ -189,7 +194,7 @@ func run() int {
 			return 1
 		}
 		certificateManagers = append(certificateManagers, certificateManager)
-		deploymentService, serviceErr := orchestrator.NewDeploymentService(repository, remnawaveAPI, dnsAPI, certificateManager, vps, orchestrator.Config{PanelID: panel.ID, DNSDisabled: panel.DNSMode == config.DNSModeDisabled, MaxConcurrentDeployments: cfg.MaxConcurrentDeployments, NodeConnectTimeout: cfg.NodeConnectTimeout, InitialPollBackoff: time.Second, MaxPollBackoff: 10 * time.Second, Observer: registry})
+		deploymentService, serviceErr := orchestrator.NewDeploymentService(repository, remnawaveAPI, dnsAPI, certificateManager, vps, orchestrator.Config{PanelID: panel.ID, DNSDisabled: panel.DNSMode == config.DNSModeDisabled, MaxConcurrentDeployments: cfg.MaxConcurrentDeployments, NodeConnectTimeout: cfg.NodeConnectTimeout, InitialPollBackoff: time.Second, MaxPollBackoff: 10 * time.Second, Observer: registry, NodeSNISwitcher: nodeSNISwitcher})
 		if serviceErr != nil {
 			logger.Error("deployment service initialization failed", slog.String("panel_id", panel.ID))
 			return 1

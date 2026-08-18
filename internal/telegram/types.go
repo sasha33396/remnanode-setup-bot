@@ -141,6 +141,7 @@ type NodeHostMoveInput struct {
 	TargetHostUUID       string
 	ExpectedProfileUUID  string
 	ExpectedInboundUUIDs []string
+	Password             []byte
 }
 
 type NodeHostMoveResult struct {

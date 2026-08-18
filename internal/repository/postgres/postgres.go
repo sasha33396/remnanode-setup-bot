@@ -228,6 +228,32 @@ func (r *Repository) SetTargetVPSIP(ctx context.Context, id string, address neti
 	return result, nil
 }
 
+// SetNodeHostBinding records the Host selected by a successful managed Node
+// move so later certificate and DNS workflows use the new SNI.
+func (r *Repository) SetNodeHostBinding(ctx context.Context, id string, params repositorycontract.SetNodeHostBindingParams) (deployment.Deployment, error) {
+	if !validUUID(id) || !validUUID(params.HostUUID) || strings.TrimSpace(params.HostRemark) == "" || strings.TrimSpace(params.SNIDomain) == "" {
+		return deployment.Deployment{}, invalid("deployment ID or Node Host binding")
+	}
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET selected_remnawave_host_uuid = $2,
+            selected_host_remark = $3,
+            sni_domain = $4,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns,
+		id,
+		params.HostUUID,
+		strings.TrimSpace(params.HostRemark),
+		strings.TrimSpace(params.SNIDomain),
+	)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("set Node Host binding", err)
+	}
+	return result, nil
+}
+
 // RecordDeploymentStep inserts or updates one named step. Updating the step and
 // deployment timestamp/current step is one transaction.
 func (r *Repository) RecordDeploymentStep(ctx context.Context, params repositorycontract.RecordStepParams) (deployment.Step, error) {

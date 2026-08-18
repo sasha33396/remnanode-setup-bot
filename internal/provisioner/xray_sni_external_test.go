@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -74,6 +75,11 @@ func (r *fakeXrayRunner) Run(_ context.Context, request sshclient.CommandRequest
 		r.activeCertificate = "old"
 		r.state.FullchainMatches = false
 		r.state.PrivateKeyMatches = false
+	case strings.Contains(request.Command, "# xray-sni:switch-sni"):
+		r.state.EnvironmentMatches = true
+		r.state.FullchainMatches = true
+		r.state.PrivateKeyMatches = true
+		r.state.PermissionsMatch = true
 	case strings.Contains(request.Command, "# xray-sni:certificate-permissions"):
 		r.state.PermissionsMatch = true
 	case strings.Contains(request.Command, "# xray-sni:compose-build"):
@@ -160,6 +166,35 @@ func TestExternalXraySNIFreshInstallationAndSecondRun(t *testing.T) {
 	after := runner.repositoryCount + runner.composeBuildCount + runner.composeUpCount + runner.reloadCount + runner.managedWriteCount + runner.activationCount
 	if second.Changed || after != mutations {
 		t.Fatalf("second run changed=%t, mutations before=%d after=%d", second.Changed, mutations, after)
+	}
+}
+
+func TestExternalXraySNISwitchSNIActivatesEnvironmentAndCertificateTogether(t *testing.T) {
+	runner := &fakeXrayRunner{state: readyXrayState()}
+	adapter := newTestXrayAdapter(t, runner, makeCertificateMaterial(t, testSNIDomain, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)))
+	if err := adapter.SwitchSNI(context.Background(), "old.example.com"); err != nil {
+		t.Fatalf("SwitchSNI() error = %v", err)
+	}
+	found := false
+	for _, request := range runner.requests {
+		if strings.Contains(request.Command, "# xray-sni:switch-sni") {
+			found = true
+			if strings.Contains(request.Command, string(adapter.material.PrivateKeyPEM)) {
+				t.Fatal("private key was embedded in the activation command")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("atomic SNI activation command was not executed")
+	}
+}
+
+func TestExternalXraySNISwitchSNIReturnsSafeFailure(t *testing.T) {
+	runner := &fakeXrayRunner{state: readyXrayState(), failMarker: "# xray-sni:switch-sni"}
+	adapter := newTestXrayAdapter(t, runner, makeCertificateMaterial(t, testSNIDomain, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)))
+	err := adapter.SwitchSNI(context.Background(), "old.example.com")
+	if !errors.Is(err, ErrXraySNIValidationFailed) || strings.Contains(fmt.Sprint(err), "top-secret") {
+		t.Fatalf("SwitchSNI() error = %v", err)
 	}
 }
 

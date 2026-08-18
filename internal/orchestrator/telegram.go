@@ -526,6 +526,7 @@ func (a *TelegramApplication) MoveNodeToHost(ctx context.Context, input telegram
 		TargetHostUUID:            input.TargetHostUUID,
 		ExpectedConfigProfileUUID: input.ExpectedProfileUUID,
 		ExpectedInboundUUIDs:      append([]string(nil), input.ExpectedInboundUUIDs...),
+		Password:                  input.Password,
 	})
 	if err != nil {
 		return telegram.NodeHostMoveResult{}, err

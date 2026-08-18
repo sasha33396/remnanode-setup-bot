@@ -197,11 +197,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case stateSelectingNodeMoveHost, stateAwaitingNodeMoveConfirmation:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите Host или подтвердите перенос кнопкой под карточкой.", Keyboard{})
 		return err
-	case stateNodeMoveRunning:
-		_, err := c.messenger.SendMessage(ctx, message.ChatID, "⏳ Перенос ноды уже выполняется.", Keyboard{})
-		return err
-	case stateNodeMoveCompleted:
-		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, session.nodeMoveResult, Keyboard{})
+	case stateAwaitingNodeMovePassword:
+		return c.acceptNodeMovePassword(ctx, message, session)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -460,35 +457,12 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		if session.statusMsgID != callback.Message.ID {
 			return c.expiredCallback(ctx, callback)
 		}
-		if session.state == stateNodeMoveCompleted {
-			return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, session.nodeMoveResult, Keyboard{})
-		}
-		if session.state == stateNodeMoveRunning {
-			_, err := c.messenger.SendMessage(ctx, session.chatID, "⏳ Перенос ноды уже выполняется.", Keyboard{})
-			return err
-		}
 		if session.state != stateAwaitingNodeMoveConfirmation || !c.updateSession(callback.FromUserID, nonce, stateAwaitingNodeMoveConfirmation, func(current *wizard) {
-			current.state = stateNodeMoveRunning
+			current.state = stateAwaitingNodeMovePassword
 		}) {
 			return c.expiredCallback(ctx, callback)
 		}
-		_ = c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "⏳ Повторно проверяю ноду и Host, затем меняю профиль…", Keyboard{})
-		result, err := c.app.(NodeHostMoveApplication).MoveNodeToHost(ctx, NodeHostMoveInput{
-			PanelID: session.panel.ID, NodeUUID: session.nodeMoveTarget.UUID, TargetHostUUID: session.selected.ID,
-			ExpectedProfileUUID:  session.nodeMoveTarget.ExpectedProfileUUID,
-			ExpectedInboundUUIDs: append([]string(nil), session.nodeMoveTarget.ExpectedInboundUUIDs...),
-		})
-		text := renderNodeMoveResult(result)
-		if err != nil {
-			text = "❌ Перенос остановлен безопасно. Нода или Host изменились после подтверждения либо Remnawave отклонила обновление. Обновите карточку и повторите."
-		}
-		if !c.updateSession(callback.FromUserID, nonce, stateNodeMoveRunning, func(current *wizard) {
-			current.state = stateNodeMoveCompleted
-			current.nodeMoveResult = text
-		}) {
-			return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{})
-		}
-		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{})
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, renderNodeMoveConfirmation(session.nodeMoveTarget, session.selected)+"\n\nОтправьте временный root-пароль. Сообщение будет сразу удалено; пароль не сохраняется.", Keyboard{})
 	case "move_cancel":
 		if session.statusMsgID != callback.Message.ID || (session.state != stateSelectingNodeMoveHost && session.state != stateAwaitingNodeMoveConfirmation) {
 			return c.expiredCallback(ctx, callback)
@@ -955,6 +929,46 @@ func (c *Controller) acceptServerIPPassword(ctx context.Context, message *Messag
 				return
 			}
 			text += "\n\n✅ " + safeLine(panelResult, 400)
+		}
+		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, Keyboard{})
+	}()
+	return nil
+}
+
+func (c *Controller) acceptNodeMovePassword(ctx context.Context, message *Message, session *wizard) error {
+	password := []byte(message.Text)
+	message.Text = ""
+	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
+	if len(password) == 0 || len(password) > maxPasswordBytes {
+		clearBytes(password)
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Пароль пустой или слишком длинный. Отправьте его ещё раз.", Keyboard{})
+		return err
+	}
+	active := c.takeSession(message.FromUserID, session.nonce, stateAwaitingNodeMovePassword)
+	if active == nil {
+		clearBytes(password)
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	active.password = append(active.password[:0], password...)
+	clearBytes(password)
+	status, err := c.messenger.SendMessage(ctx, message.ChatID, "⏳ Получаю сертификат нового SNI, обновляю xray-sni на сервере и затем профиль ноды в Remnawave…", Keyboard{})
+	if err != nil {
+		active.clear()
+		return err
+	}
+	c.workers.Add(1)
+	go func() {
+		defer c.workers.Done()
+		defer active.clear()
+		result, moveErr := c.app.(NodeHostMoveApplication).MoveNodeToHost(ctx, NodeHostMoveInput{
+			PanelID: active.panel.ID, NodeUUID: active.nodeMoveTarget.UUID, TargetHostUUID: active.selected.ID,
+			ExpectedProfileUUID:  active.nodeMoveTarget.ExpectedProfileUUID,
+			ExpectedInboundUUIDs: append([]string(nil), active.nodeMoveTarget.ExpectedInboundUUIDs...),
+			Password:             active.password,
+		})
+		text := renderNodeMoveResult(result)
+		if moveErr != nil {
+			text = "❌ Перенос не завершён. Бот попытался сохранить прежний SNI и профиль ноды. Проверьте доступность SSH, сертификат нового Host и затем обновите карточку перед повтором."
 		}
 		_ = c.messenger.EditMessage(ctx, active.chatID, status.ID, text, Keyboard{})
 	}()

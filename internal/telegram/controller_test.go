@@ -275,7 +275,14 @@ func TestNodeCardMovesLegacyNodeBetweenHostsWithConfirmation(t *testing.T) {
 		t.Fatalf("move confirmation = %#v", confirmation)
 	}
 	handleCallback(t, controller, "move-apply", confirmation.keyboard.Inline[0][0].CallbackData, card.message)
-	if application.moveCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.TargetHostUUID != "host-new" || application.input.ExpectedProfileUUID != "profile-old" {
+	edits = messenger.editsSnapshot()
+	passwordPrompt := edits[len(edits)-1]
+	if !strings.Contains(passwordPrompt.text, "root-пароль") || !strings.Contains(passwordPrompt.text, "SNI_DOMAIN") {
+		t.Fatalf("move password prompt = %q", passwordPrompt.text)
+	}
+	handleMessage(t, controller, 99, "temporary-password")
+	controller.Wait()
+	if application.moveCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.TargetHostUUID != "host-new" || application.input.ExpectedProfileUUID != "profile-old" || string(application.input.Password) != "temporary-password" {
 		t.Fatalf("move input = %#v, calls = %d", application.input, application.moveCalls)
 	}
 	edits = messenger.editsSnapshot()
@@ -1005,6 +1012,7 @@ func (f *fakeNodeHostMoveApplication) MoveNodeToHost(_ context.Context, input No
 	f.moveCalls++
 	f.input = input
 	f.input.ExpectedInboundUUIDs = append([]string(nil), input.ExpectedInboundUUIDs...)
+	f.input.Password = append([]byte(nil), input.Password...)
 	return f.result, f.moveErr
 }
 func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error) {
