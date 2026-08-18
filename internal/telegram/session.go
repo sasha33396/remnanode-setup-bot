@@ -39,6 +39,10 @@ const (
 	stateAwaitingDNSSyncConfirmation
 	stateDNSSyncRunning
 	stateDNSSyncCompleted
+	stateSelectingNodeMoveHost
+	stateAwaitingNodeMoveConfirmation
+	stateNodeMoveRunning
+	stateNodeMoveCompleted
 )
 
 type wizard struct {
@@ -59,6 +63,8 @@ type wizard struct {
 	ipTarget         NodeIPChangeTarget
 	dnsSyncTarget    NodeDNSSyncTarget
 	dnsSyncResult    string
+	nodeMoveTarget   NodeHostMoveTarget
+	nodeMoveResult   string
 	serverIPProvider serverIPProvider
 	serverCurrentIP  netip.Addr
 	serverNewIP      netip.Addr
@@ -79,6 +85,7 @@ func (w *wizard) clone() *wizard {
 	result.preflight.Warnings = append([]OperatorNotice(nil), w.preflight.Warnings...)
 	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
 	result.dnsSyncTarget.CurrentZones = append([]string(nil), w.dnsSyncTarget.CurrentZones...)
+	result.nodeMoveTarget.ExpectedInboundUUIDs = append([]string(nil), w.nodeMoveTarget.ExpectedInboundUUIDs...)
 	return &result
 }
 
@@ -90,6 +97,7 @@ func (w *wizard) clear() {
 	clearBytes(w.password)
 	w.password = nil
 	w.dnsSyncResult = ""
+	w.nodeMoveResult = ""
 }
 
 func clearBytes(value []byte) {

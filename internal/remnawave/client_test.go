@@ -153,6 +153,43 @@ func TestUpdateNodeAddressSendsMinimalContract(t *testing.T) {
 	}
 }
 
+func TestUpdateNodeProfileUsesValidatedHostContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/nodes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			UUID          string            `json:"uuid"`
+			ConfigProfile NodeConfigProfile `json:"configProfile"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.UUID != testNodeUUID || body.ConfigProfile.ActiveConfigProfileUUID != testProfileUUID ||
+			len(body.ConfigProfile.ActiveInbounds) != 1 || body.ConfigProfile.ActiveInbounds[0] != testInboundUUID {
+			t.Errorf("PATCH body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "198.51.100.20", true)+`}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	host := Host{Address: "de.example.com", Inbound: HostInbound{ConfigProfileUUID: stringPointer(testProfileUUID), ConfigProfileInboundUUID: stringPointer(testInboundUUID)}}
+	node, err := client.UpdateNodeProfile(context.Background(), UpdateNodeProfileInput{UUID: testNodeUUID, Host: host})
+	if err != nil || node.UUID != testNodeUUID {
+		t.Fatalf("UpdateNodeProfile() = %#v, %v", node, err)
+	}
+}
+
+func TestUpdateNodeProfileRejectsDisabledHost(t *testing.T) {
+	client := newTestClient(t, "https://panel.example.com", time.Second)
+	host := Host{Address: "de.example.com", IsDisabled: true, Inbound: HostInbound{ConfigProfileUUID: stringPointer(testProfileUUID), ConfigProfileInboundUUID: stringPointer(testInboundUUID)}}
+	if _, err := client.UpdateNodeProfile(context.Background(), UpdateNodeProfileInput{UUID: testNodeUUID, Host: host}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("UpdateNodeProfile() error = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestClientAuthFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

@@ -117,6 +117,9 @@ func (m *NodeMonitor) sample(ctx context.Context) error {
 			if _, available := m.app.(NodeIPApplication); available {
 				rows = append(rows, []Button{{Text: "🔄 Изменить IP ноды", CallbackData: "nodes:ip:" + node.UUID}})
 			}
+			if _, available := m.app.(NodeHostMoveApplication); available {
+				rows = append(rows, []Button{{Text: "🔀 Переместить между Host", CallbackData: "nodes:move:" + node.UUID}})
+			}
 			rows = append(rows, []Button{{Text: "📡 Открыть карточку ноды", CallbackData: "nodes:o:" + node.UUID}})
 			keyboard := Keyboard{Inline: rows}
 			for _, userID := range m.users {

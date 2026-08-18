@@ -87,6 +87,15 @@ and Nodes without a fresh online metric are shown in the panel summary but are
 excluded from low-online classification because connection loss is monitored
 separately.
 
+Every managed or legacy Node card, including cards opened from critical-online
+alerts, also has **Переместить между Host**. The operator selects another
+enabled Host from the same Remnawave panel and confirms the preview. Immediately
+before writing, the service re-reads the Node and Host and rejects the action if
+the active profile/inbound fingerprint changed. The Remnawave update uses the
+target Host's validated config profile and inbound mapping; the Node IP is not
+changed. Hosts with disabled or incomplete mappings and Hosts that resolve to
+the Node's already active profile/inbound are not offered.
+
 The critical threshold is fixed and configured by
 `NODE_CRITICAL_ONLINE_THRESHOLD` (50 by default). A connected, enabled Node is
 critical when its current online count is equal to or below this value; panel

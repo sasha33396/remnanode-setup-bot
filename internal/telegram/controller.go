@@ -194,6 +194,14 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return err
 	case stateDNSSyncCompleted:
 		return c.deliverDNSSyncResult(ctx, session.chatID, session.statusMsgID, session.dnsSyncResult)
+	case stateSelectingNodeMoveHost, stateAwaitingNodeMoveConfirmation:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите Host или подтвердите перенос кнопкой под карточкой.", Keyboard{})
+		return err
+	case stateNodeMoveRunning:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "⏳ Перенос ноды уже выполняется.", Keyboard{})
+		return err
+	case stateNodeMoveCompleted:
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, session.nodeMoveResult, Keyboard{})
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -329,6 +337,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.beginNodeCardServerIPChange(ctx, callback, action.uuid, serverIPProviderCherry)
 		case "change_ip_royal":
 			return c.beginNodeCardServerIPChange(ctx, callback, action.uuid, serverIPProviderRoyal)
+		case "move_host":
+			return c.beginNodeHostMove(ctx, callback, action.uuid)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {
@@ -431,6 +441,64 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		}
 		_, err := c.messenger.SendMessage(ctx, session.chatID, "Enter the Node name manually (3–30 characters).", Keyboard{})
 		return err
+	case "move_host":
+		if session.state != stateSelectingNodeMoveHost || index < 0 || index >= len(session.hosts) || session.statusMsgID != callback.Message.ID {
+			return c.expiredCallback(ctx, callback)
+		}
+		selected := session.hosts[index]
+		if !c.updateSession(callback.FromUserID, nonce, stateSelectingNodeMoveHost, func(current *wizard) {
+			current.selected = selected
+			current.state = stateAwaitingNodeMoveConfirmation
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, renderNodeMoveConfirmation(session.nodeMoveTarget, selected), Keyboard{Inline: [][]Button{{
+			{Text: "✅ Переместить", CallbackData: "move:apply:" + nonce},
+			{Text: "❌ Отменить", CallbackData: "move:cancel:" + nonce},
+		}}})
+	case "move_apply":
+		if session.statusMsgID != callback.Message.ID {
+			return c.expiredCallback(ctx, callback)
+		}
+		if session.state == stateNodeMoveCompleted {
+			return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, session.nodeMoveResult, Keyboard{})
+		}
+		if session.state == stateNodeMoveRunning {
+			_, err := c.messenger.SendMessage(ctx, session.chatID, "⏳ Перенос ноды уже выполняется.", Keyboard{})
+			return err
+		}
+		if session.state != stateAwaitingNodeMoveConfirmation || !c.updateSession(callback.FromUserID, nonce, stateAwaitingNodeMoveConfirmation, func(current *wizard) {
+			current.state = stateNodeMoveRunning
+		}) {
+			return c.expiredCallback(ctx, callback)
+		}
+		_ = c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "⏳ Повторно проверяю ноду и Host, затем меняю профиль…", Keyboard{})
+		result, err := c.app.(NodeHostMoveApplication).MoveNodeToHost(ctx, NodeHostMoveInput{
+			PanelID: session.panel.ID, NodeUUID: session.nodeMoveTarget.UUID, TargetHostUUID: session.selected.ID,
+			ExpectedProfileUUID:  session.nodeMoveTarget.ExpectedProfileUUID,
+			ExpectedInboundUUIDs: append([]string(nil), session.nodeMoveTarget.ExpectedInboundUUIDs...),
+		})
+		text := renderNodeMoveResult(result)
+		if err != nil {
+			text = "❌ Перенос остановлен безопасно. Нода или Host изменились после подтверждения либо Remnawave отклонила обновление. Обновите карточку и повторите."
+		}
+		if !c.updateSession(callback.FromUserID, nonce, stateNodeMoveRunning, func(current *wizard) {
+			current.state = stateNodeMoveCompleted
+			current.nodeMoveResult = text
+		}) {
+			return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{})
+		}
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{})
+	case "move_cancel":
+		if session.statusMsgID != callback.Message.ID || (session.state != stateSelectingNodeMoveHost && session.state != stateAwaitingNodeMoveConfirmation) {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed := c.takeSession(callback.FromUserID, nonce, session.state)
+		if removed == nil {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed.clear()
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Перемещение ноды отменено.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + session.nodeMoveTarget.UUID}}}})
 	case "deploy":
 		return c.startDeployment(ctx, callback, session)
 	case "cancel":
@@ -1662,6 +1730,24 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		case "cancel":
 			return "ip_cancel", parts[2], 0, true
 		}
+	}
+	if parts[0] == "move" {
+		if len(parts) == 4 && parts[1] == "host" {
+			parsed, err := strconv.Atoi(parts[3])
+			if err != nil || parsed < 0 {
+				return "", "", 0, false
+			}
+			return "move_host", parts[2], parsed, true
+		}
+		if len(parts) == 3 {
+			switch parts[1] {
+			case "apply":
+				return "move_apply", parts[2], 0, true
+			case "cancel":
+				return "move_cancel", parts[2], 0, true
+			}
+		}
+		return "", "", 0, false
 	}
 	if parts[0] != "add" {
 		return "", "", 0, false

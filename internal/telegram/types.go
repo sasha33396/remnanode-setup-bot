@@ -120,6 +120,38 @@ type NodeIPChangeInput struct {
 	NewIP      netip.Addr
 }
 
+// NodeHostMoveTarget is a safe preview of the Node's current profile binding.
+// Profile UUIDs stay in transient server-side state and are never rendered.
+type NodeHostMoveTarget struct {
+	PanelName            string
+	UUID                 string
+	Name                 string
+	Address              string
+	Managed              bool
+	CurrentHostKnown     bool
+	CurrentHostRemark    string
+	CurrentHostAddress   string
+	ExpectedProfileUUID  string
+	ExpectedInboundUUIDs []string
+}
+
+type NodeHostMoveInput struct {
+	PanelID              string
+	NodeUUID             string
+	TargetHostUUID       string
+	ExpectedProfileUUID  string
+	ExpectedInboundUUIDs []string
+}
+
+type NodeHostMoveResult struct {
+	NodeName          string
+	PreviousHostKnown bool
+	PreviousHost      string
+	TargetHost        string
+	TargetAddress     string
+	Managed           bool
+}
+
 // NodeDNSSyncTarget is an operator-safe preview. Address is always the
 // canonical value read from Remnawave; DNS is never allowed to overwrite it.
 type NodeDNSSyncTarget struct {
@@ -307,6 +339,13 @@ type RecoveryApplication interface {
 type NodeIPApplication interface {
 	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
+}
+
+// NodeHostMoveApplication moves both managed and legacy Nodes between valid
+// Hosts of their current Remnawave panel.
+type NodeHostMoveApplication interface {
+	PrepareNodeHostMove(context.Context, string, string) (NodeHostMoveTarget, []Host, error)
+	MoveNodeToHost(context.Context, NodeHostMoveInput) (NodeHostMoveResult, error)
 }
 
 // NodeDNSSyncApplication repairs a managed Node's DNS membership using the

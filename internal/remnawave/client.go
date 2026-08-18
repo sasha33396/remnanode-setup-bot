@@ -35,6 +35,7 @@ type API interface {
 	GetNodesMetrics(context.Context) ([]NodeMetric, error)
 	CreateNode(context.Context, CreateNodeInput) (Node, error)
 	UpdateNodeAddress(context.Context, UpdateNodeAddressInput) (Node, error)
+	UpdateNodeProfile(context.Context, UpdateNodeProfileInput) (Node, error)
 	DeleteNode(context.Context, string) (bool, error)
 }
 
@@ -215,6 +216,35 @@ func (c *Client) UpdateNodeAddress(ctx context.Context, input UpdateNodeAddressI
 	}
 	var envelope nodeEnvelope
 	request := updateNodeAddressRequest{UUID: uuid, Address: input.Address.Unmap().String()}
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/nodes", request, http.StatusOK, &envelope); err != nil {
+		return Node{}, err
+	}
+	if envelope.Response == nil {
+		return Node{}, invalidResponse("updated node response field is missing")
+	}
+	node, err := envelope.Response.model()
+	if err != nil {
+		return Node{}, invalidResponse("updated node response is incomplete")
+	}
+	return node, nil
+}
+
+// UpdateNodeProfile calls NodesController_updateNode (PATCH /api/nodes) with
+// the configProfile contract derived from a fresh, validated Host.
+func (c *Client) UpdateNodeProfile(ctx context.Context, input UpdateNodeProfileInput) (Node, error) {
+	uuid := strings.TrimSpace(input.UUID)
+	profile, err := DeploymentProfileFromHost(input.Host)
+	if !validUUID(uuid) || err != nil || input.Host.IsDisabled {
+		return Node{}, fmt.Errorf("Node UUID or Host profile: %w", ErrInvalidInput)
+	}
+	request := updateNodeProfileRequest{
+		UUID: uuid,
+		ConfigProfile: NodeConfigProfile{
+			ActiveConfigProfileUUID: profile.ActiveConfigProfileUUID,
+			ActiveInbounds:          append([]string(nil), profile.ActiveInbounds...),
+		},
+	}
+	var envelope nodeEnvelope
 	if err := c.doJSON(ctx, http.MethodPatch, "/api/nodes", request, http.StatusOK, &envelope); err != nil {
 		return Node{}, err
 	}

@@ -11,9 +11,7 @@ historical context.
 
 - Active branch: `codex/live-deployment-progress`
 - Remote branch: `origin/codex/live-deployment-progress`
-- Feature tip before this handoff update: `8837950`
-- Working tree was clean and the feature tip was pushed before this handoff was
-  updated.
+- Feature tip before the Host-move work: `b498d4c`
 
 Continue the current work with:
 
@@ -52,6 +50,13 @@ git pull --ff-only
 - Cherry/Royal paths reuse the selected Node's current public IPv4 as the SSH
   target, request the new provider-specific IP and transient root password,
   configure the server, then update that same Remnawave Node and DNS zones.
+- Managed and legacy Node cards, including cards opened from critical alerts,
+  expose **Переместить между Host**. The picker contains only enabled Hosts with
+  a complete profile/inbound mapping from the Node's current panel.
+- A Host move changes only the Node's active config profile and inbound through
+  `PATCH /api/nodes`; its address is left untouched. UUIDs stay in transient
+  server-side state. The Node and Host are fetched again at confirmation and a
+  stale profile fingerprint aborts the operation safely.
 
 Relevant recent commits:
 

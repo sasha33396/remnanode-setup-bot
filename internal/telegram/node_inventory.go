@@ -234,6 +234,9 @@ func (c *Controller) showNodeCard(ctx context.Context, chatID int64, messageID i
 			if _, available := c.app.(NodeIPApplication); available {
 				rows = append(rows, []Button{{Text: "🔄 Изменить IP ноды", CallbackData: "nodes:ip:" + node.UUID}})
 			}
+			if _, available := c.app.(NodeHostMoveApplication); available {
+				rows = append(rows, []Button{{Text: "🔀 Переместить между Host", CallbackData: "nodes:move:" + node.UUID}})
+			}
 			rows = append(rows,
 				[]Button{{Text: "🔄 Обновить", CallbackData: "nodes:o:" + node.UUID}},
 				[]Button{{Text: "⬅️ К группам", CallbackData: fmt.Sprintf("nodes:p:%d", panelIndex)}},
@@ -356,6 +359,9 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "ip" && validDeploymentID(parts[2]) {
 		return nodesCallback{action: "change_ip", uuid: parts[2]}, true
 	}
+	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "move" && validDeploymentID(parts[2]) {
+		return nodesCallback{action: "move_host", uuid: parts[2]}, true
+	}
 	if len(parts) == 4 && parts[0] == "nodes" && parts[1] == "ip" && validDeploymentID(parts[3]) {
 		action := ""
 		switch parts[2] {
@@ -369,6 +375,84 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 		return nodesCallback{action: action, uuid: parts[3]}, action != ""
 	}
 	return nodesCallback{}, false
+}
+
+func (c *Controller) beginNodeHostMove(ctx context.Context, callback *CallbackQuery, uuid string) error {
+	application, available := c.app.(NodeHostMoveApplication)
+	if !available {
+		return c.renderNodeMoveFailure(ctx, callback, uuid)
+	}
+	nodes, err := c.app.ListNodes(ctx)
+	if err != nil {
+		return c.renderNodeMoveFailure(ctx, callback, uuid)
+	}
+	var selected NodeSummary
+	for _, node := range nodes {
+		if node.UUID == uuid {
+			selected = node
+			break
+		}
+	}
+	if selected.UUID == "" || selected.PanelID == "" {
+		return c.renderNodeMoveFailure(ctx, callback, uuid)
+	}
+	target, hosts, err := application.PrepareNodeHostMove(ctx, selected.PanelID, uuid)
+	if err != nil || target.UUID != uuid {
+		return c.renderNodeMoveFailure(ctx, callback, uuid)
+	}
+	if len(hosts) == 0 {
+		return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, renderNodeMoveTarget(target)+"\n\nНет другого активного Host с корректным профилем и inbound.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + uuid}}}})
+	}
+	nonce, err := c.nonce()
+	if err != nil {
+		return c.renderNodeMoveFailure(ctx, callback, uuid)
+	}
+	c.cancelExisting(ctx, callback.FromUserID)
+	session := &wizard{
+		userID: callback.FromUserID, chatID: callback.Message.ChatID, nonce: nonce,
+		state: stateSelectingNodeMoveHost, expiresAt: c.now().Add(c.ttl),
+		panel: Panel{ID: selected.PanelID, Name: selected.PanelName}, hosts: hosts,
+		nodeMoveTarget: target, statusMsgID: callback.Message.ID,
+	}
+	c.putSession(session)
+	rows := make([][]Button, 0, len(hosts)+1)
+	for index, host := range hosts {
+		rows = append(rows, []Button{{Text: "➡️ " + safeLine(host.Remark, 42), CallbackData: fmt.Sprintf("move:host:%s:%d", nonce, index)}})
+	}
+	rows = append(rows, []Button{{Text: "❌ Отменить", CallbackData: "move:cancel:" + nonce}})
+	return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, renderNodeMoveTarget(target)+"\n\nВыберите новый Host в этой же панели:", Keyboard{Inline: rows})
+}
+
+func renderNodeMoveTarget(target NodeHostMoveTarget) string {
+	kind := "legacy"
+	if target.Managed {
+		kind = "создана этим ботом"
+	}
+	current := "не определён однозначно по активному профилю + inbound"
+	if target.CurrentHostKnown {
+		current = safeLine(target.CurrentHostRemark, 80) + " (" + safeLine(target.CurrentHostAddress, 180) + ")"
+	}
+	return fmt.Sprintf("🔀 Перемещение ноды между Host\nПанель: %s\nНода: %s\nIP: %s\nТип: %s\nТекущий Host: %s", safeLine(target.PanelName, 80), safeLine(target.Name, 80), safeLine(target.Address, 80), kind, current)
+}
+
+func renderNodeMoveConfirmation(target NodeHostMoveTarget, host Host) string {
+	return renderNodeMoveTarget(target) + fmt.Sprintf("\nНовый Host: %s (%s)\n\nБудут изменены активный профиль и inbound ноды в Remnawave. IP ноды не изменится.", safeLine(host.Remark, 80), safeLine(host.Address, 180))
+}
+
+func renderNodeMoveResult(result NodeHostMoveResult) string {
+	previous := "не был определён однозначно"
+	if result.PreviousHostKnown {
+		previous = safeLine(result.PreviousHost, 80)
+	}
+	kind := "legacy"
+	if result.Managed {
+		kind = "создана этим ботом"
+	}
+	return fmt.Sprintf("✅ Нода перемещена между Host\nНода: %s\nТип: %s\nПредыдущий Host: %s\nНовый Host: %s\nSNI Host: %s\n\nПрофиль и inbound подтверждены ответом Remnawave. IP ноды не изменялся.", safeLine(result.NodeName, 80), kind, previous, safeLine(result.TargetHost, 80), safeLine(result.TargetAddress, 180))
+}
+
+func (c *Controller) renderNodeMoveFailure(ctx context.Context, callback *CallbackQuery, uuid string) error {
+	return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, "❌ Не удалось безопасно подготовить перенос. Нода, её профиль или список Host могли измениться; обновите карточку и повторите.", Keyboard{Inline: [][]Button{{{Text: "🔄 Обновить карточку", CallbackData: "nodes:o:" + uuid}}}})
 }
 
 func (c *Controller) showNodeIPOptions(ctx context.Context, callback *CallbackQuery, uuid string) error {

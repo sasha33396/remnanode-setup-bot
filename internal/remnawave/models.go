@@ -73,3 +73,10 @@ type UpdateNodeAddressInput struct {
 	UUID    string
 	Address netip.Addr
 }
+
+// UpdateNodeProfileInput changes the active config profile and inbounds of an
+// existing Node to the validated mapping owned by a Host.
+type UpdateNodeProfileInput struct {
+	UUID string
+	Host Host
+}

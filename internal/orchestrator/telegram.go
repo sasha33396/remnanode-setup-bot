@@ -488,6 +488,55 @@ func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSum
 	return result, nil
 }
 
+func (a *TelegramApplication) PrepareNodeHostMove(ctx context.Context, panelID, nodeUUID string) (telegram.NodeHostMoveTarget, []telegram.Host, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return telegram.NodeHostMoveTarget{}, nil, err
+	}
+	target, options, err := panel.Service.PrepareNodeHostMove(ctx, nodeUUID)
+	if err != nil {
+		return telegram.NodeHostMoveTarget{}, nil, err
+	}
+	result := telegram.NodeHostMoveTarget{
+		PanelName:            panel.Name,
+		UUID:                 target.UUID,
+		Name:                 target.Name,
+		Address:              target.Address,
+		Managed:              target.Managed,
+		CurrentHostKnown:     target.CurrentHostKnown,
+		CurrentHostRemark:    target.CurrentHostRemark,
+		CurrentHostAddress:   target.CurrentHostAddress,
+		ExpectedProfileUUID:  target.ExpectedConfigProfileUUID,
+		ExpectedInboundUUIDs: append([]string(nil), target.ExpectedInboundUUIDs...),
+	}
+	hosts := make([]telegram.Host, 0, len(options))
+	for _, option := range options {
+		hosts = append(hosts, telegram.Host{ID: option.UUID, Remark: option.Remark, Address: option.Address, ConfigProfileReadiness: telegram.ReadinessReady})
+	}
+	return result, hosts, nil
+}
+
+func (a *TelegramApplication) MoveNodeToHost(ctx context.Context, input telegram.NodeHostMoveInput) (telegram.NodeHostMoveResult, error) {
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return telegram.NodeHostMoveResult{}, err
+	}
+	result, err := panel.Service.MoveNodeToHost(ctx, NodeHostMoveInput{
+		NodeUUID:                  input.NodeUUID,
+		TargetHostUUID:            input.TargetHostUUID,
+		ExpectedConfigProfileUUID: input.ExpectedProfileUUID,
+		ExpectedInboundUUIDs:      append([]string(nil), input.ExpectedInboundUUIDs...),
+	})
+	if err != nil {
+		return telegram.NodeHostMoveResult{}, err
+	}
+	return telegram.NodeHostMoveResult{
+		NodeName: result.NodeName, PreviousHostKnown: result.PreviousHostKnown,
+		PreviousHost: result.PreviousHost, TargetHost: result.TargetHost,
+		TargetAddress: result.TargetAddress, Managed: result.Managed,
+	}, nil
+}
+
 func (a *TelegramApplication) ListDeployments(ctx context.Context, limit int) ([]telegram.DeploymentSummary, error) {
 	deployments, err := a.repository.ListRecentDeployments(ctx, limit)
 	if err != nil {

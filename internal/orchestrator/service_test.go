@@ -137,6 +137,74 @@ func TestReplaceNodeIPSupportsLegacyNodeAndAllMatchingZones(t *testing.T) {
 	}
 }
 
+func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
+	fixture := newFixture(t)
+	secondHostUUID := "55555555-5555-4555-8555-555555555555"
+	secondProfileUUID := "66666666-6666-4666-8666-666666666666"
+	secondInboundUUID := "77777777-7777-4777-8777-777777777777"
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8",
+		ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID},
+	}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old-host", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: secondHostUUID, Remark: "new-host", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || target.Managed || !target.CurrentHostKnown || target.CurrentHostRemark != "old-host" || len(options) != 1 || options[0].UUID != secondHostUUID {
+		t.Fatalf("PrepareNodeHostMove() = %#v, %#v, %v", target, options, err)
+	}
+	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{
+		NodeUUID: testNodeUUID, TargetHostUUID: secondHostUUID,
+		ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID,
+		ExpectedInboundUUIDs:      target.ExpectedInboundUUIDs,
+	})
+	if err != nil || result.Managed || result.TargetHost != "new-host" || !result.PreviousHostKnown {
+		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+	if got := fixture.remnawave.nodes[0]; got.ActiveConfigProfileUUID == nil || *got.ActiveConfigProfileUUID != secondProfileUUID || len(got.ActiveInboundUUIDs) != 1 || got.ActiveInboundUUIDs[0] != secondInboundUUID || got.Address != "8.8.8.8" {
+		t.Fatalf("updated Node = %#v", got)
+	}
+}
+
+func TestMoveNodeToHostMarksManagedNode(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "managed", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}}}
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || !target.Managed || len(options) != 1 {
+		t.Fatalf("PrepareNodeHostMove() = %#v, %#v, %v", target, options, err)
+	}
+	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs})
+	if err != nil || !result.Managed {
+		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+}
+
+func TestMoveNodeToHostRejectsStaleProfile(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}}}
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || len(options) != 1 {
+		t.Fatal(err)
+	}
+	newInbound := "88888888-8888-4888-8888-888888888888"
+	fixture.remnawave.nodes[0].ActiveInboundUUIDs = []string{newInbound}
+	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs})
+	if !errors.Is(err, ErrNodeStateChanged) || len(fixture.remnawave.profileUpdates) != 0 {
+		t.Fatalf("MoveNodeToHost() error = %v, updates = %d", err, len(fixture.remnawave.profileUpdates))
+	}
+}
+
 func TestSyncNodeDNSUsesRemnawaveAddressAndReplacesPersistedIP(t *testing.T) {
 	fixture := newFixture(t)
 	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
@@ -792,6 +860,7 @@ type fakeRemnawave struct {
 	pollIndex        int
 	alwaysConnecting bool
 	createCalls      int
+	profileUpdates   []remnawave.UpdateNodeProfileInput
 }
 
 func (f *fakeRemnawave) GetHosts(context.Context) ([]remnawave.Host, error) {
@@ -854,6 +923,25 @@ func (f *fakeRemnawave) UpdateNodeAddress(_ context.Context, input remnawave.Upd
 			f.nodes[index].Address = input.Address.String()
 			return f.nodes[index], nil
 		}
+	}
+	return remnawave.Node{}, errors.New("Node not found")
+}
+
+func (f *fakeRemnawave) UpdateNodeProfile(_ context.Context, input remnawave.UpdateNodeProfileInput) (remnawave.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	profile, err := remnawave.DeploymentProfileFromHost(input.Host)
+	if err != nil {
+		return remnawave.Node{}, err
+	}
+	for index := range f.nodes {
+		if f.nodes[index].UUID != input.UUID {
+			continue
+		}
+		f.profileUpdates = append(f.profileUpdates, input)
+		f.nodes[index].ActiveConfigProfileUUID = stringPtr(profile.ActiveConfigProfileUUID)
+		f.nodes[index].ActiveInboundUUIDs = append([]string(nil), profile.ActiveInbounds...)
+		return f.nodes[index], nil
 	}
 	return remnawave.Node{}, errors.New("Node not found")
 }

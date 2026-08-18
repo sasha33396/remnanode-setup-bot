@@ -237,6 +237,54 @@ func TestNodeCardIPOptionsIncludeHosterWorkflows(t *testing.T) {
 	}
 }
 
+func TestNodeCardMovesLegacyNodeBetweenHostsWithConfirmation(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	application := &fakeNodeHostMoveApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit"}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "legacy-node", Address: "8.8.8.8", Connected: true}},
+		},
+		target: NodeHostMoveTarget{
+			PanelName: "Hit", UUID: uuid, Name: "legacy-node", Address: "8.8.8.8",
+			CurrentHostKnown: true, CurrentHostRemark: "old-host", CurrentHostAddress: "old.example.com",
+			ExpectedProfileUUID: "profile-old", ExpectedInboundUUIDs: []string{"inbound-old"},
+		},
+		hosts:  []Host{{ID: "host-new", Remark: "new-host", Address: "new.example.com", ConfigProfileReadiness: ReadinessReady}},
+		result: NodeHostMoveResult{NodeName: "legacy-node", PreviousHostKnown: true, PreviousHost: "old-host", TargetHost: "new-host", TargetAddress: "new.example.com"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	if err := controller.showNodeCard(context.Background(), testChatID, 0, uuid); err != nil {
+		t.Fatal(err)
+	}
+	card := messenger.lastSent()
+	if got := card.keyboard.Inline[0][0]; got.Text != "🔀 Переместить между Host" || got.CallbackData != "nodes:move:"+uuid {
+		t.Fatalf("move card button = %#v", got)
+	}
+	handleCallback(t, controller, "move-start", card.keyboard.Inline[0][0].CallbackData, card.message)
+	edits := messenger.editsSnapshot()
+	picker := edits[len(edits)-1]
+	if !strings.Contains(picker.text, "Текущий Host: old-host") || picker.keyboard.Inline[0][0].Text != "➡️ new-host" {
+		t.Fatalf("Host picker = %#v", picker)
+	}
+	handleCallback(t, controller, "move-select", picker.keyboard.Inline[0][0].CallbackData, card.message)
+	edits = messenger.editsSnapshot()
+	confirmation := edits[len(edits)-1]
+	if !strings.Contains(confirmation.text, "Новый Host: new-host") || confirmation.keyboard.Inline[0][0].Text != "✅ Переместить" {
+		t.Fatalf("move confirmation = %#v", confirmation)
+	}
+	handleCallback(t, controller, "move-apply", confirmation.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.moveCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.TargetHostUUID != "host-new" || application.input.ExpectedProfileUUID != "profile-old" {
+		t.Fatalf("move input = %#v, calls = %d", application.input, application.moveCalls)
+	}
+	edits = messenger.editsSnapshot()
+	completed := edits[len(edits)-1]
+	if !strings.Contains(completed.text, "✅ Нода перемещена") || !strings.Contains(completed.text, "new.example.com") {
+		t.Fatalf("move result = %q", completed.text)
+	}
+}
+
 func TestDNSSyncWizardUsesRemnawaveIPAndRequiresConfirmation(t *testing.T) {
 	application := &fakeDNSSyncApplication{
 		fakeApplication: &fakeApplication{},
@@ -819,6 +867,17 @@ type fakeDNSSyncApplication struct {
 	input     NodeDNSSyncInput
 }
 
+type fakeNodeHostMoveApplication struct {
+	*fakeApplication
+	target     NodeHostMoveTarget
+	hosts      []Host
+	result     NodeHostMoveResult
+	prepareErr error
+	moveErr    error
+	moveCalls  int
+	input      NodeHostMoveInput
+}
+
 type fakeCherryIPApplication struct {
 	*fakeApplication
 	calls    int
@@ -936,6 +995,17 @@ func (f *fakeDNSSyncApplication) SyncNodeDNS(_ context.Context, input NodeDNSSyn
 	f.syncCalls++
 	f.input = input
 	return f.result, f.syncErr
+}
+
+func (f *fakeNodeHostMoveApplication) PrepareNodeHostMove(context.Context, string, string) (NodeHostMoveTarget, []Host, error) {
+	return f.target, append([]Host(nil), f.hosts...), f.prepareErr
+}
+
+func (f *fakeNodeHostMoveApplication) MoveNodeToHost(_ context.Context, input NodeHostMoveInput) (NodeHostMoveResult, error) {
+	f.moveCalls++
+	f.input = input
+	f.input.ExpectedInboundUUIDs = append([]string(nil), input.ExpectedInboundUUIDs...)
+	return f.result, f.moveErr
 }
 func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error) {
 	return append([]DeploymentLogEntry(nil), f.logs...), nil

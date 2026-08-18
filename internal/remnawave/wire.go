@@ -127,6 +127,11 @@ type updateNodeAddressRequest struct {
 	Address string `json:"address"`
 }
 
+type updateNodeProfileRequest struct {
+	UUID          string            `json:"uuid"`
+	ConfigProfile NodeConfigProfile `json:"configProfile"`
+}
+
 type deleteNodeEnvelope struct {
 	Response *struct {
 		IsDeleted *bool `json:"isDeleted"`
