@@ -196,7 +196,7 @@ func buildRemnanodeCompose(secret []byte) ([]byte, error) {
 	}
 	content := fmt.Sprintf(`services:
   remnanode:
-    image: remnawave/node:latest
+    image: remnawave/node:3.0.0
     container_name: remnanode
     hostname: remnanode
     network_mode: host
