@@ -15,11 +15,15 @@ import (
 )
 
 func (r *Repository) GetActive(ctx context.Context, sni string) (certmanager.Record, error) {
+	return r.GetActiveForPanel(ctx, "default", sni)
+}
+
+func (r *Repository) GetActiveForPanel(ctx context.Context, panelID, sni string) (certmanager.Record, error) {
 	row := r.pool.QueryRow(ctx, `
         SELECT sni_domain, certificate_fingerprint, serial_number, issued_at,
                expires_at, last_renewed_at, status, active_version, updated_at
         FROM certificate_records
-        WHERE sni_domain = lower(btrim($1)) AND active_version IS NOT NULL`, sni)
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2)) AND active_version IS NOT NULL`, panelID, sni)
 	record, err := scanCertificateRecord(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return certmanager.Record{}, certmanager.ErrNotFound
@@ -31,6 +35,10 @@ func (r *Repository) GetActive(ctx context.Context, sni string) (certmanager.Rec
 }
 
 func (r *Repository) SaveVersion(ctx context.Context, version certmanager.Version) error {
+	return r.SaveVersionForPanel(ctx, "default", version)
+}
+
+func (r *Repository) SaveVersionForPanel(ctx context.Context, panelID string, version certmanager.Version) error {
 	if strings.TrimSpace(version.SNI) == "" || strings.TrimSpace(version.Version) == "" || version.Fingerprint == "" || version.Serial == "" || version.IssuedAt.IsZero() || !version.ExpiresAt.After(version.IssuedAt) {
 		return certmanager.ErrInvalidInput
 	}
@@ -40,18 +48,18 @@ func (r *Repository) SaveVersion(ctx context.Context, version certmanager.Versio
 	}
 	defer rollback(tx)
 	if _, err := tx.Exec(ctx, `
-        INSERT INTO certificate_records (sni_domain, status)
-        VALUES (lower(btrim($1)), 'ISSUING')
-        ON CONFLICT (sni_domain) DO UPDATE
-        SET status = 'ISSUING', updated_at = now()`, version.SNI); err != nil {
+        INSERT INTO certificate_records (panel_id, sni_domain, status)
+        VALUES ($1, lower(btrim($2)), 'ISSUING')
+        ON CONFLICT (panel_id, sni_domain) DO UPDATE
+        SET status = 'ISSUING', updated_at = now()`, panelID, version.SNI); err != nil {
 		return fmt.Errorf("mark certificate issuing: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
         INSERT INTO certificate_versions (
-            sni_domain, version, certificate_fingerprint, serial_number,
+            panel_id, sni_domain, version, certificate_fingerprint, serial_number,
             issued_at, expires_at, status, created_at
-        ) VALUES (lower(btrim($1)), $2, $3, $4, $5, $6, $7, $8)`,
-		version.SNI, version.Version, version.Fingerprint, version.Serial,
+        ) VALUES ($1, lower(btrim($2)), $3, $4, $5, $6, $7, $8, $9)`,
+		panelID, version.SNI, version.Version, version.Fingerprint, version.Serial,
 		version.IssuedAt, version.ExpiresAt, version.Status, version.CreatedAt); err != nil {
 		return fmt.Errorf("save certificate version metadata: %w", err)
 	}
@@ -62,10 +70,14 @@ func (r *Repository) SaveVersion(ctx context.Context, version certmanager.Versio
 }
 
 func (r *Repository) SetVersionStatus(ctx context.Context, sni, version string, status certmanager.VersionStatus) error {
+	return r.SetVersionStatusForPanel(ctx, "default", sni, version, status)
+}
+
+func (r *Repository) SetVersionStatusForPanel(ctx context.Context, panelID, sni, version string, status certmanager.VersionStatus) error {
 	tag, err := r.pool.Exec(ctx, `
         UPDATE certificate_versions
-        SET status = $3
-        WHERE sni_domain = lower(btrim($1)) AND version = $2`, sni, version, status)
+        SET status = $4
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2)) AND version = $3`, panelID, sni, version, status)
 	if err != nil {
 		return fmt.Errorf("set certificate version status: %w", err)
 	}
@@ -76,6 +88,10 @@ func (r *Repository) SetVersionStatus(ctx context.Context, sni, version string, 
 }
 
 func (r *Repository) ActivateVersion(ctx context.Context, sni, version string, renewed bool) error {
+	return r.ActivateVersionForPanel(ctx, "default", sni, version, renewed)
+}
+
+func (r *Repository) ActivateVersionForPanel(ctx context.Context, panelID, sni, version string, renewed bool) error {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin certificate activation transaction: %w", err)
@@ -86,8 +102,8 @@ func (r *Repository) ActivateVersion(ctx context.Context, sni, version string, r
 	if err := tx.QueryRow(ctx, `
         SELECT certificate_fingerprint, serial_number, issued_at, expires_at
         FROM certificate_versions
-        WHERE sni_domain = lower(btrim($1)) AND version = $2
-        FOR UPDATE`, sni, version).Scan(&fingerprint, &serial, &issuedAt, &expiresAt); err != nil {
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2)) AND version = $3
+        FOR UPDATE`, panelID, sni, version).Scan(&fingerprint, &serial, &issuedAt, &expiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return certmanager.ErrNotFound
 		}
@@ -95,22 +111,22 @@ func (r *Repository) ActivateVersion(ctx context.Context, sni, version string, r
 	}
 	if _, err := tx.Exec(ctx, `
         UPDATE certificate_versions
-        SET status = CASE WHEN version = $2 THEN 'ACTIVE' ELSE 'SUPERSEDED' END
-        WHERE sni_domain = lower(btrim($1))
-          AND (status = 'ACTIVE' OR version = $2)`, sni, version); err != nil {
+        SET status = CASE WHEN version = $3 THEN 'ACTIVE' ELSE 'SUPERSEDED' END
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2))
+          AND (status = 'ACTIVE' OR version = $3)`, panelID, sni, version); err != nil {
 		return fmt.Errorf("activate certificate version: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
         UPDATE certificate_records
-        SET certificate_fingerprint = $3,
-            serial_number = $4,
-            issued_at = $5,
-            expires_at = $6,
-            last_renewed_at = CASE WHEN $7 THEN now() ELSE last_renewed_at END,
+        SET certificate_fingerprint = $4,
+            serial_number = $5,
+            issued_at = $6,
+            expires_at = $7,
+            last_renewed_at = CASE WHEN $8 THEN now() ELSE last_renewed_at END,
             status = 'ACTIVE',
-            active_version = $2,
+            active_version = $3,
             updated_at = now()
-        WHERE sni_domain = lower(btrim($1))`, sni, version, fingerprint, serial, issuedAt, expiresAt, renewed); err != nil {
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2))`, panelID, sni, version, fingerprint, serial, issuedAt, expiresAt, renewed); err != nil {
 		return fmt.Errorf("activate certificate record: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -120,11 +136,15 @@ func (r *Repository) ActivateVersion(ctx context.Context, sni, version string, r
 }
 
 func (r *Repository) SetStatus(ctx context.Context, sni string, status certmanager.Status) error {
+	return r.SetStatusForPanel(ctx, "default", sni, status)
+}
+
+func (r *Repository) SetStatusForPanel(ctx context.Context, panelID, sni string, status certmanager.Status) error {
 	_, err := r.pool.Exec(ctx, `
-        INSERT INTO certificate_records (sni_domain, status)
-        VALUES (lower(btrim($1)), $2)
-        ON CONFLICT (sni_domain) DO UPDATE
-        SET status = EXCLUDED.status, updated_at = now()`, sni, status)
+        INSERT INTO certificate_records (panel_id, sni_domain, status)
+        VALUES ($1, lower(btrim($2)), $3)
+        ON CONFLICT (panel_id, sni_domain) DO UPDATE
+        SET status = EXCLUDED.status, updated_at = now()`, panelID, sni, status)
 	if err != nil {
 		return fmt.Errorf("set certificate status: %w", err)
 	}
@@ -132,6 +152,10 @@ func (r *Repository) SetStatus(ctx context.Context, sni string, status certmanag
 }
 
 func (r *Repository) RecordDistribution(ctx context.Context, record certmanager.DistributionRecord) error {
+	return r.RecordDistributionForPanel(ctx, "default", record)
+}
+
+func (r *Repository) RecordDistributionForPanel(ctx context.Context, panelID string, record certmanager.DistributionRecord) error {
 	if !record.NodeIP.IsValid() || strings.TrimSpace(record.DeploymentID) == "" {
 		return certmanager.ErrInvalidInput
 	}
@@ -141,15 +165,15 @@ func (r *Repository) RecordDistribution(ctx context.Context, record certmanager.
 	}
 	_, err := r.pool.Exec(ctx, `
         INSERT INTO certificate_distributions (
-            sni_domain, version, deployment_id, node_ip, status,
+            panel_id, sni_domain, version, deployment_id, node_ip, status,
             safe_error_message, attempted_at
-        ) VALUES (lower(btrim($1)), $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (sni_domain, version, deployment_id) DO UPDATE
+        ) VALUES ($1, lower(btrim($2)), $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (panel_id, sni_domain, version, deployment_id) DO UPDATE
         SET node_ip = EXCLUDED.node_ip,
             status = EXCLUDED.status,
             safe_error_message = EXCLUDED.safe_error_message,
             attempted_at = EXCLUDED.attempted_at`,
-		record.SNI, record.Version, record.DeploymentID, record.NodeIP.String(),
+		panelID, record.SNI, record.Version, record.DeploymentID, record.NodeIP.String(),
 		record.Status, safeMessage, record.AttemptedAt)
 	if err != nil {
 		return fmt.Errorf("record certificate distribution: %w", err)
@@ -158,6 +182,10 @@ func (r *Repository) RecordDistribution(ctx context.Context, record certmanager.
 }
 
 func (r *Repository) RecordTargetReview(ctx context.Context, review certmanager.TargetReview) error {
+	return r.RecordTargetReviewForPanel(ctx, "default", review)
+}
+
+func (r *Repository) RecordTargetReviewForPanel(ctx context.Context, panelID string, review certmanager.TargetReview) error {
 	if strings.TrimSpace(review.SNI) == "" || !review.IP.IsValid() || strings.TrimSpace(review.Reason) == "" {
 		return certmanager.ErrInvalidInput
 	}
@@ -172,19 +200,19 @@ func (r *Repository) RecordTargetReview(ctx context.Context, review certmanager.
 	}
 	_, err := r.pool.Exec(ctx, `
         INSERT INTO certificate_target_reviews (
-            sni_domain, node_ip, state, reason, acknowledged_by,
+            panel_id, sni_domain, node_ip, state, reason, acknowledged_by,
             acknowledged_at
         ) VALUES (
-            lower(btrim($1)), $2, $3, $4, $5,
-            CASE WHEN $3 = 'LEGACY_ACKNOWLEDGED' THEN now() ELSE NULL END
+            $1, lower(btrim($2)), $3, $4, $5, $6,
+            CASE WHEN $4 = 'LEGACY_ACKNOWLEDGED' THEN now() ELSE NULL END
         )
-        ON CONFLICT (sni_domain, node_ip) DO UPDATE
+        ON CONFLICT (panel_id, sni_domain, node_ip) DO UPDATE
         SET state = EXCLUDED.state,
             reason = EXCLUDED.reason,
             acknowledged_by = EXCLUDED.acknowledged_by,
             acknowledged_at = EXCLUDED.acknowledged_at,
             updated_at = now()`,
-		review.SNI, review.IP.Unmap().String(), review.State, strings.TrimSpace(review.Reason), review.AcknowledgedBy)
+		panelID, review.SNI, review.IP.Unmap().String(), review.State, strings.TrimSpace(review.Reason), review.AcknowledgedBy)
 	if err != nil {
 		return fmt.Errorf("record certificate target review: %w", err)
 	}
@@ -192,12 +220,16 @@ func (r *Repository) RecordTargetReview(ctx context.Context, review certmanager.
 }
 
 func (r *Repository) ListTargetReviews(ctx context.Context, sni string) ([]certmanager.TargetReview, error) {
+	return r.ListTargetReviewsForPanel(ctx, "default", sni)
+}
+
+func (r *Repository) ListTargetReviewsForPanel(ctx context.Context, panelID, sni string) ([]certmanager.TargetReview, error) {
 	rows, err := r.pool.Query(ctx, `
-        SELECT sni_domain, node_ip::text, state, reason, acknowledged_by,
+        SELECT sni_domain, host(node_ip), state, reason, acknowledged_by,
                created_at, updated_at, acknowledged_at
         FROM certificate_target_reviews
-        WHERE sni_domain = lower(btrim($1))
-        ORDER BY node_ip, created_at`, sni)
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2))
+        ORDER BY node_ip, created_at`, panelID, sni)
 	if err != nil {
 		return nil, fmt.Errorf("list certificate target reviews: %w", err)
 	}
@@ -222,6 +254,10 @@ func (r *Repository) ListTargetReviews(ctx context.Context, sni string) ([]certm
 }
 
 func (r *Repository) ListExpiring(ctx context.Context, before time.Time, limit int) ([]certmanager.Record, error) {
+	return r.ListExpiringForPanel(ctx, "default", before, limit)
+}
+
+func (r *Repository) ListExpiringForPanel(ctx context.Context, panelID string, before time.Time, limit int) ([]certmanager.Record, error) {
 	if limit < 1 || limit > 100 {
 		return nil, certmanager.ErrInvalidInput
 	}
@@ -229,9 +265,9 @@ func (r *Repository) ListExpiring(ctx context.Context, before time.Time, limit i
         SELECT sni_domain, certificate_fingerprint, serial_number, issued_at,
                expires_at, last_renewed_at, status, active_version, updated_at
         FROM certificate_records
-        WHERE active_version IS NOT NULL AND expires_at <= $1
+        WHERE panel_id = $1 AND active_version IS NOT NULL AND expires_at <= $2
         ORDER BY expires_at ASC, sni_domain ASC
-        LIMIT $2`, before, limit)
+        LIMIT $3`, panelID, before, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list expiring certificates: %w", err)
 	}
@@ -248,12 +284,16 @@ func (r *Repository) ListExpiring(ctx context.Context, before time.Time, limit i
 }
 
 func (r *Repository) ListVersions(ctx context.Context, sni string) ([]certmanager.Version, error) {
+	return r.ListVersionsForPanel(ctx, "default", sni)
+}
+
+func (r *Repository) ListVersionsForPanel(ctx context.Context, panelID, sni string) ([]certmanager.Version, error) {
 	rows, err := r.pool.Query(ctx, `
         SELECT sni_domain, version, certificate_fingerprint, serial_number,
                issued_at, expires_at, status, created_at
         FROM certificate_versions
-        WHERE sni_domain = lower(btrim($1))
-        ORDER BY created_at DESC, version DESC`, sni)
+        WHERE panel_id = $1 AND sni_domain = lower(btrim($2))
+        ORDER BY created_at DESC, version DESC`, panelID, sni)
 	if err != nil {
 		return nil, fmt.Errorf("list certificate versions: %w", err)
 	}
@@ -270,12 +310,16 @@ func (r *Repository) ListVersions(ctx context.Context, sni string) ([]certmanage
 }
 
 func (r *Repository) FindDeploymentsBySNI(ctx context.Context, sni string, limit int) ([]deployment.Deployment, error) {
+	return r.FindDeploymentsByPanelSNI(ctx, "default", sni, limit)
+}
+
+func (r *Repository) FindDeploymentsByPanelSNI(ctx context.Context, panelID, sni string, limit int) ([]deployment.Deployment, error) {
 	return r.list(ctx, `
         SELECT `+deploymentColumns+`
         FROM deployments
-        WHERE lower(sni_domain) = lower(btrim($2))
+        WHERE panel_id = $2 AND lower(sni_domain) = lower(btrim($3))
         ORDER BY updated_at DESC, id DESC
-        LIMIT $1`, limit, "find deployments by SNI", sni)
+        LIMIT $1`, limit, "find deployments by panel and SNI", panelID, sni)
 }
 
 func scanCertificateRecord(row scanner) (certmanager.Record, error) {
@@ -291,3 +335,4 @@ func rollback(tx pgx.Tx) {
 }
 
 var _ certmanager.Repository = (*Repository)(nil)
+var _ certmanager.PanelRepository = (*Repository)(nil)

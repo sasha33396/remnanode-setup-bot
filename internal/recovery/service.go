@@ -43,25 +43,50 @@ type Result struct {
 }
 
 type Service struct {
-	repository Repository
-	remnawave  RemnawaveAPI
-	dns        DNSAPI
+	repository  Repository
+	remnawave   RemnawaveAPI
+	dns         DNSAPI
+	panelID     string
+	dnsDisabled bool
 }
 
 func New(repository Repository, remnawaveAPI RemnawaveAPI, dns DNSAPI) (*Service, error) {
+	return NewForPanel(repository, remnawaveAPI, dns, "default")
+}
+
+func NewForPanel(repository Repository, remnawaveAPI RemnawaveAPI, dns DNSAPI, panelID string) (*Service, error) {
+	return NewForPanelWithDNSMode(repository, remnawaveAPI, dns, panelID, false)
+}
+
+func NewForPanelWithDNSMode(repository Repository, remnawaveAPI RemnawaveAPI, dns DNSAPI, panelID string, dnsDisabled bool) (*Service, error) {
 	if repository == nil || remnawaveAPI == nil || dns == nil {
 		return nil, errors.New("recovery dependencies are required")
 	}
-	return &Service{repository: repository, remnawave: remnawaveAPI, dns: dns}, nil
+	panelID = strings.TrimSpace(panelID)
+	if panelID == "" {
+		return nil, errors.New("recovery panel is required")
+	}
+	return &Service{repository: repository, remnawave: remnawaveAPI, dns: dns, panelID: panelID, dnsDisabled: dnsDisabled}, nil
 }
 
 func (s *Service) RecoverUnfinished(ctx context.Context, limit int) ([]Result, error) {
-	items, err := s.repository.FindUnfinishedDeployments(ctx, limit)
+	var items []deployment.Deployment
+	var err error
+	if scoped, ok := s.repository.(interface {
+		FindUnfinishedDeploymentsByPanel(context.Context, string, int) ([]deployment.Deployment, error)
+	}); ok {
+		items, err = scoped.FindUnfinishedDeploymentsByPanel(ctx, s.panelID, limit)
+	} else {
+		items, err = s.repository.FindUnfinishedDeployments(ctx, limit)
+	}
 	if err != nil {
 		return nil, errors.New("load unfinished deployments failed")
 	}
 	results := make([]Result, 0, len(items))
 	for _, item := range items {
+		if item.PanelID != "" && item.PanelID != s.panelID {
+			continue
+		}
 		result, err := s.classify(ctx, item)
 		if err != nil {
 			return results, err
@@ -75,6 +100,9 @@ func (s *Service) RecheckRemnawave(ctx context.Context, deploymentID string) (Re
 	item, err := s.repository.GetDeployment(ctx, deploymentID)
 	if err != nil {
 		return Result{}, errors.New("load deployment for recheck failed")
+	}
+	if item.PanelID != "" && item.PanelID != s.panelID {
+		return Result{}, errors.New("deployment belongs to another panel")
 	}
 	return s.classify(ctx, item)
 }
@@ -133,6 +161,14 @@ func (s *Service) inspectExternalState(ctx context.Context, item deployment.Depl
 	}
 	if !node.IsConnected {
 		return s.manual(ctx, item, safeNodeMessage(node.LastStatusMessage))
+	}
+	if s.dnsDisabled {
+		summary := "DNS balancing is disabled for this panel"
+		_, _ = s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: item.ID, Name: "add_dns", Status: deployment.StepStatusSkipped, SafeSummary: &summary})
+		if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusCompleted, CurrentStep: "completed"}); err != nil {
+			return Result{}, errors.New("persist recovered completion failed")
+		}
+		return Result{DeploymentID: item.ID, Classification: RecoveredCompleted, SafeMessage: "Node is healthy; DNS balancing is disabled"}, nil
 	}
 	contains, err := s.dnsContains(ctx, item.SNIDomain, item.TargetVPSIP)
 	if err != nil {

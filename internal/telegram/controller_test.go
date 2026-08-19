@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -38,6 +39,79 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 	}
 }
 
+func TestTelegramButtonsUseRussianLabels(t *testing.T) {
+	menu := mainKeyboard()
+	wantReply := [][]string{{"➕ Добавить ноду", "🔄 Сменить IP"}, {"📡 Ноды", "📜 Развёртывания"}}
+	if fmt.Sprint(menu.Reply) != fmt.Sprint(wantReply) {
+		t.Fatalf("main keyboard = %#v, want %#v", menu.Reply, wantReply)
+	}
+	confirmation := confirmationKeyboard("nonce")
+	if confirmation.Inline[0][0].Text != "🚀 Развернуть" || confirmation.Inline[1][0].Text != "❌ Отмена" {
+		t.Fatalf("confirmation keyboard = %#v", confirmation)
+	}
+}
+
+func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
+	panels := []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}
+	nodes := []NodeSummary{
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 50},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 51},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000003", Name: "de-good-2", Address: "203.0.113.3", Connected: true, OnlineKnown: true, Online: 360},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000004", Name: "de-off", Address: "203.0.113.4", Disabled: true},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000005", Name: "de-disconnected", Address: "203.0.113.5"},
+		{PanelID: "horda", PanelName: "Horda", UUID: "00000000-0000-0000-0000-000000000006", Name: "nl-good", Address: "203.0.113.6", Connected: true, OnlineKnown: true, Online: 250},
+	}
+	application := &fakeApplication{panels: panels, nodes: nodes}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuNodes)
+	first := messenger.lastSent()
+	if !strings.Contains(first.text, "Выберите Remnawave-панель") || len(first.keyboard.Inline) != 2 {
+		t.Fatalf("panel picker = %q %#v", first.text, first.keyboard)
+	}
+	if got := first.keyboard.Inline[0][0]; got.Text != "Hit — 5" || got.CallbackData != "nodes:p:0" {
+		t.Fatalf("Hit button = %#v", got)
+	}
+	handleCallback(t, controller, "nodes-panel", "nodes:p:0", first.message)
+	edits := messenger.editsSnapshot()
+	panel := edits[len(edits)-1]
+	if !strings.Contains(panel.text, "Критический порог: 50 онлайн или меньше") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
+		t.Fatalf("panel summary = %q", panel.text)
+	}
+	wantButtons := []string{"🚨 Критический онлайн — 1", "⏸ Отключённые — 1", "🟢 Активные / стабильные — 2"}
+	for index, want := range wantButtons {
+		if got := panel.keyboard.Inline[index][0].Text; got != want {
+			t.Fatalf("group button %d = %q, want %q", index, got, want)
+		}
+	}
+
+	handleCallback(t, controller, "nodes-critical", "nodes:g:0:c:0", first.message)
+	edits = messenger.editsSnapshot()
+	critical := edits[len(edits)-1]
+	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 50" {
+		t.Fatalf("critical list = %q %#v", critical.text, critical.keyboard)
+	}
+
+	handleCallback(t, controller, "nodes-card", critical.keyboard.Inline[0][0].CallbackData, first.message)
+	edits = messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	if !strings.Contains(card.text, "Нода: de-low") || !strings.Contains(card.text, "Рекомендация") || strings.Contains(card.text, nodes[0].UUID) {
+		t.Fatalf("node card = %q", card.text)
+	}
+}
+
+func TestDisconnectedNodeIsIgnoredByLowOnlineClassification(t *testing.T) {
+	snapshots := classifyNodePanels(
+		[]Panel{{ID: "hit", Name: "Hit"}},
+		[]NodeSummary{{PanelID: "hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "lost", OnlineKnown: true, Online: 0}},
+		DefaultNodePolicy(),
+	)
+	if len(snapshots) != 1 || len(snapshots[0].Critical) != 0 || len(snapshots[0].Ignored) != 1 {
+		t.Fatalf("classification = %#v", snapshots)
+	}
+}
+
 func TestCertificateBootstrapRequiresExplicitConfirmation(t *testing.T) {
 	application := &fakeRecoveryApplication{fakeApplication: &fakeApplication{}, bootstrapResult: "Certificate staged-version activated"}
 	messenger := &fakeMessenger{}
@@ -70,6 +144,8 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
 	handleMessage(t, controller, 2, "legacy-node")
 	card := messenger.lastSent()
 	if !strings.Contains(card.text, "legacy-node") || !strings.Contains(card.text, "8.8.8.8") || !strings.Contains(card.text, "legacy") {
@@ -85,6 +161,445 @@ func TestReplaceIPButtonWizardSupportsLegacyNode(t *testing.T) {
 	}
 }
 
+func TestNodeCardStartsPrefilledIPChange(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	application := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit", DNSEnabled: true}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "de-low", Address: "8.8.8.8", Connected: true, OnlineKnown: true, Online: 55}},
+		},
+		target: NodeIPChangeTarget{PanelName: "Hit", DNSEnabled: true, UUID: uuid, Name: "de-low", Address: netip.MustParseAddr("8.8.8.8"), Connected: true, DNSZones: []string{"de.example.com"}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	if err := controller.showNodeCard(context.Background(), testChatID, 0, uuid); err != nil {
+		t.Fatal(err)
+	}
+	card := messenger.lastSent()
+	if got := card.keyboard.Inline[0][0]; got.Text != "🔄 Изменить IP ноды" || got.CallbackData != "nodes:ip:"+uuid {
+		t.Fatalf("IP change card button = %#v", got)
+	}
+	handleCallback(t, controller, "node-ip", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.findPanel != "hit" || application.findQuery != "de-low" {
+		t.Fatalf("prefilled lookup = panel %q, query %q", application.findPanel, application.findQuery)
+	}
+	edits := messenger.editsSnapshot()
+	options := edits[len(edits)-1]
+	if !strings.Contains(options.text, "Выберите способ смены IP") || options.keyboard.Inline[0][0].CallbackData != "nodes:ip:panel:"+uuid {
+		t.Fatalf("IP options = %#v", options)
+	}
+	handleCallback(t, controller, "node-ip-panel", options.keyboard.Inline[0][0].CallbackData, card.message)
+	edits = messenger.editsSnapshot()
+	confirmation := edits[len(edits)-1]
+	if !strings.Contains(confirmation.text, "de-low") || !strings.Contains(confirmation.text, "8.8.8.8") || confirmation.keyboard.Inline[0][0].Text != "🔄 Сменить" {
+		t.Fatalf("IP confirmation = %#v", confirmation)
+	}
+	handleCallback(t, controller, "node-ip-confirm", confirmation.keyboard.Inline[0][0].CallbackData, card.message)
+	handleMessage(t, controller, 2, "1.1.1.1")
+	if application.replaceCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.ExpectedIP.String() != "8.8.8.8" || application.input.NewIP.String() != "1.1.1.1" {
+		t.Fatalf("prefilled replace input = %#v", application.input)
+	}
+}
+
+func TestNodeCardIPOptionsIncludeHosterWorkflows(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	base := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit", DNSEnabled: true}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "de-low", Address: "8.8.8.8", Connected: true, OnlineKnown: true, Online: 40}},
+		},
+		target: NodeIPChangeTarget{PanelName: "Hit", DNSEnabled: true, UUID: uuid, Name: "de-low", Address: netip.MustParseAddr("8.8.8.8"), Connected: true},
+	}
+	application := &fakeAllNodeIPApplication{fakeNodeIPApplication: base}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	message := Message{ID: 50, ChatID: testChatID}
+	handleCallback(t, controller, "node-ip-options", "nodes:ip:"+uuid, message)
+	edits := messenger.editsSnapshot()
+	options := edits[len(edits)-1]
+	want := []string{"Панель + DNS-балансировка", "Смена IP на Cherry (сервер)", "Смена IP на Royal (сервер)"}
+	for index, label := range want {
+		if options.keyboard.Inline[index][0].Text != label {
+			t.Fatalf("option %d = %#v, want %q", index, options.keyboard.Inline[index][0], label)
+		}
+	}
+	handleCallback(t, controller, "node-ip-royal", options.keyboard.Inline[2][0].CallbackData, message)
+	edits = messenger.editsSnapshot()
+	prompt := edits[len(edits)-1]
+	if !strings.Contains(prompt.text, "новый основной публичный IPv4 сервера Royal") || strings.Contains(prompt.text, "Введите точное имя ноды") {
+		t.Fatalf("prefilled Royal prompt = %q", prompt.text)
+	}
+	session, found, expired := controller.loadSession(testAllowedUser)
+	if !found || expired || session.state != stateAwaitingServerNewIP || session.serverIPProvider != serverIPProviderRoyal || session.ipTarget.UUID != uuid || session.serverCurrentIP.String() != "8.8.8.8" || !session.serverUpdateNode {
+		t.Fatalf("prefilled Royal session = %#v, found=%t expired=%t", session, found, expired)
+	}
+}
+
+func TestNodeCardMovesLegacyNodeBetweenHostsWithConfirmation(t *testing.T) {
+	uuid := "00000000-0000-0000-0000-000000000001"
+	application := &fakeNodeHostMoveApplication{
+		fakeApplication: &fakeApplication{
+			panels: []Panel{{ID: "hit", Name: "Hit"}},
+			nodes:  []NodeSummary{{PanelID: "hit", PanelName: "Hit", UUID: uuid, Name: "legacy-node", Address: "8.8.8.8", Connected: true}},
+		},
+		target: NodeHostMoveTarget{
+			PanelName: "Hit", UUID: uuid, Name: "legacy-node", Address: "8.8.8.8",
+			CurrentHostKnown: true, CurrentHostRemark: "old-host", CurrentHostAddress: "old.example.com",
+			ExpectedProfileUUID: "profile-old", ExpectedInboundUUIDs: []string{"inbound-old"},
+		},
+		hosts:  []Host{{ID: "host-new", Remark: "new-host", Address: "new.example.com", ConfigProfileReadiness: ReadinessReady}},
+		result: NodeHostMoveResult{NodeName: "legacy-node", PreviousHostKnown: true, PreviousHost: "old-host", TargetHost: "new-host", TargetAddress: "new.example.com"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	if err := controller.showNodeCard(context.Background(), testChatID, 0, uuid); err != nil {
+		t.Fatal(err)
+	}
+	card := messenger.lastSent()
+	if got := card.keyboard.Inline[0][0]; got.Text != "🔀 Переместить между Host" || got.CallbackData != "nodes:move:"+uuid {
+		t.Fatalf("move card button = %#v", got)
+	}
+	handleCallback(t, controller, "move-start", card.keyboard.Inline[0][0].CallbackData, card.message)
+	edits := messenger.editsSnapshot()
+	picker := edits[len(edits)-1]
+	if !strings.Contains(picker.text, "Текущий Host: old-host") || picker.keyboard.Inline[0][0].Text != "➡️ new-host" {
+		t.Fatalf("Host picker = %#v", picker)
+	}
+	handleCallback(t, controller, "move-select", picker.keyboard.Inline[0][0].CallbackData, card.message)
+	edits = messenger.editsSnapshot()
+	confirmation := edits[len(edits)-1]
+	if !strings.Contains(confirmation.text, "Новый Host: new-host") || confirmation.keyboard.Inline[0][0].Text != "✅ Переместить" {
+		t.Fatalf("move confirmation = %#v", confirmation)
+	}
+	handleCallback(t, controller, "move-apply", confirmation.keyboard.Inline[0][0].CallbackData, card.message)
+	edits = messenger.editsSnapshot()
+	passwordPrompt := edits[len(edits)-1]
+	if !strings.Contains(passwordPrompt.text, "root-пароль") || !strings.Contains(passwordPrompt.text, "SNI_DOMAIN") {
+		t.Fatalf("move password prompt = %q", passwordPrompt.text)
+	}
+	handleMessage(t, controller, 99, "temporary-password")
+	controller.Wait()
+	if application.moveCalls != 1 || application.input.PanelID != "hit" || application.input.NodeUUID != uuid || application.input.TargetHostUUID != "host-new" || application.input.ExpectedProfileUUID != "profile-old" || string(application.input.Password) != "temporary-password" {
+		t.Fatalf("move input = %#v, calls = %d", application.input, application.moveCalls)
+	}
+	edits = messenger.editsSnapshot()
+	completed := edits[len(edits)-1]
+	if !strings.Contains(completed.text, "✅ Нода перемещена") || !strings.Contains(completed.text, "new.example.com") {
+		t.Fatalf("move result = %q", completed.text)
+	}
+}
+
+func TestDNSSyncWizardUsesRemnawaveIPAndRequiresConfirmation(t *testing.T) {
+	application := &fakeDNSSyncApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeDNSSyncTarget{
+			PanelName:       "Hit",
+			UUID:            "internal-node-uuid",
+			Name:            "de-new-0",
+			Address:         netip.MustParseAddr("177.1.202.161"),
+			Connected:       true,
+			Managed:         true,
+			DNSZone:         "de-new.example.com",
+			PreviousIP:      netip.MustParseAddr("85.155.125.5"),
+			PreviousPresent: true,
+			CanSync:         true,
+			Note:            "Устаревший IP будет заменён актуальным IP из Remnawave",
+		},
+		result: NodeDNSSyncResult{NodeName: "de-new-0", Address: netip.MustParseAddr("177.1.202.161"), DNSZone: "de-new.example.com", Action: "REPLACED"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	if len(mode.keyboard.Inline) != 1 || !strings.Contains(mode.keyboard.Inline[0][0].Text, "Remna → DNS") {
+		t.Fatalf("DNS sync mode = %#v", mode.keyboard)
+	}
+	handleCallback(t, controller, "dns-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "de-new-0")
+	card := messenger.lastSent()
+	if !strings.Contains(card.text, "Титульный IP (Remna): 177.1.202.161") || !strings.Contains(card.text, "de-new.example.com") || strings.Contains(card.text, "internal-node-uuid") {
+		t.Fatalf("DNS sync card = %q", card.text)
+	}
+	if application.syncCalls != 0 || len(card.keyboard.Inline) != 1 {
+		t.Fatalf("sync happened before confirmation: calls=%d keyboard=%#v", application.syncCalls, card.keyboard)
+	}
+	handleCallback(t, controller, "dns-confirm", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || application.input.NodeUUID != "internal-node-uuid" || application.input.ExpectedIP.String() != "177.1.202.161" {
+		t.Fatalf("DNS sync input = %#v, calls=%d", application.input, application.syncCalls)
+	}
+	edits := messenger.editsSnapshot()
+	if !strings.Contains(edits[len(edits)-1].text, "устаревший IP заменён актуальным") {
+		t.Fatalf("DNS sync result = %q", edits[len(edits)-1].text)
+	}
+}
+
+func TestDNSSyncCardAllowsLegacyZoneInferredFromProfile(t *testing.T) {
+	text := renderDNSSyncTarget(NodeDNSSyncTarget{
+		PanelName: "Hit",
+		Name:      "de-10-cherry",
+		Address:   netip.MustParseAddr("88.216.70.55"),
+		DNSZone:   "de-modx.nodexphere.net",
+		CanSync:   true,
+		Note:      "Целевая зона определена по совпадению профиля и inbound ноды с Host",
+	})
+	if !strings.Contains(text, "legacy, зона определена по профилю + inbound") || !strings.Contains(text, "de-modx.nodexphere.net") || strings.Contains(text, "Автоматическая запись отключена") {
+		t.Fatalf("inferred legacy card = %q", text)
+	}
+}
+
+func TestDNSSyncAlwaysSendsResultAndReplaysCompletedCallback(t *testing.T) {
+	application := &fakeDNSSyncApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeDNSSyncTarget{
+			PanelName: "Hit", UUID: "node-uuid", Name: "node", Address: netip.MustParseAddr("88.216.70.55"),
+			Managed: true, DNSZone: "de-modx.nodexphere.net", CanSync: true,
+		},
+		result: NodeDNSSyncResult{NodeName: "node", Address: netip.MustParseAddr("88.216.70.55"), DNSZone: "de-modx.nodexphere.net", Action: "ADDED"},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "dns-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "node")
+	card := messenger.lastSent()
+
+	messenger.editErr = errors.New("Telegram rejected edit")
+	handleCallback(t, controller, "dns-confirm", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || !strings.Contains(messenger.lastSent().text, "актуальный IP добавлен в DNS") {
+		t.Fatalf("fallback result: calls=%d message=%q", application.syncCalls, messenger.lastSent().text)
+	}
+	handleCallback(t, controller, "dns-confirm-repeat", card.keyboard.Inline[0][0].CallbackData, card.message)
+	if application.syncCalls != 1 || !strings.Contains(messenger.lastSent().text, "актуальный IP добавлен в DNS") || strings.Contains(messenger.lastSent().text, "expired") {
+		t.Fatalf("replayed result: calls=%d message=%q", application.syncCalls, messenger.lastSent().text)
+	}
+}
+
+func TestAddNodeRequiresPanelSelectionWhenMultipleConfigured(t *testing.T) {
+	application := &fakeApplication{
+		panels: []Panel{{ID: "europe", Name: "Europe", DNSEnabled: true}, {ID: "test", Name: "Test", DNSEnabled: false}},
+		hosts:  []Host{{ID: "host-id", Remark: "Test Host", Address: "test.example.com"}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuAddNode)
+	picker := messenger.lastSent()
+	if len(picker.keyboard.Inline) != 2 || !strings.Contains(picker.text, "панель") {
+		t.Fatalf("panel picker = %#v", picker)
+	}
+	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, picker.message)
+	hosts := messenger.lastSent()
+	if !strings.Contains(hosts.text, "Test") || len(hosts.keyboard.Inline) != 1 {
+		t.Fatalf("host picker = %#v", hosts)
+	}
+}
+
+func TestChangeIPIsScopedToSelectedPanel(t *testing.T) {
+	application := &fakeNodeIPApplication{
+		fakeApplication: &fakeApplication{panels: []Panel{{ID: "europe", Name: "Europe"}, {ID: "test", Name: "Test"}}},
+		target:          NodeIPChangeTarget{PanelName: "Test", UUID: "node-uuid", Name: "legacy", Address: netip.MustParseAddr("8.8.8.8")},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	picker := edits[len(edits)-1]
+	handleCallback(t, controller, "panel", picker.keyboard.Inline[1][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "legacy")
+	if application.findPanel != "test" {
+		t.Fatalf("find panel = %q", application.findPanel)
+	}
+	card := messenger.lastSent()
+	if !strings.Contains(card.text, "Панель: Test") {
+		t.Fatalf("card = %q", card.text)
+	}
+}
+
+func TestCherryIPWizardDeletesPasswordAndConfiguresServer(t *testing.T) {
+	application := &fakeCherryIPApplication{fakeApplication: &fakeApplication{}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "cherry-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	cherryMode := edits[len(edits)-1]
+	handleCallback(t, controller, "without-node", cherryMode.keyboard.Inline[1][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "8.8.8.8")
+	handleMessage(t, controller, 3, "1.1.1.1")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if password.Text != "" || !messenger.wasDeleted(testChatID, 4) {
+		t.Fatal("Cherry root password was not removed from Telegram update")
+	}
+	if application.calls != 1 || application.input.ServerIP.String() != "8.8.8.8" || application.input.FloatingIP.String() != "1.1.1.1" || string(application.password) != "root-secret" {
+		t.Fatalf("Cherry input = %#v password=%q calls=%d", application.input, application.password, application.calls)
+	}
+}
+
+func TestCherryIPWizardUpdatesExistingRemnawaveNodeAndDNS(t *testing.T) {
+	application := &fakeCherryNodeApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeIPChangeTarget{
+			PanelName: "Hit",
+			UUID:      "node-uuid",
+			Name:      "legacy-node",
+			Address:   netip.MustParseAddr("8.8.8.8"),
+			DNSZones:  []string{"edge.example.com"},
+		},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "cherry-mode", mode.keyboard.Inline[1][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	cherryMode := edits[len(edits)-1]
+	handleCallback(t, controller, "with-node", cherryMode.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "legacy-node")
+	if got := messenger.lastSent().text; !strings.Contains(got, "legacy-node") || !strings.Contains(got, "обновит ноду и DNS") {
+		t.Fatalf("existing-node prompt = %q", got)
+	}
+	handleMessage(t, controller, 3, "1.1.1.1")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.cherryCalls != 1 || application.cherryInput.ServerIP.String() != "8.8.8.8" || application.cherryInput.FloatingIP.String() != "1.1.1.1" {
+		t.Fatalf("Cherry input = %#v calls=%d", application.cherryInput, application.cherryCalls)
+	}
+	if application.replaceCalls != 1 || application.replaceInput.PanelID != "default" || application.replaceInput.NodeUUID != "node-uuid" || application.replaceInput.ExpectedIP.String() != "8.8.8.8" || application.replaceInput.NewIP.String() != "1.1.1.1" {
+		t.Fatalf("replace input = %#v calls=%d", application.replaceInput, application.replaceCalls)
+	}
+}
+
+func TestRoyalIPWizardUpdatesServerNodeAndDNS(t *testing.T) {
+	application := &fakeRoyalNodeApplication{
+		fakeApplication: &fakeApplication{},
+		target: NodeIPChangeTarget{
+			PanelName: "Royal",
+			UUID:      "royal-node-uuid",
+			Name:      "royal-legacy",
+			Address:   netip.MustParseAddr("37.16.74.103"),
+			DNSZones:  []string{"royal.example.com"},
+		},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	if len(mode.keyboard.Inline) != 2 || !strings.Contains(mode.keyboard.Inline[1][0].Text, "Royal") {
+		t.Fatalf("IP mode keyboard = %#v", mode.keyboard)
+	}
+	handleCallback(t, controller, "royal-mode", mode.keyboard.Inline[1][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	scope := edits[len(edits)-1]
+	handleCallback(t, controller, "with-node", scope.keyboard.Inline[0][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "royal-legacy")
+	if got := messenger.lastSent().text; !strings.Contains(got, "шлюз x.x.x.1") || !strings.Contains(got, "обновит ноду и DNS") {
+		t.Fatalf("Royal new-IP prompt = %q", got)
+	}
+	handleMessage(t, controller, 3, "47.23.12.146")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.royalCalls != 1 || application.royalInput.ServerIP.String() != "37.16.74.103" || application.royalInput.NewIP.String() != "47.23.12.146" || string(application.royalPassword) != "root-secret" {
+		t.Fatalf("Royal input=%#v calls=%d", application.royalInput, application.royalCalls)
+	}
+	if application.replaceCalls != 1 || application.replaceInput.NodeUUID != "royal-node-uuid" || application.replaceInput.NewIP.String() != "47.23.12.146" {
+		t.Fatalf("replace input=%#v calls=%d", application.replaceInput, application.replaceCalls)
+	}
+	edits = messenger.editsSnapshot()
+	result := edits[len(edits)-1].text
+	if !strings.Contains(result, "47.23.12.1") || !strings.Contains(result, "SSH по новому IP подтверждён") {
+		t.Fatalf("Royal result = %q", result)
+	}
+}
+
+func TestRoyalIPWizardWorksBeforeNodeIsAddedToRemnawave(t *testing.T) {
+	application := &fakeRoyalIPApplication{fakeApplication: &fakeApplication{}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuChangeIP)
+	mode := messenger.lastSent()
+	handleCallback(t, controller, "royal-mode", mode.keyboard.Inline[0][0].CallbackData, mode.message)
+	edits := messenger.editsSnapshot()
+	scope := edits[len(edits)-1]
+	handleCallback(t, controller, "without-node", scope.keyboard.Inline[1][0].CallbackData, mode.message)
+	handleMessage(t, controller, 2, "37.16.74.103")
+	handleMessage(t, controller, 3, "47.23.12.146")
+	password := &Message{ID: 4, ChatID: testChatID, FromUserID: testAllowedUser, Text: "root-secret"}
+	if err := controller.Handle(context.Background(), Update{Message: password}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.calls != 1 || application.input.ServerIP.String() != "37.16.74.103" || application.input.NewIP.String() != "47.23.12.146" || string(application.password) != "root-secret" {
+		t.Fatalf("Royal input=%#v calls=%d", application.input, application.calls)
+	}
+}
+
+func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	base := &fakeApplication{deployments: []DeploymentSummary{{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED"}}}
+	application := &fakeRecoveryApplication{fakeApplication: base, details: DeploymentDetails{DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "de-new-0", Status: "FAILED", CurrentStep: "prepare_certificate"}, SNI: "nl-modx-roy.nodexphere.net", CanRetryStep: true, CanRepairCert: true}, bootstrapResult: "Certificate ready"}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuDeployments)
+	list := messenger.lastSent()
+	handleCallback(t, controller, "open", list.keyboard.Inline[0][0].CallbackData, list.message)
+	edits := messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	if strings.Contains(card.text, deploymentID) || strings.Contains(card.text, "nl-modx-roy.nodexphere.net") {
+		t.Fatalf("card exposed values the operator should not copy manually: %q", card.text)
+	}
+	handleCallback(t, controller, "repair", card.keyboard.Inline[1][0].CallbackData, list.message)
+	controller.Wait()
+	if application.bootstrapSNI != "nl-modx-roy.nodexphere.net" || application.retryCalls != 1 {
+		t.Fatalf("repair used SNI=%q retries=%d", application.bootstrapSNI, application.retryCalls)
+	}
+}
+
+func TestDeploymentLogsButtonShowsDetailedJournalAndBackNavigation(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	started := time.Date(2026, 8, 17, 18, 20, 0, 0, time.UTC)
+	completed := started.Add(5 * time.Second)
+	summary := DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "node", Status: "FAILED", CurrentStep: "provisioning", SafeErrorCode: "PROVISIONING_FAILED", SafeError: "VPS provisioning failed", UpdatedAt: completed}
+	base := &fakeApplication{deployments: []DeploymentSummary{summary}}
+	application := &fakeRecoveryApplication{
+		fakeApplication: base,
+		details:         DeploymentDetails{DeploymentSummary: summary, CanRetryStep: true},
+		logs:            []DeploymentLogEntry{{Step: "logrotate", Status: "FAILED", Summary: "validation failed", Code: "E-PROVISIONING-LOGROTATE", StartedAt: &started, CompletedAt: &completed}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuDeployments)
+	list := messenger.lastSent()
+	handleCallback(t, controller, "open", list.keyboard.Inline[0][0].CallbackData, list.message)
+	edits := messenger.editsSnapshot()
+	card := edits[len(edits)-1]
+	handleCallback(t, controller, "logs", card.keyboard.Inline[0][0].CallbackData, list.message)
+	edits = messenger.editsSnapshot()
+	logs := edits[len(edits)-1]
+	if !strings.Contains(logs.text, "Подробный журнал") || !strings.Contains(logs.text, "E-PROVISIONING-LOGROTATE") {
+		t.Fatalf("logs = %q", logs.text)
+	}
+	if len(logs.keyboard.Inline) != 2 || logs.keyboard.Inline[0][0].Text != "🔄 Обновить журнал" || logs.keyboard.Inline[1][0].Text != "⬅️ К карточке" {
+		t.Fatalf("logs keyboard = %#v", logs.keyboard)
+	}
+}
+
 func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	profileReady := ReadinessReady
 	application := &fakeApplication{
@@ -94,7 +609,7 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 			DNSZone:                "edge.example.com",
 			CertificateReadiness:   ReadinessReady,
 			ConfigProfileReadiness: ReadinessReady,
-			SafeWarnings:           []string{"Docker will be installed"},
+			Warnings:               []OperatorNotice{{Code: "W-DOCKER-NOT-INSTALLED", Message: "Docker будет установлен автоматически"}},
 		},
 	}
 	messenger := &fakeMessenger{}
@@ -195,7 +710,7 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 			t.Fatalf("progress used another message: %#v", edit)
 		}
 	}
-	if got := edits[len(edits)-1].text; got != "✅ Deployment completed." {
+	if got := edits[len(edits)-1].text; !strings.Contains(got, "✅ Нода успешно развёрнута") || !strings.Contains(got, "Прогресс: 6/6") || !strings.Contains(got, "W-DOCKER-NOT-INSTALLED") {
 		t.Fatalf("final status = %q", got)
 	}
 }
@@ -287,6 +802,8 @@ type fakeApplication struct {
 	mu sync.Mutex
 
 	hosts           []Host
+	panels          []Panel
+	nodes           []NodeSummary
 	nameErr         error
 	addressErr      error
 	preflightResult PreflightResult
@@ -304,6 +821,7 @@ type fakeApplication struct {
 	preflightPassword   []byte
 	deploymentPassword  []byte
 	deploymentInput     DeploymentInput
+	deployments         []DeploymentSummary
 }
 
 type fakeRecoveryApplication struct {
@@ -313,10 +831,19 @@ type fakeRecoveryApplication struct {
 	bootstrapOperator int64
 	bootstrapResult   string
 	bootstrapErr      error
+	details           DeploymentDetails
+	retryCalls        int
+	logs              []DeploymentLogEntry
 }
 
-func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error { return nil }
-func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error        { return nil }
+func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error {
+	f.retryCalls++
+	return nil
+}
+func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error { return nil }
+func (f *fakeRecoveryApplication) GetDeploymentDetails(context.Context, string) (DeploymentDetails, error) {
+	return f.details, nil
+}
 
 func (f *fakeRecoveryApplication) RecheckRemnawave(context.Context, string) (string, error) {
 	return "checked", nil
@@ -329,9 +856,136 @@ type fakeNodeIPApplication struct {
 	replaceErr   error
 	replaceCalls int
 	input        NodeIPChangeInput
+	findPanel    string
+	findQuery    string
 }
 
-func (f *fakeNodeIPApplication) FindNodeForIPChange(context.Context, string) (NodeIPChangeTarget, error) {
+type fakeAllNodeIPApplication struct {
+	*fakeNodeIPApplication
+}
+
+type fakeDNSSyncApplication struct {
+	*fakeApplication
+	target    NodeDNSSyncTarget
+	findErr   error
+	result    NodeDNSSyncResult
+	syncErr   error
+	syncCalls int
+	input     NodeDNSSyncInput
+}
+
+type fakeNodeHostMoveApplication struct {
+	*fakeApplication
+	target     NodeHostMoveTarget
+	hosts      []Host
+	result     NodeHostMoveResult
+	prepareErr error
+	moveErr    error
+	moveCalls  int
+	input      NodeHostMoveInput
+}
+
+type fakeCherryIPApplication struct {
+	*fakeApplication
+	calls    int
+	input    CherryIPInput
+	password []byte
+}
+
+type fakeCherryNodeApplication struct {
+	*fakeApplication
+	target         NodeIPChangeTarget
+	findErr        error
+	replaceErr     error
+	findPanel      string
+	replaceCalls   int
+	replaceInput   NodeIPChangeInput
+	cherryCalls    int
+	cherryInput    CherryIPInput
+	cherryPassword []byte
+}
+
+type fakeRoyalNodeApplication struct {
+	*fakeApplication
+	target        NodeIPChangeTarget
+	replaceCalls  int
+	replaceInput  NodeIPChangeInput
+	royalCalls    int
+	royalInput    RoyalIPInput
+	royalPassword []byte
+}
+
+type fakeRoyalIPApplication struct {
+	*fakeApplication
+	calls    int
+	input    RoyalIPInput
+	password []byte
+}
+
+func (f *fakeCherryIPApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
+	f.calls++
+	f.input = input
+	f.input.Password = nil
+	f.password = append([]byte(nil), input.Password...)
+	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeCherryNodeApplication) FindNodeForIPChange(_ context.Context, panelID, _ string) (NodeIPChangeTarget, error) {
+	f.findPanel = panelID
+	return f.target, f.findErr
+}
+
+func (f *fakeCherryNodeApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
+	f.replaceCalls++
+	f.replaceInput = input
+	return "Нода и DNS обновлены", f.replaceErr
+}
+
+func (f *fakeCherryNodeApplication) ConfigureCherryIP(_ context.Context, input CherryIPInput) (CherryIPResult, error) {
+	f.cherryCalls++
+	f.cherryInput = input
+	f.cherryInput.Password = nil
+	f.cherryPassword = append([]byte(nil), input.Password...)
+	return CherryIPResult{Interface: "ens3", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeRoyalNodeApplication) FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error) {
+	return f.target, nil
+}
+
+func (f *fakeRoyalNodeApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
+	f.replaceCalls++
+	f.replaceInput = input
+	return "Нода и DNS обновлены", nil
+}
+
+func (f *fakeRoyalNodeApplication) ConfigureRoyalIP(_ context.Context, input RoyalIPInput) (RoyalIPResult, error) {
+	f.royalCalls++
+	f.royalInput = input
+	f.royalInput.Password = nil
+	f.royalPassword = append([]byte(nil), input.Password...)
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
+}
+
+func (f *fakeRoyalIPApplication) ConfigureRoyalIP(_ context.Context, input RoyalIPInput) (RoyalIPResult, error) {
+	f.calls++
+	f.input = input
+	f.input.Password = nil
+	f.password = append([]byte(nil), input.Password...)
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("47.23.12.1"), NetplanFile: "/etc/netplan/50-cloud-init.yaml", BackupFile: "/etc/netplan/50-cloud-init.yaml.bak-royalbot"}, nil
+}
+
+func (f *fakeAllNodeIPApplication) ConfigureCherryIP(context.Context, CherryIPInput) (CherryIPResult, error) {
+	return CherryIPResult{Interface: "eth0", LiveConfigured: true, Persistent: true}, nil
+}
+
+func (f *fakeAllNodeIPApplication) ConfigureRoyalIP(context.Context, RoyalIPInput) (RoyalIPResult, error) {
+	return RoyalIPResult{Interface: "eth0", PrefixBits: 24, Gateway: netip.MustParseAddr("8.8.8.1")}, nil
+}
+
+func (f *fakeNodeIPApplication) FindNodeForIPChange(_ context.Context, panelID, query string) (NodeIPChangeTarget, error) {
+	f.findPanel = panelID
+	f.findQuery = query
 	return f.target, f.findErr
 }
 func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPChangeInput) (string, error) {
@@ -339,8 +993,30 @@ func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPCha
 	f.input = input
 	return "IP изменён", f.replaceErr
 }
-func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]string, error) {
-	return nil, nil
+
+func (f *fakeDNSSyncApplication) FindNodeForDNSSync(context.Context, string, string) (NodeDNSSyncTarget, error) {
+	return f.target, f.findErr
+}
+
+func (f *fakeDNSSyncApplication) SyncNodeDNS(_ context.Context, input NodeDNSSyncInput) (NodeDNSSyncResult, error) {
+	f.syncCalls++
+	f.input = input
+	return f.result, f.syncErr
+}
+
+func (f *fakeNodeHostMoveApplication) PrepareNodeHostMove(context.Context, string, string) (NodeHostMoveTarget, []Host, error) {
+	return f.target, append([]Host(nil), f.hosts...), f.prepareErr
+}
+
+func (f *fakeNodeHostMoveApplication) MoveNodeToHost(_ context.Context, input NodeHostMoveInput) (NodeHostMoveResult, error) {
+	f.moveCalls++
+	f.input = input
+	f.input.ExpectedInboundUUIDs = append([]string(nil), input.ExpectedInboundUUIDs...)
+	f.input.Password = append([]byte(nil), input.Password...)
+	return f.result, f.moveErr
+}
+func (f *fakeRecoveryApplication) ViewSafeLogs(context.Context, string) ([]DeploymentLogEntry, error) {
+	return append([]DeploymentLogEntry(nil), f.logs...), nil
 }
 func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni string, operatorUserID int64) (string, error) {
 	f.bootstrapCalls++
@@ -349,21 +1025,28 @@ func (f *fakeRecoveryApplication) BootstrapCertificate(_ context.Context, sni st
 	return f.bootstrapResult, f.bootstrapErr
 }
 
-func (f *fakeApplication) ListHosts(context.Context) ([]Host, error) {
+func (f *fakeApplication) ListPanels(context.Context) ([]Panel, error) {
+	if len(f.panels) != 0 {
+		return append([]Panel(nil), f.panels...), nil
+	}
+	return []Panel{{ID: "default", Name: "Default", DNSEnabled: true}}, nil
+}
+
+func (f *fakeApplication) ListHosts(context.Context, string) ([]Host, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listHostCalls++
 	return append([]Host(nil), f.hosts...), nil
 }
 
-func (f *fakeApplication) CheckNodeName(_ context.Context, _ string) error {
+func (f *fakeApplication) CheckNodeName(_ context.Context, _, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nameChecks++
 	return f.nameErr
 }
 
-func (f *fakeApplication) CheckVPSAddress(_ context.Context, _ netip.Addr) error {
+func (f *fakeApplication) CheckVPSAddress(_ context.Context, _ string, _ netip.Addr) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addressChecks++
@@ -385,10 +1068,10 @@ func (f *fakeApplication) StartDeployment(_ context.Context, input DeploymentInp
 	f.deploymentInput = input
 	f.deploymentInput.Password = nil
 	f.mu.Unlock()
-	if err := progress(Progress{Step: "preflight", Completed: 1, Total: 2, SafeMessage: "Preflight complete"}); err != nil {
+	if err := progress(Progress{Step: "preflight", Completed: 1, Total: 2, SafeMessage: "Preflight complete", Status: ProgressCompleted}); err != nil {
 		return err
 	}
-	if err := progress(Progress{Step: "provisioning", Completed: 2, Total: 2, SafeMessage: "Provisioning complete"}); err != nil {
+	if err := progress(Progress{Step: "provisioning", Completed: 2, Total: 2, SafeMessage: "Provisioning complete", Status: ProgressCompleted}); err != nil {
 		return err
 	}
 	return f.deployErr
@@ -405,14 +1088,14 @@ func (f *fakeApplication) ListNodes(context.Context) ([]NodeSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listNodeCalls++
-	return nil, nil
+	return append([]NodeSummary(nil), f.nodes...), nil
 }
 
 func (f *fakeApplication) ListDeployments(context.Context, int) ([]DeploymentSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listDeploymentCalls++
-	return nil, nil
+	return append([]DeploymentSummary(nil), f.deployments...), nil
 }
 
 func (f *fakeApplication) totalCalls() int {
@@ -448,6 +1131,7 @@ type fakeMessenger struct {
 	deleted   [][2]int64
 	answers   []callbackAnswer
 	deleteErr error
+	editErr   error
 }
 
 func (f *fakeMessenger) SendMessage(_ context.Context, chatID int64, text string, keyboard Keyboard) (Message, error) {
@@ -463,7 +1147,7 @@ func (f *fakeMessenger) EditMessage(_ context.Context, chatID int64, messageID i
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, editRecord{chatID: chatID, messageID: messageID, text: text, keyboard: keyboard})
-	return nil
+	return f.editErr
 }
 
 func (f *fakeMessenger) DeleteMessage(_ context.Context, chatID int64, messageID int) error {

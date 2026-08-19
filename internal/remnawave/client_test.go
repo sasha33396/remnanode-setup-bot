@@ -36,6 +36,8 @@ func TestClientNormalResponses(t *testing.T) {
 			fmt.Fprint(w, `{"response":[`+nodeJSON(testNodeUUID, "node-1", "192.0.2.10", true)+`]}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/"+testNodeUUID:
 			fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "192.0.2.10", true)+`}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/system/nodes/metrics":
+			fmt.Fprint(w, `{"response":{"nodes":[{"nodeUuid":"`+testNodeUUID+`","nodeName":"node-1","countryEmoji":"🇩🇪","providerName":"test","usersOnline":347,"inboundsStats":[],"outboundsStats":[]}]}}`)
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/nodes/"+testNodeUUID:
 			fmt.Fprint(w, `{"response":{"isDeleted":true}}`)
 		default:
@@ -61,6 +63,10 @@ func TestClientNormalResponses(t *testing.T) {
 	node, err := client.GetNode(ctx, testNodeUUID)
 	if err != nil || node.UUID != testNodeUUID || node.LastStatusChange == nil {
 		t.Fatalf("GetNode() = %#v, %v", node, err)
+	}
+	metrics, err := client.GetNodesMetrics(ctx)
+	if err != nil || len(metrics) != 1 || metrics[0].NodeUUID != testNodeUUID || metrics[0].UsersOnline != 347 {
+		t.Fatalf("GetNodesMetrics() = %#v, %v", metrics, err)
 	}
 	deleted, err := client.DeleteNode(ctx, testNodeUUID)
 	if err != nil || !deleted {
@@ -144,6 +150,43 @@ func TestUpdateNodeAddressSendsMinimalContract(t *testing.T) {
 	node, err := client.UpdateNodeAddress(context.Background(), UpdateNodeAddressInput{UUID: testNodeUUID, Address: netip.MustParseAddr("198.51.100.20")})
 	if err != nil || node.Address != "198.51.100.20" {
 		t.Fatalf("UpdateNodeAddress() = %#v, %v", node, err)
+	}
+}
+
+func TestUpdateNodeProfileUsesValidatedHostContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/nodes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			UUID          string            `json:"uuid"`
+			ConfigProfile NodeConfigProfile `json:"configProfile"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.UUID != testNodeUUID || body.ConfigProfile.ActiveConfigProfileUUID != testProfileUUID ||
+			len(body.ConfigProfile.ActiveInbounds) != 1 || body.ConfigProfile.ActiveInbounds[0] != testInboundUUID {
+			t.Errorf("PATCH body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "198.51.100.20", true)+`}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	host := Host{Address: "de.example.com", Inbound: HostInbound{ConfigProfileUUID: stringPointer(testProfileUUID), ConfigProfileInboundUUID: stringPointer(testInboundUUID)}}
+	node, err := client.UpdateNodeProfile(context.Background(), UpdateNodeProfileInput{UUID: testNodeUUID, Host: host})
+	if err != nil || node.UUID != testNodeUUID {
+		t.Fatalf("UpdateNodeProfile() = %#v, %v", node, err)
+	}
+}
+
+func TestUpdateNodeProfileRejectsDisabledHost(t *testing.T) {
+	client := newTestClient(t, "https://panel.example.com", time.Second)
+	host := Host{Address: "de.example.com", IsDisabled: true, Inbound: HostInbound{ConfigProfileUUID: stringPointer(testProfileUUID), ConfigProfileInboundUUID: stringPointer(testInboundUUID)}}
+	if _, err := client.UpdateNodeProfile(context.Background(), UpdateNodeProfileInput{UUID: testNodeUUID, Host: host}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("UpdateNodeProfile() error = %v, want ErrInvalidInput", err)
 	}
 }
 

@@ -4,6 +4,105 @@ This file contains safe, version-controlled context for continuing development
 on another device. It must never contain tokens, passwords, private keys, or
 other secret values.
 
+## Current active work — 2026-08-18 (authoritative)
+
+This section supersedes older `Current stage` sections retained below as
+historical context.
+
+- Active branch: `codex/live-deployment-progress`
+- Remote branch: `origin/codex/live-deployment-progress`
+- Feature tip before the Host-move work: `b498d4c`
+
+Continue the current work with:
+
+```sh
+git fetch origin
+git switch codex/live-deployment-progress
+git pull --ff-only
+```
+
+### Current Telegram Node operations
+
+- **Ноды** first shows one button per Remnawave panel; Nodes from different
+  panels are never mixed in one list.
+- Each panel separates Nodes into critically low online, disabled, and
+  active/stable groups. Group buttons display live counts and each Node opens
+  an operator-safe card.
+- A connected, enabled Node is critical when `usersOnline <= 50`. This is a
+  fixed configurable threshold; panel median and Node count are not used.
+- Disabled Nodes are medium priority. Disconnected/connecting Nodes and Nodes
+  without a fresh metric are excluded from low-online alerts because connection
+  loss is monitored separately.
+- Live online counts come from Remnawave `GET /api/system/nodes/metrics` and are
+  joined to `/api/nodes` by UUID. A temporary metrics failure does not make the
+  inventory unavailable; affected Nodes are excluded until metrics recover.
+- Background checks run every 5 minutes. Two consecutive critical samples are
+  required. While critical, alerts repeat every 15 minutes to every ID in
+  `TELEGRAM_ALLOWED_USERS`; recovery generates a separate message.
+- Temporary connection/metrics gaps retain incident state and do not cause a
+  duplicate alert after reconnection.
+- Critical alerts and manually opened cards include **Изменить IP ноды**. It
+  resolves the selected Node and panel again and verifies the UUID before any
+  workflow starts.
+- The selected-Node IP menu exposes every available main-menu method:
+  **Панель + DNS-балансировка**, **Cherry (сервер)**, and **Royal (сервер)**.
+  Managed and legacy Nodes use the same safe resolution path.
+- Cherry/Royal paths reuse the selected Node's current public IPv4 as the SSH
+  target, request the new provider-specific IP and transient root password,
+  configure the server, then update that same Remnawave Node and DNS zones.
+- Managed and legacy Node cards, including cards opened from critical alerts,
+  expose **Переместить между Host**. The picker contains only enabled Hosts with
+  a complete profile/inbound mapping from the Node's current panel.
+- A Host move requests a transient root password, verifies the old xray-sni
+  state, prepares the new Host certificate, atomically changes
+  `/opt/xray-sni/.env` plus the certificate pair, recreates the Compose service,
+  and validates local TLS. Only then does it change the Node's active config
+  profile and inbound through `PATCH /api/nodes`; its IP remains untouched.
+  Managed deployments also persist the new Host UUID, remark, and SNI so later
+  certificate and DNS-sync operations do not reuse the previous subdomain.
+  Failed server activation restores the old environment/certificate, and a
+  failed Remnawave update triggers a best-effort rollback to the old Host.
+- UUIDs and the password stay in transient server-side state. The Node and Host
+  are fetched again at confirmation and a stale profile fingerprint aborts the
+  operation safely.
+
+Relevant recent commits:
+
+```text
+0ed6b9f feat: move nodes between panel hosts
+8837950 feat: offer hoster IP workflows from node alerts
+e7ac3c5 fix: use fixed critical node online threshold
+580b147 feat: start node IP changes from health cards
+4165aa0 fix: repeat critical node alerts every 15 minutes
+a8d7c62 feat: add panel-aware node health monitoring
+64aa40e fix: always report DNS synchronization results
+```
+
+### Node-monitor environment
+
+The server `.env` is ignored by Git and is not changed by `git pull`. Keep these
+explicit values in the server `.env`:
+
+```env
+NODE_MONITOR_INTERVAL=5m
+NODE_CRITICAL_ALERT_INTERVAL=15m
+NODE_MONITOR_CONFIRMATIONS=2
+NODE_CRITICAL_ONLINE_THRESHOLD=50
+```
+
+The obsolete `NODE_CRITICAL_ONLINE_FLOOR`,
+`NODE_CRITICAL_ONLINE_RATIO`, and `NODE_CRITICAL_ONLINE_CAP` variables are no
+longer read and may be removed.
+
+After pulling on the server:
+
+```sh
+docker compose up -d --build
+```
+
+The full Go test suite and `go vet ./...` passed after the selected-Node hoster
+workflow was added. Re-run both before further commits.
+
 ## Repository workflow
 
 - Repository: `sasha33396/remnanode-setup-bot`

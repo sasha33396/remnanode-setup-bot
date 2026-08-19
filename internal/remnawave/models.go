@@ -51,6 +51,15 @@ type Node struct {
 	ActiveInboundUUIDs      []string
 }
 
+// NodeMetric is the per-Node online snapshot returned by the system metrics
+// endpoint. It is kept separate from Node because /api/nodes does not expose
+// live usersOnline values.
+type NodeMetric struct {
+	NodeUUID    string
+	NodeName    string
+	UsersOnline int
+}
+
 // CreateNodeInput contains operator input plus the selected Host. The API port
 // and Node config profile are deliberately not caller-controlled.
 type CreateNodeInput struct {
@@ -63,4 +72,11 @@ type CreateNodeInput struct {
 type UpdateNodeAddressInput struct {
 	UUID    string
 	Address netip.Addr
+}
+
+// UpdateNodeProfileInput changes the active config profile and inbounds of an
+// existing Node to the validated mapping owned by a Host.
+type UpdateNodeProfileInput struct {
+	UUID string
+	Host Host
 }

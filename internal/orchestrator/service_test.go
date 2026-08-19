@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"remnanode-setup-bot/internal/certificates"
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/provisioner"
@@ -63,6 +65,34 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 	}
 }
 
+func TestDeploymentCompletesWithExplicitSkippedDNSForDisabledPanel(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.service.config.PanelID = "test"
+	fixture.service.config.DNSDisabled = true
+	prepared := fixture.prepare(t, "node-without-dns", "8.8.4.4")
+	if prepared.Deployment.PanelID != "test" {
+		t.Fatalf("panel ID = %q", prepared.Deployment.PanelID)
+	}
+	if len(prepared.Warnings) != 1 || prepared.Warnings[0].Code != "W-DNS-DISABLED" {
+		t.Fatalf("warnings = %#v", prepared.Warnings)
+	}
+	var progress []Progress
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), func(update Progress) { progress = append(progress, update) }); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.dns.addCalls != 0 {
+		t.Fatalf("DNS add calls = %d", fixture.dns.addCalls)
+	}
+	step := fixture.repo.steps[prepared.Deployment.ID][stepAddDNS]
+	if step.Status != deployment.StepStatusSkipped {
+		t.Fatalf("DNS step = %#v", step)
+	}
+	last := progress[len(progress)-1]
+	if last.Status != deployment.StepStatusSkipped || last.Code != "W-DNS-DISABLED" {
+		t.Fatalf("last progress = %#v", last)
+	}
+}
+
 func TestReplaceNodeIPUpdatesPanelThenDNSAndPersistence(t *testing.T) {
 	fixture := newFixture(t)
 	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
@@ -107,6 +137,241 @@ func TestReplaceNodeIPSupportsLegacyNodeAndAllMatchingZones(t *testing.T) {
 	}
 }
 
+func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
+	fixture := newFixture(t)
+	secondHostUUID := "55555555-5555-4555-8555-555555555555"
+	secondProfileUUID := "66666666-6666-4666-8666-666666666666"
+	secondInboundUUID := "77777777-7777-4777-8777-777777777777"
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8",
+		ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID},
+	}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old-host", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: secondHostUUID, Remark: "new-host", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || target.Managed || !target.CurrentHostKnown || target.CurrentHostRemark != "old-host" || len(options) != 1 || options[0].UUID != secondHostUUID {
+		t.Fatalf("PrepareNodeHostMove() = %#v, %#v, %v", target, options, err)
+	}
+	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{
+		NodeUUID: testNodeUUID, TargetHostUUID: secondHostUUID,
+		ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID,
+		ExpectedInboundUUIDs:      target.ExpectedInboundUUIDs,
+		Password:                  []byte("temporary-password"),
+	})
+	if err != nil || result.Managed || result.TargetHost != "new-host" || !result.PreviousHostKnown {
+		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+	if len(fixture.sni.inputs) != 1 || fixture.sni.inputs[0].PreviousSNI != "old.example.com" || fixture.sni.inputs[0].TargetSNI != "new.example.com" || string(fixture.sni.inputs[0].Password) != "temporary-password" {
+		t.Fatalf("SNI switch inputs = %#v", fixture.sni.inputs)
+	}
+	if got := fixture.remnawave.nodes[0]; got.ActiveConfigProfileUUID == nil || *got.ActiveConfigProfileUUID != secondProfileUUID || len(got.ActiveInboundUUIDs) != 1 || got.ActiveInboundUUIDs[0] != secondInboundUUID || got.Address != "8.8.8.8" {
+		t.Fatalf("updated Node = %#v", got)
+	}
+}
+
+func TestMoveNodeToHostMarksManagedNode(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default",
+		SelectedRemnawaveHostUUID: testHostUUID, SelectedHostRemark: "old", SNIDomain: "old.example.com",
+		RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted,
+	}
+	fixture.repo.items[item.ID] = item
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "managed", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || !target.Managed || len(options) != 1 {
+		t.Fatalf("PrepareNodeHostMove() = %#v, %#v, %v", target, options, err)
+	}
+	result, err := fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
+	if err != nil || !result.Managed {
+		t.Fatalf("MoveNodeToHost() = %#v, %v", result, err)
+	}
+	persisted := fixture.repo.items[item.ID]
+	if persisted.SelectedRemnawaveHostUUID != options[0].UUID || persisted.SelectedHostRemark != "target" || persisted.SNIDomain != "new.example.com" {
+		t.Fatalf("persisted Host binding = %#v", persisted)
+	}
+}
+
+func TestMoveNodeToHostRejectsStaleProfile(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || len(options) != 1 {
+		t.Fatal(err)
+	}
+	newInbound := "88888888-8888-4888-8888-888888888888"
+	fixture.remnawave.nodes[0].ActiveInboundUUIDs = []string{newInbound}
+	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
+	if !errors.Is(err, ErrNodeStateChanged) || len(fixture.remnawave.profileUpdates) != 0 {
+		t.Fatalf("MoveNodeToHost() error = %v, updates = %d", err, len(fixture.remnawave.profileUpdates))
+	}
+}
+
+func TestMoveNodeToHostDoesNotChangeRemnawaveWhenServerSNIFails(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	secondProfileUUID, secondInboundUUID := "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "8.8.8.8", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "old", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "target", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
+	}
+	fixture.sni.err = ErrNodeSNISwitchFailed
+	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
+	if err != nil || len(options) != 1 {
+		t.Fatal(err)
+	}
+	_, err = fixture.service.MoveNodeToHost(context.Background(), NodeHostMoveInput{NodeUUID: testNodeUUID, TargetHostUUID: options[0].UUID, ExpectedConfigProfileUUID: target.ExpectedConfigProfileUUID, ExpectedInboundUUIDs: target.ExpectedInboundUUIDs, Password: []byte("temporary-password")})
+	if !errors.Is(err, ErrNodeSNISwitchFailed) || len(fixture.remnawave.profileUpdates) != 0 {
+		t.Fatalf("MoveNodeToHost() error = %v, profile updates = %d", err, len(fixture.remnawave.profileUpdates))
+	}
+}
+
+func TestSyncNodeDNSUsesRemnawaveAddressAndReplacesPersistedIP(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1", IsConnected: true}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8", "9.9.9.9"}}}}
+
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "node")
+	if err != nil || !target.CanSync || target.CurrentPresent || !target.PreviousPresent || target.Address.String() != "1.1.1.1" {
+		t.Fatalf("FindNodeForDNSSync() = %#v, %v", target, err)
+	}
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if err != nil || result.Action != DNSSyncReplaced {
+		t.Fatalf("SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[0] != "1.1.1.1" || got[1] != "9.9.9.9" {
+		t.Fatalf("DNS IPs = %v", got)
+	}
+	if got := fixture.repo.mustGet(item.ID).TargetVPSIP.String(); got != "1.1.1.1" {
+		t.Fatalf("persisted IP = %s", got)
+	}
+	if got := fixture.remnawave.nodes[0].Address; got != "1.1.1.1" {
+		t.Fatalf("Remnawave address changed = %s", got)
+	}
+}
+
+func TestSyncNodeDNSAddsRemnawaveIPWhenNoOldAddressExists(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", NodeName: "node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"9.9.9.9"}}}}
+
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: netip.MustParseAddr("1.1.1.1")})
+	if err != nil || result.Action != DNSSyncAdded {
+		t.Fatalf("SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[1] != "1.1.1.1" {
+		t.Fatalf("DNS IPs = %v", got)
+	}
+}
+
+func TestSyncNodeDNSRejectsLegacyNodeWithoutTargetZone(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "1.1.1.1"}}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "legacy")
+	if err != nil || target.Managed || target.CanSync || target.Address.String() != "1.1.1.1" {
+		t.Fatalf("legacy target = %#v, %v", target, err)
+	}
+	_, err = fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if !errors.Is(err, ErrDNSTargetUnknown) {
+		t.Fatalf("SyncNodeDNS() error = %v, want ErrDNSTargetUnknown", err)
+	}
+}
+
+func TestSyncNodeDNSInfersLegacyZoneFromMatchingHostProfileAndInbound(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID:                    testNodeUUID,
+		Name:                    "de-10-cherry",
+		Address:                 "88.216.70.55",
+		IsConnected:             true,
+		ActiveConfigProfileUUID: &profileUUID,
+		ActiveInboundUUIDs:      []string{inboundUUID},
+	}}
+	fixture.remnawave.hosts = []remnawave.Host{{
+		UUID:    testHostUUID,
+		Remark:  "VLESS-REALITY-DE-SELFST",
+		Address: "de-modx.nodexphere.net",
+		Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID},
+	}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "de-modx.nodexphere.net", Zone: dnsbalancer.Zone{IPs: []string{"9.9.9.9"}}}}
+
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "88.216.70.55")
+	if err != nil || target.Managed || !target.CanSync || target.DNSZone != "de-modx.nodexphere.net" || target.CurrentPresent {
+		t.Fatalf("inferred legacy target = %#v, %v", target, err)
+	}
+	result, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if err != nil || result.Action != DNSSyncAdded || result.DNSZone != "de-modx.nodexphere.net" {
+		t.Fatalf("legacy SyncNodeDNS() = %#v, %v", result, err)
+	}
+	if got := fixture.dns.zones[0].Zone.IPs; len(got) != 2 || got[1] != "88.216.70.55" {
+		t.Fatalf("legacy DNS IPs = %v", got)
+	}
+}
+
+func TestSyncNodeDNSRejectsAmbiguousLegacyHostSNI(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy", Address: "1.1.1.1", ActiveConfigProfileUUID: &profileUUID, ActiveInboundUUIDs: []string{inboundUUID}}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Address: "one.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+		{UUID: "44444444-4444-4444-8444-444444444444", Address: "two.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
+	}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "legacy")
+	if err != nil || target.CanSync || !strings.Contains(target.Note, "неоднозначен") {
+		t.Fatalf("ambiguous legacy target = %#v, %v", target, err)
+	}
+}
+
+func TestSyncNodeDNSDoesNotGuessMissingAdvancedNodeAddress(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID)}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{Nodes: []dnsbalancer.ZoneNode{{IP: "9.9.9.9", Address: "100.64.0.1"}}}}}
+	target, err := fixture.service.FindNodeForDNSSync(context.Background(), "node")
+	if err != nil || target.CanSync || !strings.Contains(target.Note, "нельзя угадать") {
+		t.Fatalf("advanced target = %#v, %v", target, err)
+	}
+	_, err = fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: target.Address})
+	if !errors.Is(err, ErrDNSTargetUnknown) {
+		t.Fatalf("advanced SyncNodeDNS() error = %v", err)
+	}
+}
+
+func TestSyncNodeDNSRejectsStaleRemnawavePreview(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", SNIDomain: "edge.example.com", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID)}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "node", Address: "1.1.1.1"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}}}
+	_, err := fixture.service.SyncNodeDNS(context.Background(), NodeDNSSyncInput{NodeUUID: testNodeUUID, ExpectedIP: netip.MustParseAddr("4.4.4.4")})
+	if !errors.Is(err, ErrNodeIPChangeFailed) || fixture.dns.addCalls != 0 {
+		t.Fatalf("stale SyncNodeDNS() error = %v, DNS adds = %d", err, fixture.dns.addCalls)
+	}
+}
+
 func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.vps.provisionErr = errors.New("protected provisioner details")
@@ -121,6 +386,95 @@ func TestDeploymentServiceProvisioningFailureStopsBeforeNodeCreation(t *testing.
 	}
 	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "VPS provisioning failed" {
 		t.Fatalf("safe error = %#v", stored.SafeErrorMessage)
+	}
+	logs, logsErr := fixture.service.SafeLogs(context.Background(), prepared.Deployment.ID)
+	if logsErr != nil {
+		t.Fatal(logsErr)
+	}
+	foundCodedFailure := false
+	for _, entry := range logs {
+		if entry.Step == stepProvisioning && entry.Status == string(deployment.StepStatusFailed) && entry.Code == "PROVISIONING_FAILED" {
+			foundCodedFailure = true
+		}
+	}
+	if !foundCodedFailure {
+		t.Fatalf("safe logs have no coded provisioning failure: %#v", logs)
+	}
+}
+
+func TestDeploymentServicePreservesOnlyTrustedProvisioningPhase(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.vps.provisionErr = provisioningPhase("xray-sni adapter could not be initialized")
+	prepared := fixture.prepare(t, "phase-failure", "1.1.1.2")
+	err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil)
+	if !errors.Is(err, ErrProvisioningFailed) {
+		t.Fatalf("Deploy() error = %v, want ErrProvisioningFailed", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "xray-sni adapter could not be initialized" {
+		t.Fatalf("safe provisioning message = %#v", stored.SafeErrorMessage)
+	}
+}
+
+func TestDeploymentServiceClassifiesCertificateIssuanceFailure(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.cert.err = certmanager.ErrIssuanceFailed
+	prepared := fixture.prepare(t, "node-cert-fail", "8.8.4.4")
+	err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil)
+	if !errors.Is(err, ErrCertificateUnavailable) {
+		t.Fatalf("Deploy() error = %v, want ErrCertificateUnavailable", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.SafeErrorCode == nil || *stored.SafeErrorCode != "CERTIFICATE_ISSUANCE_FAILED" {
+		t.Fatalf("safe error code = %#v", stored.SafeErrorCode)
+	}
+	if stored.SafeErrorMessage == nil || *stored.SafeErrorMessage != "Certificate is not ready" {
+		t.Fatalf("safe error message = %#v", stored.SafeErrorMessage)
+	}
+	if fixture.vps.provisionCalls != 0 || fixture.remnawave.createCalls != 0 || fixture.dns.addCalls != 0 {
+		t.Fatal("deployment continued after certificate issuance failure")
+	}
+}
+
+func TestMultiPanelCertificateBootstrapResolvesPanelFromHostSNI(t *testing.T) {
+	events := &eventLog{}
+	repo := newMemoryRepository()
+	mainCert := &fakeCertificateProvider{events: events, readiness: CertificateReady}
+	hordaCert := &fakeCertificateProvider{
+		events: events, readiness: CertificateReady,
+		bootstrapResult: certmanager.BootstrapResult{SNI: "direct-nl.bachidze.com", Version: "v1"},
+	}
+	newPanelService := func(panelID string, host remnawave.Host, cert *fakeCertificateProvider) *DeploymentService {
+		api := &fakeRemnawave{events: events, hosts: []remnawave.Host{host}, secret: "generated-secret"}
+		service, err := NewDeploymentService(repo, api, &fakeDNS{events: events}, cert, &fakeVPS{events: events}, Config{PanelID: panelID, MaxConcurrentDeployments: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	host := func(address string) remnawave.Host {
+		return remnawave.Host{
+			UUID: testHostUUID, Remark: address, Address: address,
+			Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID},
+		}
+	}
+	app, err := NewMultiPanelTelegramApplication([]PanelApplicationConfig{
+		{ID: "main", Name: "Main", Service: newPanelService("main", host("main.example.com"), mainCert)},
+		{ID: "horda", Name: "Horda", Service: newPanelService("horda", host("direct-nl.bachidze.com"), hordaCert)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.BootstrapCertificate(context.Background(), "DIRECT-NL.BACHIDZE.COM.", 42)
+	if err != nil {
+		t.Fatalf("BootstrapCertificate() error = %v, result = %q", err, result)
+	}
+	if mainCert.bootstrapCalls != 0 || hordaCert.bootstrapCalls != 1 {
+		t.Fatalf("bootstrap calls: main=%d horda=%d", mainCert.bootstrapCalls, hordaCert.bootstrapCalls)
+	}
+	if !strings.Contains(result, "direct-nl.bachidze.com") {
+		t.Fatalf("bootstrap result = %q", result)
 	}
 }
 
@@ -290,6 +644,7 @@ type fixture struct {
 	cert      *fakeCertificateProvider
 	dns       *fakeDNS
 	events    *eventLog
+	sni       *fakeNodeSNISwitcher
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -312,11 +667,23 @@ func newFixture(t *testing.T) *fixture {
 	vps := &fakeVPS{events: events, preflightResult: provisioner.PreflightResult{SSHConnected: true}}
 	cert := &fakeCertificateProvider{events: events, readiness: CertificateReady, material: certificates.Material{FullchainPEM: []byte("certificate"), PrivateKeyPEM: []byte("private-key")}}
 	dns := &fakeDNS{events: events}
-	service, err := NewDeploymentService(repo, remnawaveAPI, dns, cert, vps, Config{MaxConcurrentDeployments: 2, NodeConnectTimeout: time.Second, InitialPollBackoff: time.Millisecond, MaxPollBackoff: 2 * time.Millisecond})
+	sni := &fakeNodeSNISwitcher{}
+	service, err := NewDeploymentService(repo, remnawaveAPI, dns, cert, vps, Config{MaxConcurrentDeployments: 2, NodeConnectTimeout: time.Second, InitialPollBackoff: time.Millisecond, MaxPollBackoff: 2 * time.Millisecond, NodeSNISwitcher: sni})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{service: service, repo: repo, remnawave: remnawaveAPI, vps: vps, cert: cert, dns: dns, events: events}
+	return &fixture{service: service, repo: repo, remnawave: remnawaveAPI, vps: vps, cert: cert, dns: dns, events: events, sni: sni}
+}
+
+type fakeNodeSNISwitcher struct {
+	inputs []NodeSNISwitchInput
+	err    error
+}
+
+func (f *fakeNodeSNISwitcher) SwitchNodeSNI(_ context.Context, input NodeSNISwitchInput) error {
+	input.Password = append([]byte(nil), input.Password...)
+	f.inputs = append(f.inputs, input)
+	return f.err
 }
 
 func (f *fixture) prepare(t *testing.T, name, ip string) PreparedDeployment {
@@ -395,7 +762,11 @@ func (r *memoryRepository) CreateDeployment(_ context.Context, params repository
 	r.nextID++
 	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", r.nextID)
 	now := time.Now()
-	item := deployment.Deployment{ID: id, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
+	panelID := params.PanelID
+	if panelID == "" {
+		panelID = "default"
+	}
+	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
 	r.items[id] = item
 	return item, nil
 }
@@ -449,6 +820,21 @@ func (r *memoryRepository) SetTargetVPSIP(_ context.Context, id string, address 
 	return item, nil
 }
 
+func (r *memoryRepository) SetNodeHostBinding(_ context.Context, id string, params repository.SetNodeHostBindingParams) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[id]
+	if !found {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.SelectedRemnawaveHostUUID = params.HostUUID
+	item.SelectedHostRemark = params.HostRemark
+	item.SNIDomain = params.SNIDomain
+	item.UpdatedAt = time.Now()
+	r.items[id] = item
+	return item, nil
+}
+
 func (r *memoryRepository) RecordDeploymentStep(_ context.Context, params repository.RecordStepParams) (deployment.Step, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -495,6 +881,17 @@ func (r *memoryRepository) FindUnfinishedDeployments(context.Context, int) ([]de
 	return result, nil
 }
 
+func (r *memoryRepository) FindDeploymentByPanelNodeUUID(_ context.Context, panelID, nodeUUID string) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, item := range r.items {
+		if (item.PanelID == panelID || (item.PanelID == "" && panelID == "default")) && item.RemnawaveNodeUUID != nil && *item.RemnawaveNodeUUID == nodeUUID {
+			return item, nil
+		}
+	}
+	return deployment.Deployment{}, repository.ErrNotFound
+}
+
 func (r *memoryRepository) mustGet(id string) deployment.Deployment {
 	item, err := r.GetDeployment(context.Background(), id)
 	if err != nil {
@@ -529,6 +926,7 @@ type fakeRemnawave struct {
 	pollIndex        int
 	alwaysConnecting bool
 	createCalls      int
+	profileUpdates   []remnawave.UpdateNodeProfileInput
 }
 
 func (f *fakeRemnawave) GetHosts(context.Context) ([]remnawave.Host, error) {
@@ -591,6 +989,25 @@ func (f *fakeRemnawave) UpdateNodeAddress(_ context.Context, input remnawave.Upd
 			f.nodes[index].Address = input.Address.String()
 			return f.nodes[index], nil
 		}
+	}
+	return remnawave.Node{}, errors.New("Node not found")
+}
+
+func (f *fakeRemnawave) UpdateNodeProfile(_ context.Context, input remnawave.UpdateNodeProfileInput) (remnawave.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	profile, err := remnawave.DeploymentProfileFromHost(input.Host)
+	if err != nil {
+		return remnawave.Node{}, err
+	}
+	for index := range f.nodes {
+		if f.nodes[index].UUID != input.UUID {
+			continue
+		}
+		f.profileUpdates = append(f.profileUpdates, input)
+		f.nodes[index].ActiveConfigProfileUUID = stringPtr(profile.ActiveConfigProfileUUID)
+		f.nodes[index].ActiveInboundUUIDs = append([]string(nil), profile.ActiveInbounds...)
+		return f.nodes[index], nil
 	}
 	return remnawave.Node{}, errors.New("Node not found")
 }
@@ -674,10 +1091,13 @@ func (f *fakeVPS) Provision(ctx context.Context, input ProvisionVPSInput, progre
 }
 
 type fakeCertificateProvider struct {
-	events    *eventLog
-	readiness CertificateReadiness
-	material  certificates.Material
-	err       error
+	events          *eventLog
+	readiness       CertificateReadiness
+	material        certificates.Material
+	err             error
+	bootstrapResult certmanager.BootstrapResult
+	bootstrapErr    error
+	bootstrapCalls  int
 }
 
 func (f *fakeCertificateProvider) Readiness(context.Context, string) (CertificateReadiness, error) {
@@ -687,6 +1107,11 @@ func (f *fakeCertificateProvider) Readiness(context.Context, string) (Certificat
 func (f *fakeCertificateProvider) Prepare(context.Context, string) (certificates.Material, error) {
 	f.events.add("certificate.prepare")
 	return f.material.Clone(), f.err
+}
+
+func (f *fakeCertificateProvider) Bootstrap(context.Context, string, int64) (certmanager.BootstrapResult, error) {
+	f.bootstrapCalls++
+	return f.bootstrapResult, f.bootstrapErr
 }
 
 type fakeDNS struct {
@@ -703,27 +1128,56 @@ func (f *fakeDNS) FindZonesByIP(_ context.Context, ip netip.Addr) ([]dnsbalancer
 	defer f.mu.Unlock()
 	var result []dnsbalancer.ZoneMatch
 	for _, zone := range f.zones {
+		matched := false
 		for _, value := range zone.Zone.IPs {
 			parsed, err := netip.ParseAddr(value)
 			if err == nil && parsed.Unmap() == ip.Unmap() {
-				result = append(result, zone)
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			for _, node := range zone.Zone.Nodes {
+				parsed, err := netip.ParseAddr(node.IP)
+				if err == nil && parsed.Unmap() == ip.Unmap() {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			result = append(result, zone)
 		}
 	}
 	return result, nil
 }
 
-func (f *fakeDNS) FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error) {
+func (f *fakeDNS) FindZone(_ context.Context, fqdn string) (dnsbalancer.ZoneMatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, zone := range f.zones {
+		if strings.EqualFold(zone.FQDN, fqdn) {
+			return zone, nil
+		}
+	}
 	return dnsbalancer.ZoneMatch{FQDN: "edge.example.com"}, nil
 }
 
-func (f *fakeDNS) AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error) {
+func (f *fakeDNS) AddIP(_ context.Context, fqdn string, address netip.Addr) (dnsbalancer.AddIPResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.addCalls++
 	f.events.add("dns.add")
-	return dnsbalancer.AddIPResult{}, f.addErr
+	if f.addErr != nil {
+		return dnsbalancer.AddIPResult{}, f.addErr
+	}
+	for index := range f.zones {
+		if f.zones[index].FQDN == fqdn {
+			f.zones[index].Zone.IPs = append(f.zones[index].Zone.IPs, address.String())
+			return dnsbalancer.AddIPResult{FQDN: fqdn, Added: true, IPs: append([]string(nil), f.zones[index].Zone.IPs...)}, nil
+		}
+	}
+	return dnsbalancer.AddIPResult{FQDN: fqdn}, nil
 }
 
 func (f *fakeDNS) ReplaceIP(_ context.Context, fqdn string, oldIP, newIP netip.Addr) (dnsbalancer.ReplaceIPResult, error) {

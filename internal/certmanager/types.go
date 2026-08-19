@@ -113,6 +113,21 @@ type Repository interface {
 	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
+// PanelRepository persists certificate metadata with an explicit owning
+// panel. ScopedRepository adapts it to one Manager instance.
+type PanelRepository interface {
+	GetActiveForPanel(context.Context, string, string) (Record, error)
+	SaveVersionForPanel(context.Context, string, Version) error
+	SetVersionStatusForPanel(context.Context, string, string, string, VersionStatus) error
+	ActivateVersionForPanel(context.Context, string, string, string, bool) error
+	SetStatusForPanel(context.Context, string, string, Status) error
+	RecordDistributionForPanel(context.Context, string, DistributionRecord) error
+	ListExpiringForPanel(context.Context, string, time.Time, int) ([]Record, error)
+	ListVersionsForPanel(context.Context, string, string) ([]Version, error)
+	RecordTargetReviewForPanel(context.Context, string, TargetReview) error
+	ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error)
+}
+
 type Locker interface {
 	Lock(context.Context, string) (func(), error)
 }
@@ -179,5 +194,21 @@ type safeError struct {
 
 func (e *safeError) Error() string { return e.message }
 func (e *safeError) Unwrap() error { return e.kind }
+
+// SafeMessage returns an operator-facing message only for errors deliberately
+// constructed by this package. It never falls back to err.Error(), because an
+// arbitrary issuer, storage or transport implementation may include secrets in
+// its error text.
+func SafeMessage(err error, fallback string) string {
+	var safeErr *safeError
+	if errors.As(err, &safeErr) && safeErr.message != "" {
+		return safeErr.message
+	}
+	return fallback
+}
+
+// NormalizeSNI validates and canonicalizes an operator/API supplied SNI using
+// the same rules as certificate storage and issuance.
+func NormalizeSNI(value string) (string, error) { return canonicalSNI(value) }
 
 func safe(message string, kind error) error { return &safeError{message: message, kind: kind} }

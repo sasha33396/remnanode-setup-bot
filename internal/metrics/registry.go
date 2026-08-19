@@ -4,6 +4,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -108,6 +109,7 @@ type RemnawaveClient struct {
 		GetNode(context.Context, string) (remnawave.Node, error)
 		CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
 		UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
+		UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 	}
 	metrics *Registry
 }
@@ -119,6 +121,7 @@ func ObserveRemnawave(next interface {
 	GetNode(context.Context, string) (remnawave.Node, error)
 	CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
 	UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
+	UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 }, registry *Registry) *RemnawaveClient {
 	return &RemnawaveClient{next: next, metrics: registry}
 }
@@ -138,6 +141,17 @@ func (c *RemnawaveClient) GetNodes(ctx context.Context) ([]remnawave.Node, error
 	c.observe(err)
 	return value, err
 }
+func (c *RemnawaveClient) GetNodesMetrics(ctx context.Context) ([]remnawave.NodeMetric, error) {
+	provider, ok := c.next.(interface {
+		GetNodesMetrics(context.Context) ([]remnawave.NodeMetric, error)
+	})
+	if !ok {
+		return nil, errors.New("Remnawave node metrics are unavailable")
+	}
+	value, err := provider.GetNodesMetrics(ctx)
+	c.observe(err)
+	return value, err
+}
 func (c *RemnawaveClient) GetNode(ctx context.Context, id string) (remnawave.Node, error) {
 	value, err := c.next.GetNode(ctx, id)
 	c.observe(err)
@@ -150,6 +164,11 @@ func (c *RemnawaveClient) CreateNode(ctx context.Context, input remnawave.Create
 }
 func (c *RemnawaveClient) UpdateNodeAddress(ctx context.Context, input remnawave.UpdateNodeAddressInput) (remnawave.Node, error) {
 	value, err := c.next.UpdateNodeAddress(ctx, input)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) UpdateNodeProfile(ctx context.Context, input remnawave.UpdateNodeProfileInput) (remnawave.Node, error) {
+	value, err := c.next.UpdateNodeProfile(ctx, input)
 	c.observe(err)
 	return value, err
 }

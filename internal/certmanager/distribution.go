@@ -24,9 +24,24 @@ type DeploymentLookup interface {
 	ListTargetReviews(context.Context, string) ([]TargetReview, error)
 }
 
+type PanelDeploymentLookup interface {
+	FindDeploymentsByPanelSNI(context.Context, string, string, int) ([]deployment.Deployment, error)
+	ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error)
+}
+
 type DNSDeploymentResolver struct {
 	dns         DNSConfigAPI
 	deployments DeploymentLookup
+	panelID     string
+	panelLookup PanelDeploymentLookup
+}
+
+func NewPanelDNSDeploymentResolver(panelID string, dns DNSConfigAPI, deployments PanelDeploymentLookup) (*DNSDeploymentResolver, error) {
+	panelID = strings.TrimSpace(panelID)
+	if panelID == "" || dns == nil || deployments == nil {
+		return nil, ErrInvalidInput
+	}
+	return &DNSDeploymentResolver{dns: dns, panelID: panelID, panelLookup: deployments}, nil
 }
 
 func NewDNSDeploymentResolver(dns DNSConfigAPI, deployments DeploymentLookup) (*DNSDeploymentResolver, error) {
@@ -42,33 +57,43 @@ func NewDNSDeploymentResolver(dns DNSConfigAPI, deployments DeploymentLookup) (*
 func (r *DNSDeploymentResolver) Resolve(ctx context.Context, sni string) (TargetResolution, error) {
 	match, err := r.dns.FindZone(ctx, sni)
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("DNS-balancer certificate zone is unavailable", ErrDistributionFailed)
 	}
 	ipSet := make(map[netip.Addr]struct{})
 	for _, value := range match.Zone.IPs {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(value)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return TargetResolution{}, ErrDistributionFailed
+			return TargetResolution{}, safe("DNS-balancer certificate zone contains an invalid IP", ErrDistributionFailed)
 		}
 	}
 	for _, node := range match.Zone.Nodes {
 		if ip, err := netip.ParseAddr(strings.TrimSpace(node.IP)); err == nil {
 			ipSet[ip.Unmap()] = struct{}{}
 		} else {
-			return TargetResolution{}, ErrDistributionFailed
+			return TargetResolution{}, safe("DNS-balancer certificate zone contains an invalid Node IP", ErrDistributionFailed)
 		}
 	}
 	if len(ipSet) == 0 {
 		return TargetResolution{}, nil
 	}
-	items, err := r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
-	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+	var items []deployment.Deployment
+	if r.panelLookup != nil {
+		items, err = r.panelLookup.FindDeploymentsByPanelSNI(ctx, r.panelID, sni, 100)
+	} else {
+		items, err = r.deployments.FindDeploymentsBySNI(ctx, sni, 100)
 	}
-	reviews, err := r.deployments.ListTargetReviews(ctx, sni)
 	if err != nil {
-		return TargetResolution{}, ErrDistributionFailed
+		return TargetResolution{}, safe("Certificate deployment inventory is unavailable", ErrDistributionFailed)
+	}
+	var reviews []TargetReview
+	if r.panelLookup != nil {
+		reviews, err = r.panelLookup.ListTargetReviewsForPanel(ctx, r.panelID, sni)
+	} else {
+		reviews, err = r.deployments.ListTargetReviews(ctx, sni)
+	}
+	if err != nil {
+		return TargetResolution{}, safe("Certificate target reviews are unavailable", ErrDistributionFailed)
 	}
 	reviewByIP := make(map[netip.Addr]TargetReviewState, len(reviews))
 	for _, review := range reviews {

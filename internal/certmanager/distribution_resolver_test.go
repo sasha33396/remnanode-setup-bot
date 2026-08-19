@@ -2,7 +2,9 @@ package certmanager
 
 import (
 	"context"
+	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"remnanode-setup-bot/internal/deployment"
@@ -42,10 +44,39 @@ func TestDNSDeploymentResolverSeparatesManagedLegacyAndUnmanagedTargets(t *testi
 	}
 }
 
-type resolverDNS struct{ match dnsbalancer.ZoneMatch }
+func TestDNSDeploymentResolverReturnsSafeFailurePhase(t *testing.T) {
+	tests := []struct {
+		name string
+		dns  *resolverDNS
+		want string
+	}{
+		{name: "DNS API", dns: &resolverDNS{err: errors.New("protected upstream detail")}, want: "DNS-balancer certificate zone is unavailable"},
+		{name: "invalid IP", dns: &resolverDNS{match: dnsbalancer.ZoneMatch{Zone: dnsbalancer.Zone{IPs: []string{"not-an-ip"}}}}, want: "DNS-balancer certificate zone contains an invalid IP"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver, err := NewDNSDeploymentResolver(test.dns, &resolverLookup{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolver.Resolve(context.Background(), testSNI)
+			if !errors.Is(err, ErrDistributionFailed) || SafeMessage(err, "fallback") != test.want {
+				t.Fatalf("Resolve() error = %v, safe message = %q", err, SafeMessage(err, "fallback"))
+			}
+			if err != nil && strings.Contains(err.Error(), "protected upstream detail") {
+				t.Fatal("protected upstream error escaped resolver")
+			}
+		})
+	}
+}
+
+type resolverDNS struct {
+	match dnsbalancer.ZoneMatch
+	err   error
+}
 
 func (r *resolverDNS) FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error) {
-	return r.match, nil
+	return r.match, r.err
 }
 
 type resolverLookup struct {

@@ -28,6 +28,22 @@ type SSHProvisioner struct {
 	config SSHProvisionerConfig
 }
 
+// provisioningPhaseError carries only a predefined operator-safe phase. The
+// protected SSH/provisioner error is deliberately not retained or exposed.
+type provisioningPhaseError struct{ message string }
+
+func (e *provisioningPhaseError) Error() string { return e.message }
+
+func provisioningPhase(message string) error { return &provisioningPhaseError{message: message} }
+
+func safeProvisioningMessage(err error) string {
+	var phase *provisioningPhaseError
+	if errors.As(err, &phase) && strings.TrimSpace(phase.message) != "" {
+		return phase.message
+	}
+	return "VPS provisioning failed"
+}
+
 func NewSSHProvisioner(ssh *sshclient.Client, store provisioner.StepStore, config SSHProvisionerConfig) (*SSHProvisioner, error) {
 	if ssh == nil || store == nil || !config.RemnawaveAPIIP.IsValid() || !config.MetricsIP.IsValid() || strings.TrimSpace(config.XrayRepository) == "" || strings.TrimSpace(config.XrayRef) == "" {
 		return nil, errors.New("invalid SSH provisioner configuration")
@@ -69,13 +85,13 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 	}
 	connection, err := v.ssh.ConnectWithDeploymentKey(ctx, input.DeploymentID, input.Address, "root")
 	if err != nil {
-		return errors.New("deployment-key SSH connection failed")
+		return provisioningPhase("Deployment-key SSH connection failed")
 	}
 	defer connection.Close()
 
 	config, err := provisioner.NewConfig(v.config.RemnawaveAPIIP, v.config.MetricsIP, input.RemnanodeSecretKey)
 	if err != nil {
-		return errors.New("create provisioner configuration failed")
+		return provisioningPhase("Provisioner configuration could not be created")
 	}
 	defer config.Destroy()
 	xray, err := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{
@@ -85,20 +101,20 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 		Timeout:       v.config.CommandTimeout,
 	}, input.Certificate)
 	if err != nil {
-		return errors.New("create xray-sni adapter failed")
+		return provisioningPhase("xray-sni adapter could not be initialized")
 	}
 	defer xray.Destroy()
 	stages, err := provisioner.NewDefaultStages(connection, config, xray)
 	if err != nil {
-		return errors.New("create provisioning stages failed")
+		return provisioningPhase("Provisioning stages could not be created")
 	}
 	engine, err := provisioner.NewEngine(v.store, stages)
 	if err != nil {
-		return errors.New("create provisioner engine failed")
+		return provisioningPhase("Provisioner engine could not be initialized")
 	}
 	_, err = engine.RunWithProgress(ctx, input.DeploymentID, progress)
 	if err != nil {
-		return errors.New("provisioner engine failed")
+		return provisioningPhase("Provisioner engine failed; inspect stage logs")
 	}
 	return nil
 }

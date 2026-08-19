@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/provisioner"
 	"remnanode-setup-bot/internal/remnawave"
@@ -49,6 +50,9 @@ func NewDeploymentService(repository DeploymentRepository, remnawaveAPI Remnawav
 	if repository == nil || remnawaveAPI == nil || dns == nil || certificateProvider == nil || vps == nil {
 		return nil, errors.New("deployment service dependencies are required")
 	}
+	if strings.TrimSpace(config.PanelID) == "" {
+		config.PanelID = "default"
+	}
 	if config.MaxConcurrentDeployments <= 0 {
 		config.MaxConcurrentDeployments = 2
 	}
@@ -79,7 +83,7 @@ func NewDeploymentService(repository DeploymentRepository, remnawaveAPI Remnawav
 // Prepare validates immutable operator input, creates the durable deployment,
 // and performs preflight before confirmation is shown.
 func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (PreparedDeployment, error) {
-	if input.OperatorUserID <= 0 || strings.TrimSpace(input.HostID) == "" || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.VPSIP) || len(input.Password) == 0 {
+	if (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || strings.TrimSpace(input.HostID) == "" || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.VPSIP) || len(input.Password) == 0 {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	host, profile, err := s.selectedHost(ctx, input.HostID)
@@ -97,6 +101,7 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	}
 
 	created, err := s.repository.CreateDeployment(ctx, repository.CreateDeploymentParams{
+		PanelID:                   s.config.PanelID,
 		TelegramOperatorUserID:    input.OperatorUserID,
 		SelectedRemnawaveHostUUID: host.UUID,
 		SelectedHostRemark:        host.Remark,
@@ -154,7 +159,9 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 		return PreparedDeployment{}, safeError("PERSISTENCE_READ_FAILED", "Could not load prepared deployment", ErrPersistenceFailed)
 	}
 	prepared := PreparedDeployment{Deployment: created, ConfigProfileReadiness: true}
-	if match, zoneErr := s.dns.FindZone(runCtx, profile.SNIDomain); zoneErr == nil {
+	if s.config.DNSDisabled {
+		prepared.Warnings = append(prepared.Warnings, OperatorNotice{Code: "W-DNS-DISABLED", Message: "DNS-балансировка отключена для этой панели"})
+	} else if match, zoneErr := s.dns.FindZone(runCtx, profile.SNIDomain); zoneErr == nil {
 		prepared.DNSZone = match.FQDN
 	}
 	if runCtx.Err() != nil {
@@ -170,10 +177,40 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	}
 	for _, warning := range result.Warnings {
 		if text := safeText(warning.Message, ""); text != "" {
-			prepared.SafeWarnings = append(prepared.SafeWarnings, text)
+			prepared.Warnings = append(prepared.Warnings, OperatorNotice{Code: warningCode(warning.Code), Message: warningMessage(warning.Code, text)})
 		}
 	}
 	return prepared, nil
+}
+
+func warningMessage(code, fallback string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "DOCKER_NOT_INSTALLED":
+		return "Docker не установлен — бот установит его автоматически"
+	case "REMNANODE_EXISTS":
+		return "Обнаружены существующие файлы или контейнеры Remnanode — конфигурация будет проверена и обновлена"
+	case "XRAY_SNI_EXISTS":
+		return "Обнаружена существующая установка Xray SNI — конфигурация будет проверена и обновлена"
+	case "SSH_PORT_NOT_DETECTED":
+		return "Порт 22 не найден в списке слушающих портов, хотя SSH-соединение работает"
+	case "COMPONENT_INSPECTION_FAILED", "COMPONENT_INFO_INVALID":
+		return "Не удалось полностью определить состояние установленного компонента — этап выполнит дополнительную проверку"
+	case "CONTAINER_INSPECTION_FAILED":
+		return "Не удалось полностью проверить существующие Docker-контейнеры"
+	default:
+		return fallback
+	}
+}
+
+func warningCode(code string) string {
+	code = strings.Trim(strings.ToUpper(strings.ReplaceAll(code, "_", "-")), "-")
+	if code == "" {
+		return "W-GENERAL"
+	}
+	if strings.HasPrefix(code, "W-") {
+		return code
+	}
+	return "W-" + code
 }
 
 // Deploy resumes a prepared deployment. Completed deployments are a no-op;
@@ -198,7 +235,7 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 	}
 	defer s.releaseSlot()
 
-	current, err := s.repository.GetDeployment(runCtx, input.DeploymentID)
+	current, err := s.deploymentForPanel(runCtx, input.DeploymentID)
 	if err != nil {
 		if runCtx.Err() != nil {
 			return runCtx.Err()
@@ -278,6 +315,7 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 }
 
 func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Preparing certificate", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusPreparingCertificate, stepPrepareCertificate); err != nil {
 			return err
@@ -288,15 +326,28 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		return ctx.Err()
 	}
 	if err != nil {
-		return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "CERTIFICATE_UNAVAILABLE", "Certificate is not ready", ErrCertificateUnavailable)
+		code := "CERTIFICATE_UNAVAILABLE"
+		switch {
+		case errors.Is(err, certmanager.ErrIssuanceFailed):
+			code = "CERTIFICATE_ISSUANCE_FAILED"
+		case errors.Is(err, certmanager.ErrDistributionFailed):
+			code = "CERTIFICATE_DISTRIBUTION_FAILED"
+		case errors.Is(err, certmanager.ErrStorageFailed):
+			code = "CERTIFICATE_STORAGE_FAILED"
+		case errors.Is(err, certmanager.ErrPersistenceFailed):
+			code = "CERTIFICATE_PERSISTENCE_FAILED"
+		}
+		message := certmanager.SafeMessage(err, "Certificate is not ready")
+		return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, code, message, ErrCertificateUnavailable)
 	}
 	defer material.Destroy()
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.completeStage(ctx, current.ID, stepPrepareCertificate, "Certificate prepared"); err != nil {
 			return err
 		}
-		emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Certificate prepared"})
 	}
+	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 2, Total: workflowStepCount, SafeMessage: "Certificate prepared", Status: deployment.StepStatusCompleted})
+	emit(progress, Progress{Step: stepProvisioning, Completed: 2, Total: workflowStepCount, SafeMessage: "Provisioning VPS", Status: deployment.StepStatusRunning})
 	if err := s.beginStage(ctx, current.ID, deployment.StatusProvisioning, stepProvisioning); err != nil {
 		return err
 	}
@@ -320,22 +371,27 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		if s.config.Observer != nil {
 			s.config.Observer.ProvisioningStepDuration(report.Name, report.Duration)
 		}
-		emit(progress, Progress{Step: "provisioning/" + safeText(report.Name, "stage"), Completed: 2, Total: workflowStepCount, SafeMessage: safeText(report.Summary, "Provisioning stage updated")})
+		code := ""
+		if report.Status == deployment.StepStatusFailed {
+			code = "E-PROVISIONING-" + strings.ToUpper(strings.ReplaceAll(safeText(report.Name, "STAGE"), "_", "-"))
+		}
+		emit(progress, Progress{Step: "provisioning/" + safeText(report.Name, "stage"), Completed: 2, Total: workflowStepCount, SafeMessage: safeText(report.Summary, "Provisioning stage updated"), Status: report.Status, Code: code})
 	})
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if err != nil {
-		return s.failStage(ctx, current.ID, stepProvisioning, deployment.StatusFailed, "PROVISIONING_FAILED", "VPS provisioning failed", ErrProvisioningFailed)
+		return s.failStage(ctx, current.ID, stepProvisioning, deployment.StatusFailed, "PROVISIONING_FAILED", safeProvisioningMessage(err), ErrProvisioningFailed)
 	}
 	if err := s.completeStage(ctx, current.ID, stepProvisioning, "VPS provisioning completed"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepProvisioning, Completed: 2, Total: workflowStepCount, SafeMessage: "VPS provisioning completed"})
+	emit(progress, Progress{Step: stepProvisioning, Completed: 3, Total: workflowStepCount, SafeMessage: "VPS provisioning completed", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode)
 }
 
 func (s *DeploymentService) createNode(ctx context.Context, current *deployment.Deployment, host remnawave.Host, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepCreateNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Creating Remnawave Node", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusCreatingRemnawave {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode); err != nil {
 			return err
@@ -376,11 +432,12 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 	if err := s.completeStage(ctx, current.ID, stepCreateNode, "Remnawave Node created"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepCreateNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Remnawave Node created"})
+	emit(progress, Progress{Step: stepCreateNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Remnawave Node created", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusWaitingRemnawave, stepWaitNode)
 }
 
 func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection", Status: deployment.StepStatusRunning})
 	if current.RemnawaveNodeUUID == nil {
 		return s.failStage(ctx, current.ID, stepWaitNode, deployment.StatusFailed, "NODE_UUID_MISSING", "Remnawave Node identifier is missing", ErrNodeConnectionFailed)
 	}
@@ -406,11 +463,12 @@ func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *dep
 	if err := s.completeStage(ctx, current.ID, stepWaitNode, "Remnawave Node connected"); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Remnawave Node connected"})
+	emit(progress, Progress{Step: stepWaitNode, Completed: 5, Total: workflowStepCount, SafeMessage: "Remnawave Node connected", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusAddingToDNS, stepAddDNS)
 }
 
 func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	emit(progress, Progress{Step: stepAddDNS, Completed: 5, Total: workflowStepCount, SafeMessage: "Updating DNS balancing", Status: deployment.StepStatusRunning})
 	if current.RemnawaveNodeUUID == nil {
 		return ErrDeploymentNotRunnable
 	}
@@ -418,6 +476,17 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 		if err := s.beginStage(ctx, current.ID, deployment.StatusAddingToDNS, stepAddDNS); err != nil {
 			return err
 		}
+	}
+	if s.config.DNSDisabled {
+		summary := "DNS balancing is disabled for this panel"
+		if _, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: current.ID, Name: stepAddDNS, Status: deployment.StepStatusSkipped, SafeSummary: &summary}); err != nil {
+			return safeError("DNS_SKIP_PERSIST_FAILED", "Could not persist skipped DNS step", ErrPersistenceFailed)
+		}
+		if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
+			return err
+		}
+		emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS-балансировка отключена для этой панели", Status: deployment.StepStatusSkipped, Code: "W-DNS-DISABLED"})
+		return nil
 	}
 	node, err := s.remnawave.GetNode(ctx, *current.RemnawaveNodeUUID)
 	if ctx.Err() != nil {
@@ -438,7 +507,7 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
 		return err
 	}
-	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "Deployment completed"})
+	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS updated", Status: deployment.StepStatusCompleted})
 	return nil
 }
 
@@ -454,7 +523,7 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 		return err
 	}
 	defer s.releaseSlot()
-	current, err := s.repository.GetDeployment(runCtx, deploymentID)
+	current, err := s.deploymentForPanel(runCtx, deploymentID)
 	if err != nil {
 		if runCtx.Err() != nil {
 			return runCtx.Err()
@@ -478,7 +547,7 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 // inspection/recovery contract. Preflight cannot be retried because its
 // temporary password is intentionally not persisted.
 func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID string, progress ProgressSink) error {
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
@@ -527,7 +596,7 @@ func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string
 // SafeLogs returns persisted summaries only. Raw SSH/API output and secrets are
 // never part of the repository contract.
 func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) ([]SafeLogEntry, error) {
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
@@ -536,6 +605,7 @@ func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) (
 		return nil, safeError("PERSISTENCE_READ_FAILED", "Could not load safe deployment logs", ErrPersistenceFailed)
 	}
 	result := make([]SafeLogEntry, 0, len(steps)+1)
+	currentRecorded := false
 	for _, step := range steps {
 		summary := ""
 		if step.SafeSummary != nil {
@@ -544,12 +614,38 @@ func (s *DeploymentService) SafeLogs(ctx context.Context, deploymentID string) (
 		if step.ErrorMessage != nil {
 			summary = safeText(*step.ErrorMessage, summary)
 		}
-		result = append(result, SafeLogEntry{Step: safeText(step.Name, "step"), Status: string(step.Status), Summary: summary})
+		code := ""
+		if step.Name == current.CurrentStep {
+			currentRecorded = true
+			if current.SafeErrorCode != nil {
+				code = safeText(*current.SafeErrorCode, "")
+			}
+		}
+		if step.Status == deployment.StepStatusFailed && code == "" && isProvisioningStep(step.Name) {
+			code = "E-PROVISIONING-" + strings.ToUpper(strings.ReplaceAll(step.Name, "_", "-"))
+		}
+		if step.Status == deployment.StepStatusSkipped && step.Name == stepAddDNS {
+			code = "W-DNS-DISABLED"
+		}
+		result = append(result, SafeLogEntry{Step: safeText(step.Name, "step"), Status: string(step.Status), Summary: summary, Code: code, StartedAt: step.StartedAt, CompletedAt: step.CompletedAt})
 	}
-	if current.SafeErrorMessage != nil {
-		result = append(result, SafeLogEntry{Step: safeText(current.CurrentStep, "workflow"), Status: string(current.Status), Summary: safeText(*current.SafeErrorMessage, "")})
+	if current.SafeErrorMessage != nil && !currentRecorded {
+		code := ""
+		if current.SafeErrorCode != nil {
+			code = safeText(*current.SafeErrorCode, "")
+		}
+		result = append(result, SafeLogEntry{Step: safeText(current.CurrentStep, "workflow"), Status: string(current.Status), Summary: safeText(*current.SafeErrorMessage, ""), Code: code, StartedAt: current.StartedAt, CompletedAt: current.CompletedAt})
 	}
 	return result, nil
+}
+
+func isProvisioningStep(name string) bool {
+	for _, candidate := range provisioner.StageNames {
+		if name == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // Cancel marks a deployment cancelled and signals an in-process active run.
@@ -563,7 +659,7 @@ func (s *DeploymentService) Cancel(ctx context.Context, deploymentID string) err
 		active.cancel()
 	}
 	s.mu.Unlock()
-	current, err := s.repository.GetDeployment(ctx, deploymentID)
+	current, err := s.deploymentForPanel(ctx, deploymentID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -593,7 +689,7 @@ func (s *DeploymentService) pollNode(ctx context.Context, uuid string, progress 
 				}
 				return remnawave.Node{}, &nodeConnectionError{code: "NODE_CONNECTION_REJECTED", message: message, kind: ErrNodeConnectionFailed}
 			}
-			emit(progress, Progress{Step: stepWaitNode, Completed: 3, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection"})
+			emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection", Status: deployment.StepStatusRunning})
 		}
 		timer := time.NewTimer(backoff)
 		select {
@@ -773,6 +869,17 @@ func (s *DeploymentService) setState(ctx context.Context, deploymentID string, s
 		return safeError("STATE_PERSIST_FAILED", "Could not persist deployment state", ErrPersistenceFailed)
 	}
 	return nil
+}
+
+func (s *DeploymentService) deploymentForPanel(ctx context.Context, deploymentID string) (deployment.Deployment, error) {
+	item, err := s.repository.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return deployment.Deployment{}, err
+	}
+	if item.PanelID != "" && item.PanelID != s.config.PanelID {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	return item, nil
 }
 
 func (s *DeploymentService) beginExecution(parent context.Context, deploymentID string) (context.Context, func(), error) {

@@ -7,18 +7,24 @@ services:
     user: "0:0"
     restart: unless-stopped
     init: true
+    # Makes token variables referenced by the panel configuration available to the
+    # deployer without hard-coding panel-specific names in this file.
+    env_file:
+      - .env
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:?TELEGRAM_ALLOWED_USERS is required}
-      REMNAWAVE_URL: ${REMNAWAVE_URL:?REMNAWAVE_URL is required}
-      REMNAWAVE_TOKEN: ${REMNAWAVE_TOKEN:?REMNAWAVE_TOKEN is required}
-      DNS_BALANCER_URL: ${DNS_BALANCER_URL:?DNS_BALANCER_URL is required}
-      DNS_BALANCER_TOKEN: ${DNS_BALANCER_TOKEN:?DNS_BALANCER_TOKEN is required}
-      CF_API_TOKEN: ${CF_API_TOKEN:?CF_API_TOKEN is required}
+      PANELS_CONFIG_FILE: "${PANELS_CONFIG_FILE:-}"
+      PANELS_JSON: "${PANELS_JSON:-}"
+      REMNAWAVE_URL: ${REMNAWAVE_URL:-}
+      REMNAWAVE_TOKEN: ${REMNAWAVE_TOKEN:-}
+      DNS_BALANCER_URL: ${DNS_BALANCER_URL:-}
+      DNS_BALANCER_TOKEN: ${DNS_BALANCER_TOKEN:-}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
       ACME_DIRECTORY_URL: ${ACME_DIRECTORY_URL:-https://acme-v02.api.letsencrypt.org/directory}
       CERTIFICATE_STORE_PATH: /var/lib/deployer/certificates
-      REMNA_API_IP: ${REMNA_API_IP:?REMNA_API_IP is required}
+      REMNA_API_IP: ${REMNA_API_IP:-}
       METRICS_IP: ${METRICS_IP:?METRICS_IP is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DEPLOY_SSH_PRIVATE_KEY: /run/secrets/deploy_ssh_private_key
@@ -31,6 +37,10 @@ services:
       NODE_CONNECT_TIMEOUT: ${NODE_CONNECT_TIMEOUT:-5m}
       TELEGRAM_POLL_TIMEOUT: ${TELEGRAM_POLL_TIMEOUT:-30s}
       TELEGRAM_SESSION_TTL: ${TELEGRAM_SESSION_TTL:-15m}
+      NODE_MONITOR_INTERVAL: ${NODE_MONITOR_INTERVAL:-5m}
+      NODE_CRITICAL_ALERT_INTERVAL: ${NODE_CRITICAL_ALERT_INTERVAL:-15m}
+      NODE_MONITOR_CONFIRMATIONS: ${NODE_MONITOR_CONFIRMATIONS:-2}
+      NODE_CRITICAL_ONLINE_THRESHOLD: ${NODE_CRITICAL_ONLINE_THRESHOLD:-50}
       CERTIFICATE_RENEW_BEFORE: ${CERTIFICATE_RENEW_BEFORE:-720h}
       CERTIFICATE_RENEW_INTERVAL: ${CERTIFICATE_RENEW_INTERVAL:-12h}
       CERTIFICATE_ISSUE_TIMEOUT: ${CERTIFICATE_ISSUE_TIMEOUT:-10m}
@@ -42,6 +52,7 @@ services:
       - deploy_ssh_private_key
     volumes:
       - certificate_store:/var/lib/deployer/certificates
+      - ./config:/etc/remnanode-setup-bot:ro
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
     depends_on:

@@ -51,6 +51,25 @@ type nodeEnvelope struct {
 	Response *nodeWire `json:"response"`
 }
 
+type nodeMetricsEnvelope struct {
+	Response *struct {
+		Nodes *[]nodeMetricWire `json:"nodes"`
+	} `json:"response"`
+}
+
+type nodeMetricWire struct {
+	NodeUUID    *string `json:"nodeUuid"`
+	NodeName    *string `json:"nodeName"`
+	UsersOnline *int    `json:"usersOnline"`
+}
+
+func (m nodeMetricWire) model() (NodeMetric, error) {
+	if m.NodeUUID == nil || !validUUID(*m.NodeUUID) || m.NodeName == nil || *m.NodeName == "" || m.UsersOnline == nil || *m.UsersOnline < 0 {
+		return NodeMetric{}, ErrInvalidResponse
+	}
+	return NodeMetric{NodeUUID: *m.NodeUUID, NodeName: *m.NodeName, UsersOnline: *m.UsersOnline}, nil
+}
+
 type nodeWire struct {
 	UUID              *string               `json:"uuid"`
 	Name              *string               `json:"name"`
@@ -106,6 +125,11 @@ type createNodeRequest struct {
 type updateNodeAddressRequest struct {
 	UUID    string `json:"uuid"`
 	Address string `json:"address"`
+}
+
+type updateNodeProfileRequest struct {
+	UUID          string            `json:"uuid"`
+	ConfigProfile NodeConfigProfile `json:"configProfile"`
 }
 
 type deleteNodeEnvelope struct {

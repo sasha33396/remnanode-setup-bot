@@ -95,6 +95,12 @@ func (r *recoveryRepository) SetTargetVPSIP(_ context.Context, _ string, address
 	r.item.TargetVPSIP = address.Unmap()
 	return r.item, nil
 }
+func (r *recoveryRepository) SetNodeHostBinding(_ context.Context, _ string, params repository.SetNodeHostBindingParams) (deployment.Deployment, error) {
+	r.item.SelectedRemnawaveHostUUID = params.HostUUID
+	r.item.SelectedHostRemark = params.HostRemark
+	r.item.SNIDomain = params.SNIDomain
+	return r.item, nil
+}
 func (*recoveryRepository) RecordDeploymentStep(context.Context, repository.RecordStepParams) (deployment.Step, error) {
 	return deployment.Step{}, nil
 }
@@ -109,6 +115,10 @@ func (r *recoveryRepository) FindUnfinishedDeployments(context.Context, int) ([]
 		return nil, nil
 	}
 	return []deployment.Deployment{r.item}, nil
+}
+
+func (r *recoveryRepository) FindDeploymentByPanelNodeUUID(context.Context, string, string) (deployment.Deployment, error) {
+	return deployment.Deployment{}, repository.ErrNotFound
 }
 
 type recoveryRemnawave struct {

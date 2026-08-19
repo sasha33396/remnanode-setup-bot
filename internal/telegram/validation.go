@@ -46,6 +46,11 @@ func parsePublicIP(value string) (netip.Addr, bool) {
 	return address, true
 }
 
+func parsePublicIPv4(value string) (netip.Addr, bool) {
+	address, valid := parsePublicIP(value)
+	return address, valid && address.Is4()
+}
+
 func mustPrefixes(values ...string) []netip.Prefix {
 	result := make([]netip.Prefix, 0, len(values))
 	for _, value := range values {

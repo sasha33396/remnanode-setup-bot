@@ -59,6 +59,18 @@ func TestManagerInitialIssuance(t *testing.T) {
 	}
 }
 
+func TestManagerPreservesSafeIssuanceReason(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	fixture.issuer.issueErr = safe("Cloudflare API authentication failed (HTTP 401)", ErrIssuanceFailed)
+	_, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if !errors.Is(err, ErrIssuanceFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrIssuanceFailed", err)
+	}
+	if got, want := SafeMessage(err, "fallback"), "Cloudflare API authentication failed (HTTP 401)"; got != want {
+		t.Fatalf("safe message = %q, want %q", got, want)
+	}
+}
+
 func TestManagerConcurrentIssuanceRequest(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
 	fixture.issuer.started = make(chan struct{})
@@ -219,6 +231,7 @@ type fakeIssuer struct {
 	calls     atomic.Int64
 	started   chan struct{}
 	release   chan struct{}
+	issueErr  error
 }
 
 func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material, error) {
@@ -235,6 +248,9 @@ func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.issueErr != nil {
+		return certificates.Material{}, i.issueErr
+	}
 	if call > len(i.materials) {
 		return certificates.Material{}, errors.New("unexpected issuance")
 	}
@@ -246,6 +262,19 @@ type fakeResolver struct {
 	unmanaged []netip.Addr
 	legacy    []netip.Addr
 	err       error
+}
+
+func TestManagerPreservesSafeResolverFailure(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	fixture.resolver.err = safe("DNS-balancer certificate zone is unavailable", ErrDistributionFailed)
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrDistributionFailed", err)
+	}
+	if got, want := SafeMessage(err, "fallback"), "DNS-balancer certificate zone is unavailable"; got != want {
+		t.Fatalf("safe message = %q, want %q", got, want)
+	}
 }
 
 func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *testing.T) {
@@ -279,6 +308,26 @@ func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *test
 	reviews, _ := fixture.repository.ListTargetReviews(context.Background(), testSNI)
 	if len(reviews) != 1 || reviews[0].State != TargetLegacyAcknowledged || reviews[0].AcknowledgedBy == nil || *reviews[0].AcknowledgedBy != 42 {
 		t.Fatalf("target reviews = %#v", reviews)
+	}
+}
+
+func TestManagerBootstrapAcknowledgesLegacyWhenCertificateIsAlreadyActive(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	fixture.resolver.unmanaged = []netip.Addr{netip.MustParseAddr("203.0.113.51")}
+	result, err := fixture.manager.Bootstrap(context.Background(), testSNI, 42)
+	if err != nil {
+		t.Fatalf("Bootstrap() with active certificate error = %v", err)
+	}
+	if result.Version == "" || result.AcknowledgedLegacyIPs != 1 {
+		t.Fatalf("Bootstrap() result = %#v", result)
+	}
+	if fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("bootstrap created another ACME order; calls=%d", fixture.issuer.calls.Load())
 	}
 }
 

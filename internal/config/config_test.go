@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadValidConfiguration(t *testing.T) {
@@ -20,8 +23,142 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if cfg.XraySNIRepoURL != defaultXraySNIRepoURL || cfg.XraySNIRef != defaultXraySNIRef {
 		t.Fatalf("xray-sni defaults = %q %q", cfg.XraySNIRepoURL, cfg.XraySNIRef)
 	}
+	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
+		t.Fatalf("legacy panel = %#v", cfg.Panels)
+	}
+	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineThreshold != 50 {
+		t.Fatalf("node monitor defaults = interval %s, alert interval %s, confirmations %d, threshold %d", cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineThreshold)
+	}
 }
 
+func TestLoadNodeMonitorOverrides(t *testing.T) {
+	values := validValues()
+	values["NODE_MONITOR_INTERVAL"] = "45s"
+	values["NODE_CRITICAL_ALERT_INTERVAL"] = "10m"
+	values["NODE_MONITOR_CONFIRMATIONS"] = "3"
+	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "65"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodeMonitorInterval != 45*time.Second || cfg.NodeCriticalAlertInterval != 10*time.Minute || cfg.NodeMonitorConfirmations != 3 || cfg.NodeCriticalOnlineThreshold != 65 {
+		t.Fatalf("node monitor overrides were not loaded: %#v", cfg)
+	}
+
+	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "0"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_CRITICAL_ONLINE_THRESHOLD") {
+		t.Fatalf("invalid node monitor threshold error = %v", err)
+	}
+}
+
+func TestLoadMultiplePanelsFromYAMLFile(t *testing.T) {
+	values := validValues()
+	for _, name := range []string{"REMNAWAVE_URL", "REMNAWAVE_TOKEN", "DNS_BALANCER_URL", "DNS_BALANCER_TOKEN", "CF_API_TOKEN"} {
+		delete(values, name)
+	}
+	values["MAIN_REMNAWAVE_TOKEN"] = "main-remnawave-secret"
+	values["MAIN_DNS_TOKEN"] = "main-dns-secret"
+	values["MAIN_CF_TOKEN"] = "main-cloudflare-secret"
+	values["SECOND_REMNAWAVE_TOKEN"] = "second-remnawave-secret"
+	values["SECOND_CF_TOKEN"] = "second-cloudflare-secret"
+	path := filepath.Join(t.TempDir(), "panels.yml")
+	contents := `panels:
+  - id: default
+    name: Main
+    remnawave:
+      url: https://main-panel.example
+      token_env: MAIN_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.20
+    dns:
+      mode: enabled
+      url: https://main-dns.example
+      token_env: MAIN_DNS_TOKEN
+    certificate:
+      cloudflare_token_env: MAIN_CF_TOKEN
+  - id: second
+    name: Second
+    remnawave:
+      url: https://second-panel.example
+      token_env: SECOND_REMNAWAVE_TOKEN
+      api_ip: 192.0.2.30
+    dns:
+      mode: disabled
+    certificate:
+      cloudflare_token_env: SECOND_CF_TOKEN
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	values["PANELS_CONFIG_FILE"] = path
+
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Panels) != 2 || cfg.Panels[0].ID != "default" || cfg.Panels[1].DNSMode != DNSModeDisabled {
+		t.Fatalf("panels = %#v", cfg.Panels)
+	}
+	if cfg.Panels[0].DNSBalancerToken != values["MAIN_DNS_TOKEN"] || cfg.Panels[1].CloudflareAPIToken != values["SECOND_CF_TOKEN"] {
+		t.Fatal("YAML panel secret references were not resolved")
+	}
+	if got, want := cfg.Panels[0].RemnawaveAPIIP.String(), "192.0.2.20"; got != want {
+		t.Fatalf("main panel Remnawave API IP = %q, want %q", got, want)
+	}
+	if got, want := cfg.Panels[1].RemnawaveAPIIP.String(), "192.0.2.30"; got != want {
+		t.Fatalf("second panel Remnawave API IP = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsTwoPanelConfigurationSources(t *testing.T) {
+	values := validValues()
+	values["PANELS_CONFIG_FILE"] = "panels.yml"
+	values["PANELS_JSON"] = `[{"id":"default"}]`
+	_, err := load(mapLookup(values))
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("load() error = %v", err)
+	}
+}
+
+func TestLoadMultiplePanelsWithIndependentDNS(t *testing.T) {
+	values := validValues()
+	for _, name := range []string{"REMNAWAVE_URL", "REMNAWAVE_TOKEN", "DNS_BALANCER_URL", "DNS_BALANCER_TOKEN"} {
+		delete(values, name)
+	}
+	values["EU_REMNAWAVE_TOKEN"] = "eu-remnawave-secret"
+	values["EU_DNS_TOKEN"] = "eu-dns-secret"
+	values["TEST_REMNAWAVE_TOKEN"] = "test-remnawave-secret"
+	values["PANELS_JSON"] = `[
+		{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","remnawave_api_ip":"192.0.2.40","dns":{"mode":"enabled","url":"https://eu-dns.example","token_env":"EU_DNS_TOKEN"}},
+		{"id":"test","name":"Test","remnawave_url":"https://test-panel.example","remnawave_token_env":"TEST_REMNAWAVE_TOKEN","remnawave_api_ip":"192.0.2.50","dns":{"mode":"disabled"}}
+	]`
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Panels) != 2 || cfg.Panels[0].DNSMode != DNSModeEnabled || cfg.Panels[1].DNSMode != DNSModeDisabled {
+		t.Fatalf("panels = %#v", cfg.Panels)
+	}
+	if cfg.Panels[0].RemnawaveToken != values["EU_REMNAWAVE_TOKEN"] || cfg.Panels[0].DNSBalancerToken != values["EU_DNS_TOKEN"] {
+		t.Fatal("panel secret references were not resolved")
+	}
+	if got, want := cfg.Panels[0].RemnawaveAPIIP.String(), "192.0.2.40"; got != want {
+		t.Fatalf("Europe Remnawave API IP = %q, want %q", got, want)
+	}
+	if got, want := cfg.Panels[1].RemnawaveAPIIP.String(), "192.0.2.50"; got != want {
+		t.Fatalf("Test Remnawave API IP = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsPanelWithoutRemnawaveAPIIP(t *testing.T) {
+	values := validValues()
+	values["EU_REMNAWAVE_TOKEN"] = "eu-remnawave-secret"
+	values["PANELS_JSON"] = `[{"id":"europe","name":"Europe","remnawave_url":"https://eu-panel.example","remnawave_token_env":"EU_REMNAWAVE_TOKEN","dns":{"mode":"disabled"},"cloudflare_token_env":"CF_API_TOKEN"}]`
+
+	_, err := load(mapLookup(values))
+	if err == nil || !strings.Contains(err.Error(), "panel europe Remnawave API IP") {
+		t.Fatalf("load() error = %v, want panel API IP validation error", err)
+	}
+}
 func TestLoadXraySNIConfiguration(t *testing.T) {
 	values := validValues()
 	values["XRAY_SNI_REPO_URL"] = "https://git.example.com/xray-sni.git"

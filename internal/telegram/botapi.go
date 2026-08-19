@@ -52,8 +52,9 @@ func NewBotAPI(token string, timeout time.Duration) (*BotAPI, error) {
 	}, nil
 }
 
-// Run polls updates until ctx is cancelled. Handler failures are returned so
-// the process supervisor can restart from the last acknowledged offset.
+// Run polls updates until ctx is cancelled. A failed presentation/API action
+// must not poison the polling offset: Telegram will otherwise redeliver the
+// same update after every process restart and create a permanent crash loop.
 func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 	if handler == nil {
 		return errors.New("Telegram update handler is required")
@@ -70,14 +71,11 @@ func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 		for index := range updates {
 			updateID := updates[index].UpdateID
 			mapped := mapUpdate(updates[index])
-			handleErr := handler.Handle(ctx, mapped)
+			_ = handler.Handle(ctx, mapped)
 			// Release Telegram message text promptly. Password messages have
 			// already been copied into clearable session memory by Controller.
 			if updates[index].Message != nil {
 				updates[index].Message.Text = ""
-			}
-			if handleErr != nil {
-				return errors.New("handle Telegram update failed")
 			}
 			if updateID >= offset {
 				offset = updateID + 1
@@ -96,6 +94,10 @@ func (b *BotAPI) SendMessage(ctx context.Context, chatID int64, text string, key
 }
 
 func (b *BotAPI) EditMessage(ctx context.Context, chatID int64, messageID int, text string, keyboard Keyboard) error {
+	// Telegram editMessageText accepts only InlineKeyboardMarkup. Reply
+	// keyboards belong to sendMessage and would make an otherwise successful
+	// operation look failed after its side effect has already completed.
+	keyboard.Reply = nil
 	payload := editMessageRequest{ChatID: chatID, MessageID: messageID, Text: truncateUTF8(text, maxMessageBytes), ReplyMarkup: keyboardWire(keyboard)}
 	var result json.RawMessage
 	return b.call(ctx, "editMessageText", payload, &result)

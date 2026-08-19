@@ -1,4 +1,5 @@
 .env
+config/panels.yml
 PROJECT.md
 secrets/
 *.exe

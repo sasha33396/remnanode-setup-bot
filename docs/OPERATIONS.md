@@ -8,7 +8,7 @@
 3. Generate a dedicated Ed25519 deployment SSH key and set the host path in
    `DEPLOY_SSH_PRIVATE_KEY`.
 4. Grant the Cloudflare token only DNS record read/edit access to SNI zones.
-5. Apply migrations `000001` through `000005` in numeric order.
+5. Apply migrations `000001` through `000006` in numeric order.
 6. Run `docker compose up -d --build`; verify `/healthz`, `/readyz`, `/metrics`,
    container health, and Telegram `/start`.
 
@@ -18,10 +18,13 @@ reload, health validation, and rollback have been smoke-tested.
 
 ## Configuration
 
-Required secrets are `TELEGRAM_BOT_TOKEN`, `REMNAWAVE_TOKEN`,
-`DNS_BALANCER_TOKEN`, `CF_API_TOKEN`, the password in `DATABASE_URL`, and the
-deployment SSH private key. They must not appear in arguments, logs, Telegram,
-or xray-sni `.env` files.
+Required secrets are `TELEGRAM_BOT_TOKEN`, the password in `DATABASE_URL`, the
+deployment SSH private key, and the Remnawave/Cloudflare plus optional DNS
+tokens referenced by each panel's `config/panels.yml`. Legacy single-panel mode uses
+`REMNAWAVE_TOKEN`, `DNS_BALANCER_TOKEN`, and `CF_API_TOKEN`. Secrets must not
+appear in arguments, logs, Telegram, panel YAML, `PANELS_JSON`, or xray-sni
+`.env` files. `PANELS_JSON` is retained only for backwards compatibility and
+must not be combined with `PANELS_CONFIG_FILE`.
 
 Operational controls include deployment/distribution concurrency, HTTP/SSH/API
 timeouts, ACME propagation timeouts, renewal windows, pinned xray-sni source,
@@ -35,7 +38,7 @@ The durable order is `PREFLIGHT`, `PREPARING_CERTIFICATE`, `PROVISIONING`,
 Provisioning must finish before Node creation, and DNS must not change until
 Remnawave reports the Node connected.
 
-One normalized SNI has one centrally active certificate. New versions are
+One panel plus normalized SNI has one centrally active certificate. New versions are
 issued and validated, stored immutably, distributed to all DNS-configured Nodes,
 and only then made centrally active. Each Node receives temporary files over
 SSH stdin, atomically switches the pair, reloads Caddy, and performs a local TLS
@@ -69,6 +72,9 @@ and records each unknown DNS IP as `LEGACY_ACKNOWLEDGED` with the authorizing
 Telegram user ID. Acknowledged legacy targets are excluded from later central
 distribution until they are imported; managed target failures still block
 activation. Use this command only after comparing the DNS pool with Remnawave.
+In multi-panel mode the owning panel is resolved from enabled Remnawave Hosts
+with the same normalized SNI. Bootstrap is rejected if no panel or more than
+one panel owns the SNI; the application never guesses.
 
 IP replacement is available through the `🔄 Сменить IP` main-menu button.
 The wizard accepts an exact Remnawave Node name or current IP, shows the Node
@@ -129,11 +135,27 @@ Do not run destructive down migrations merely to roll back an application image.
 
 ## Troubleshooting
 
-- `readyz` is 503: check PostgreSQL and migrations `000001`–`000005`.
+- `readyz` is 503: check PostgreSQL and migrations `000001`–`000006`.
 - ACME fails: check email, directory, Cloudflare scope, zone discovery, TXT
-  propagation, CAA, and clock.
+  propagation, CAA, and clock. The failed `prepare_certificate` step records a
+  safe phase-specific message and, when Cloudflare supplies one, only its
+  numeric error code; Cloudflare response messages are not persisted because
+  they are not controlled by this application.
+- `Certificate issuance lock is unavailable`: check PostgreSQL connectivity
+  and advisory-lock availability. Panel-scoped lock keys are length-prefixed
+  text and must never contain NUL bytes.
+- `DNS-balancer certificate zone is unavailable`: verify the selected panel's
+  DNS-balancer URL/token, Docker network and exact SNI zone. The application
+  deliberately does not persist the protected upstream response.
+- `Certificate deployment inventory is unavailable` or `Certificate target
+  reviews are unavailable`: verify migration `000006`, PostgreSQL readiness
+  and the selected deployment's persisted `panel_id`.
 - One Node fails distribution: inspect its SSH fingerprint, pinned xray-sni
   revision, certificate modes, `snisite`, Caddy config, and local `9443/health`.
+- A provisioning failure before stage logs now identifies only its safe phase:
+  deployment-key SSH, provisioner configuration, xray-sni adapter, stage
+  construction, or engine initialization. Protected underlying output remains
+  excluded.
 - `DNS_FAILED`: recheck Remnawave, inspect DNS-balancer, then use `/retry_dns`;
   never delete the healthy Node as cleanup.
 - `MANUAL_REVIEW`: compare safe steps with Remnawave/DNS. Do not guess by editing

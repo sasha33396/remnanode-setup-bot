@@ -32,9 +32,32 @@ type API interface {
 	GenerateSecretKey(context.Context) (string, error)
 	GetNodes(context.Context) ([]Node, error)
 	GetNode(context.Context, string) (Node, error)
+	GetNodesMetrics(context.Context) ([]NodeMetric, error)
 	CreateNode(context.Context, CreateNodeInput) (Node, error)
 	UpdateNodeAddress(context.Context, UpdateNodeAddressInput) (Node, error)
+	UpdateNodeProfile(context.Context, UpdateNodeProfileInput) (Node, error)
 	DeleteNode(context.Context, string) (bool, error)
+}
+
+// GetNodesMetrics calls the official system metrics endpoint. usersOnline is
+// joined to /api/nodes by UUID by higher layers; names are presentation-only.
+func (c *Client) GetNodesMetrics(ctx context.Context) ([]NodeMetric, error) {
+	var envelope nodeMetricsEnvelope
+	if err := c.doJSON(ctx, http.MethodGet, "/api/system/nodes/metrics", nil, http.StatusOK, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Response == nil || envelope.Response.Nodes == nil {
+		return nil, invalidResponse("node metrics response is missing")
+	}
+	result := make([]NodeMetric, 0, len(*envelope.Response.Nodes))
+	for index, item := range *envelope.Response.Nodes {
+		metric, err := item.model()
+		if err != nil {
+			return nil, invalidResponse(fmt.Sprintf("node metric %d is incomplete", index))
+		}
+		result = append(result, metric)
+	}
+	return result, nil
 }
 
 // Client is a Remnawave HTTP API client.
@@ -193,6 +216,35 @@ func (c *Client) UpdateNodeAddress(ctx context.Context, input UpdateNodeAddressI
 	}
 	var envelope nodeEnvelope
 	request := updateNodeAddressRequest{UUID: uuid, Address: input.Address.Unmap().String()}
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/nodes", request, http.StatusOK, &envelope); err != nil {
+		return Node{}, err
+	}
+	if envelope.Response == nil {
+		return Node{}, invalidResponse("updated node response field is missing")
+	}
+	node, err := envelope.Response.model()
+	if err != nil {
+		return Node{}, invalidResponse("updated node response is incomplete")
+	}
+	return node, nil
+}
+
+// UpdateNodeProfile calls NodesController_updateNode (PATCH /api/nodes) with
+// the configProfile contract derived from a fresh, validated Host.
+func (c *Client) UpdateNodeProfile(ctx context.Context, input UpdateNodeProfileInput) (Node, error) {
+	uuid := strings.TrimSpace(input.UUID)
+	profile, err := DeploymentProfileFromHost(input.Host)
+	if !validUUID(uuid) || err != nil || input.Host.IsDisabled {
+		return Node{}, fmt.Errorf("Node UUID or Host profile: %w", ErrInvalidInput)
+	}
+	request := updateNodeProfileRequest{
+		UUID: uuid,
+		ConfigProfile: NodeConfigProfile{
+			ActiveConfigProfileUUID: profile.ActiveConfigProfileUUID,
+			ActiveInbounds:          append([]string(nil), profile.ActiveInbounds...),
+		},
+	}
+	var envelope nodeEnvelope
 	if err := c.doJSON(ctx, http.MethodPatch, "/api/nodes", request, http.StatusOK, &envelope); err != nil {
 		return Node{}, err
 	}

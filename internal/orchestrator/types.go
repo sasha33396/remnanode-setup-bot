@@ -76,6 +76,19 @@ type ProvisionVPSInput struct {
 	Certificate        certificates.Material
 }
 
+type NodeSNISwitchInput struct {
+	Address             netip.Addr
+	PreviousSNI         string
+	TargetSNI           string
+	Password            []byte
+	PreviousCertificate certificates.Material
+	Certificate         certificates.Material
+}
+
+type NodeSNISwitcher interface {
+	SwitchNodeSNI(context.Context, NodeSNISwitchInput) error
+}
+
 type RemnawaveAPI interface {
 	GetHosts(context.Context) ([]remnawave.Host, error)
 	GenerateSecretKey(context.Context) (string, error)
@@ -83,6 +96,7 @@ type RemnawaveAPI interface {
 	GetNode(context.Context, string) (remnawave.Node, error)
 	CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
 	UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
+	UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 }
 
 type DNSAPI interface {
@@ -97,11 +111,14 @@ type DeploymentRepository interface {
 }
 
 type Config struct {
+	PanelID                  string
+	DNSDisabled              bool
 	MaxConcurrentDeployments int
 	NodeConnectTimeout       time.Duration
 	InitialPollBackoff       time.Duration
 	MaxPollBackoff           time.Duration
 	Observer                 Observer
+	NodeSNISwitcher          NodeSNISwitcher
 }
 
 type Observer interface {
@@ -113,6 +130,7 @@ type Observer interface {
 }
 
 type PrepareInput struct {
+	PanelID        string
 	OperatorUserID int64
 	HostID         string
 	NodeName       string
@@ -125,7 +143,12 @@ type PreparedDeployment struct {
 	DNSZone                string
 	CertificateReadiness   CertificateReadiness
 	ConfigProfileReadiness bool
-	SafeWarnings           []string
+	Warnings               []OperatorNotice
+}
+
+type OperatorNotice struct {
+	Code    string
+	Message string
 }
 
 type StartInput struct {
@@ -141,14 +164,19 @@ type Progress struct {
 	Completed   int
 	Total       int
 	SafeMessage string
+	Status      deployment.StepStatus
+	Code        string
 }
 
 type ProgressSink func(Progress)
 
 type SafeLogEntry struct {
-	Step    string
-	Status  string
-	Summary string
+	Step        string
+	Status      string
+	Summary     string
+	Code        string
+	StartedAt   *time.Time
+	CompletedAt *time.Time
 }
 
 // SafeError exposes only an allow-listed operator message and code.
@@ -166,3 +194,6 @@ func (e *SafeError) Error() string {
 }
 
 func (e *SafeError) Unwrap() error { return e.Kind }
+
+func (e *SafeError) OperatorCode() string    { return e.Code }
+func (e *SafeError) OperatorMessage() string { return e.SafeMessage }

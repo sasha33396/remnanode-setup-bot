@@ -7,8 +7,17 @@ import (
 
 type wizardState uint8
 
+type serverIPProvider uint8
+
 const (
-	stateSelectingHost wizardState = iota + 1
+	serverIPProviderCherry serverIPProvider = iota + 1
+	serverIPProviderRoyal
+)
+
+const (
+	stateSelectingPanel wizardState = iota + 1
+	stateSelectingIPPanel
+	stateSelectingHost
 	stateAwaitingName
 	stateAwaitingIP
 	stateAwaitingPassword
@@ -18,23 +27,47 @@ const (
 	stateAwaitingIPChangeQuery
 	stateAwaitingIPChangeConfirmation
 	stateAwaitingNewIP
+	stateSelectingIPMode
+	stateSelectingServerIPScope
+	stateSelectingServerIPPanel
+	stateAwaitingServerIPNodeQuery
+	stateAwaitingServerCurrentIP
+	stateAwaitingServerNewIP
+	stateAwaitingServerIPPassword
+	stateSelectingDNSSyncPanel
+	stateAwaitingDNSSyncQuery
+	stateAwaitingDNSSyncConfirmation
+	stateDNSSyncRunning
+	stateDNSSyncCompleted
+	stateSelectingNodeMoveHost
+	stateAwaitingNodeMoveConfirmation
+	stateAwaitingNodeMovePassword
 )
 
 type wizard struct {
-	userID      int64
-	chatID      int64
-	nonce       string
-	state       wizardState
-	expiresAt   time.Time
-	hosts       []Host
-	selected    Host
-	nodeName    string
-	vpsIP       netip.Addr
-	password    []byte
-	preflight   PreflightResult
-	statusMsgID int
-	ipTarget    NodeIPChangeTarget
-	expiryTimer *time.Timer
+	userID           int64
+	chatID           int64
+	nonce            string
+	state            wizardState
+	expiresAt        time.Time
+	hosts            []Host
+	panels           []Panel
+	panel            Panel
+	selected         Host
+	nodeName         string
+	vpsIP            netip.Addr
+	password         []byte
+	preflight        PreflightResult
+	statusMsgID      int
+	ipTarget         NodeIPChangeTarget
+	dnsSyncTarget    NodeDNSSyncTarget
+	dnsSyncResult    string
+	nodeMoveTarget   NodeHostMoveTarget
+	serverIPProvider serverIPProvider
+	serverCurrentIP  netip.Addr
+	serverNewIP      netip.Addr
+	serverUpdateNode bool
+	expiryTimer      *time.Timer
 }
 
 func (w *wizard) clone() *wizard {
@@ -43,11 +76,14 @@ func (w *wizard) clone() *wizard {
 	}
 	result := *w
 	result.hosts = append([]Host(nil), w.hosts...)
+	result.panels = append([]Panel(nil), w.panels...)
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil
-	result.preflight.SafeWarnings = append([]string(nil), w.preflight.SafeWarnings...)
+	result.preflight.Warnings = append([]OperatorNotice(nil), w.preflight.Warnings...)
 	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
+	result.dnsSyncTarget.CurrentZones = append([]string(nil), w.dnsSyncTarget.CurrentZones...)
+	result.nodeMoveTarget.ExpectedInboundUUIDs = append([]string(nil), w.nodeMoveTarget.ExpectedInboundUUIDs...)
 	return &result
 }
 
@@ -58,6 +94,7 @@ func (w *wizard) clear() {
 	}
 	clearBytes(w.password)
 	w.password = nil
+	w.dnsSyncResult = ""
 }
 
 func clearBytes(value []byte) {

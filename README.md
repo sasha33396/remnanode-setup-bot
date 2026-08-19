@@ -21,8 +21,8 @@ private key is supplied as a read-only Compose secret; set
 or the `secrets/` directory.
 
 `TELEGRAM_ALLOWED_USERS` accepts comma-, semicolon-, or space-separated positive
-Telegram user IDs. `REMNA_API_IP` and `METRICS_IP` must be literal IPv4 or IPv6
-addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
+Telegram user IDs. Each panel's `remnawave.api_ip` and the global `METRICS_IP`
+must be literal IPv4 or IPv6 addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
 PostgreSQL URL.
 
 `XRAY_SNI_REPO_URL` defaults to the external-certificate fork and must be a
@@ -32,6 +32,16 @@ credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 `ACME_EMAIL` is the ACME account contact. `CF_API_TOKEN` is used only by the
 central DNS-01 client and is never copied to a Node. Certificate versions and
 the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
+
+Multi-panel mode is configured in `config/panels.yml`. Copy
+`config/panels.yml.example`, edit the panel URLs and set
+`PANELS_CONFIG_FILE=/etc/remnanode-setup-bot/panels.yml` in `.env`. Each entry
+has a stable lowercase `id`, display `name`, Remnawave URL, API IP and token-environment
+reference, its own Cloudflare token reference, and a DNS configuration whose
+mode is `enabled` or `disabled`. Token values stay in `.env` and are never
+embedded in YAML. `PANELS_JSON` remains supported for backwards compatibility,
+but cannot be combined with the YAML file. When neither source is configured,
+the legacy variables, including `REMNA_API_IP`, create one panel named `Default` with ID `default`.
 
 The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.
@@ -46,7 +56,7 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-Migrations `000001` through `000005` must be applied first. Startup verifies
+Migrations `000001` through `000006` must be applied first. Startup verifies
 PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
@@ -61,6 +71,177 @@ in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
 
+The **Ноды** menu first separates inventory by Remnawave panel. Inside each
+panel it shows three operator groups with live counts: critically low online
+(high priority), disabled Nodes (medium priority), and active/stable Nodes.
+Each Node opens as a card with panel, address, connection state, current online,
+and the threshold used for classification. The card and every
+critical-online alert include a direct **Изменить IP ноды** action. It resolves
+the selected Node and panel again and offers the same available methods as the
+main IP menu: panel/DNS replacement, Cherry server, and Royal server. Managed
+and legacy Nodes are both supported. The hoster paths reuse the Node's current
+IPv4 as the SSH target and continue directly with the new server IP, password,
+and automatic Remnawave/DNS update, without asking the operator to search for
+the Node manually. Disconnected Nodes
+and Nodes without a fresh online metric are shown in the panel summary but are
+excluded from low-online classification because connection loss is monitored
+separately.
+
+Every managed or legacy Node card, including cards opened from critical-online
+alerts, also has **Переместить между Host**. The operator selects another
+enabled Host from the same Remnawave panel and confirms the preview. Immediately
+before writing, the service re-reads the Node and Host and rejects the action if
+the active profile/inbound fingerprint changed. After receiving a transient
+root password, it verifies the current xray-sni state, obtains the target SNI
+certificate, atomically replaces `/opt/xray-sni/.env` and the certificate pair,
+runs `docker compose up -d`, and validates local TLS for the new SNI. A failed
+activation restores the previous environment and certificates before the
+Remnawave profile is touched. Only after server validation succeeds does the
+service apply the target Host's config profile/inbound mapping in Remnawave.
+For a managed Node, the service also persists the new Host/SNI binding so later
+certificate and Remna-to-DNS workflows use the new subdomain.
+The Node IP is not changed. Hosts with disabled or incomplete mappings and
+Hosts that resolve to the already active profile/inbound are not offered.
+
+The critical threshold is fixed and configured by
+`NODE_CRITICAL_ONLINE_THRESHOLD` (50 by default). A connected, enabled Node is
+critical when its current online count is equal to or below this value; panel
+median and Node count do not affect classification. The background monitor
+samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
+`NODE_MONITOR_CONFIRMATIONS` consecutive critical samples (2 by default), and
+sends an incident alert to every `TELEGRAM_ALLOWED_USERS` operator. While the
+Node remains critical, the warning repeats every `NODE_CRITICAL_ALERT_INTERVAL`
+(15 minutes by default). A temporary connection or metrics gap does not create
+a duplicate warning; a recovery message is sent after online returns above the
+current threshold.
+
+The **Сменить IP** menu contains four workflows:
+
+- **Панель + DNS-балансировка** updates the Remnawave Node and every matching
+  DNS-balancer zone. It supports both Nodes created by this bot and legacy
+  Nodes that exist only in Remnawave.
+- **Смена IP на Cherry (сервер)** performs the operating-system step from the
+  Cherry IP helper: it connects to the server with a transient root password,
+  adds an already assigned floating IPv4 address live, and persists it in
+  netplan. The existing network addresses and routes are not removed. A backup
+  is created before writing netplan and a failed generate/apply restores it.
+  The wizard then asks whether the Node already exists in Remnawave. For an
+  existing managed or legacy Node it obtains the current server IP from the
+  selected panel and updates the Node plus matching DNS zones after the server
+  is ready. If the Node has not been added yet, the server IP is entered
+  manually and only the server network configuration is changed.
+  This workflow does not order or assign an address through the Cherry API; the
+  floating IP must already be assigned to that server in Cherry Servers.
+- **Смена IP на Royal (сервер)** connects through the current IPv4, locates the
+  matching netplan interface, replaces only that IPv4 address while preserving
+  its prefix and all IPv6 configuration, and changes the default IPv4 gateway
+  to the new address's `x.x.x.1`. It backs up and validates netplan before an
+  asynchronous apply, then treats the operation as successful only after SSH
+  is verified through the new address. As with Cherry, an existing managed or
+  legacy Remnawave Node and its DNS zones can be updated automatically, or the
+  server-only path can be used before the Node is added to Remnawave.
+- **Синхронизировать Remna → DNS** treats the current Node address returned by
+  Remnawave as the canonical (title) IP and repairs its managed DNS zone. The
+  wizard shows the panel, Node, current Remnawave IP, persisted previous IP,
+  target zone, and planned action before requiring confirmation. If the old IP
+  is still present it is replaced while every unrelated balancer address is
+  preserved; if neither address is present, the Remnawave IP is added. The
+  Node itself is never changed. A fresh Remnawave read at confirmation prevents
+  stale previews from modifying DNS. Managed Nodes use their persisted SNI
+  association, so synchronization still works when the current IP is absent
+  from every DNS zone. For a legacy Node without deployment history, the bot
+  requires an exact match between the Node's active config-profile UUID and
+  inbound UUID and one active Host's profile/inbound, then uses that Host's
+  address as SNI. Multiple different matching Host addresses are treated as
+  ambiguous and no DNS write is made. Because a legacy Node has no persisted
+  previous IP, synchronization adds its Remnawave IP but does not guess which
+  existing balancer address should be removed. Telegram first marks the card
+  as running and then replaces it with the final result. If Telegram rejects
+  the edit, the same result is sent as a separate message; the receipt remains
+  replayable for the wizard TTL, so a repeated callback cannot execute the DNS
+  mutation twice or degrade into a generic expired-dialog response.
+
+The **Развёртывания** list is actionable. Opening a deployment shows only the
+buttons valid for its durable state: safe logs, step/DNS retry, Remnawave
+recheck, cancellation, or certificate repair. Certificate repair obtains the
+deployment UUID and SNI from PostgreSQL, acknowledges reviewed legacy DNS
+targets, and resumes the failed certificate step without requiring commands or
+manual database queries.
+
+### Live deployment checklist and operator codes
+
+Telegram renders deployment progress as one continuously updated checklist.
+The six durable workflow stages remain visible, while the VPS provisioning
+stage expands into its component stages (`system`, `docker`, `firewall`,
+`remnanode`, exporters, `logrotate`, `xray_sni`, and `healthcheck`). The symbols
+have a strict meaning:
+
+- `⬜` has not started;
+- `🔄` is currently running;
+- `✅` completed successfully (a previously satisfied idempotent stage also
+  uses this symbol and says that it was already configured);
+- `⚠️` completed or can continue, but the operator should read the bracketed
+  warning code and parenthesized explanation;
+- `❌` is a blocking failure. The checklist keeps the failed stage, safe error
+  code, safe message, and points to the deployment card actions.
+
+Operator-facing codes are stable, contain only uppercase ASCII letters,
+digits, and hyphens, and never include secrets or raw command output. `W-...`
+means a non-blocking warning; `E-...` means deployment stopped. Persisted
+underscore error codes are displayed with an `E-` prefix and hyphens, for
+example `PROVISIONING_FAILED` becomes `E-PROVISIONING-FAILED`.
+
+Common warning codes:
+
+| Code | Meaning / action |
+| --- | --- |
+| `W-DNS-DISABLED` | DNS balancing is disabled for the selected panel; no action is required if intentional. |
+| `W-DOCKER-NOT-INSTALLED` | Docker is absent and will be installed automatically. |
+| `W-REMNANODE-EXISTS` | Existing Remnanode files or containers will be inspected and reconciled. |
+| `W-XRAY-SNI-EXISTS` | Existing Xray SNI state will be inspected and reconciled. |
+| `W-SSH-PORT-NOT-DETECTED` | SSH works, but port 22 was not visible in the listening-port inspection. |
+| `W-COMPONENT-INSPECTION-FAILED` / `W-COMPONENT-INFO-INVALID` | Existing component state could not be fully identified; watch the corresponding provisioning stage. |
+| `W-CONTAINER-INSPECTION-FAILED` | Existing Docker containers could not be fully inspected. |
+
+Common blocking error families:
+
+| Codes | Operator action |
+| --- | --- |
+| `E-PREFLIGHT-FAILED`, `E-PREFLIGHT-REJECTED`, `E-HOST-INVALID` | Check VPS reachability/requirements or select a valid Host, then start again. |
+| `E-CERTIFICATE-*` | Open the deployment card and use certificate repair or safe logs before retrying. |
+| `E-KEYGEN-FAILED`, `E-PROVISIONING-FAILED`, `E-PROVISIONING-<COMPONENT>` | Inspect the marked VPS component, open safe logs, and retry the failed provisioning step. |
+| `E-DUPLICATE-NODE`, `E-NODE-CREATE-FAILED`, `E-NODE-UUID-*` | Resolve the Remnawave Node conflict/persistence problem, then retry. |
+| `E-NODE-CONNECTION-*`, `E-NODE-WAIT-FAILED`, `E-NODE-NOT-CONNECTED` | Check Remnanode connectivity and use the Remnawave recheck action. |
+| `E-DNS-*`, `E-NODE-NOT-HEALTHY` | Keep the healthy Node, fix DNS/health, and use the dedicated DNS retry or recheck action. |
+| `E-*-PERSIST-FAILED`, `E-PERSISTENCE-*`, `E-STATE-PERSIST-FAILED`, `E-STEP-PERSIST-FAILED` | Check PostgreSQL/service health before retrying; durable state could not be safely recorded. |
+
+Unknown internal failures are deliberately collapsed to
+`E-DEPLOYMENT-FAILED`; arbitrary error strings are never sent to Telegram.
+
+### Deployment history and detailed safe logs
+
+The **Развёртывания** screen uses the same operator model after the live run
+has finished. The recent list is localized and shows, for every Node, the
+panel, human-readable state, current workflow stage, `N/6` progress, last
+update time, and a safe error code when one exists. Raw database statuses such
+as `PROVISIONING` and `COMPLETED` are not shown to the operator.
+
+The deployment card additionally shows the target VPS IP, created/started/
+updated/completed timestamps, total duration, current stage, progress, and the
+durable safe error code/message. The **Подробный журнал** view renders every
+persisted workflow and provisioning component as a separate entry with:
+
+- `✅`, `🔄`, `⚠️`, `❌`, `⛔`, or `⬜` state;
+- localized main/component name;
+- explicit result summary;
+- warning or error code where applicable;
+- start and completion timestamps plus elapsed duration;
+- refresh and back-to-card buttons for an active deployment.
+
+Detailed logs remain deliberately safe: they contain only persisted allow-
+listed summaries and codes. Raw SSH/API output, root passwords, internal UUIDs,
+and certificate SNI values are never rendered in the history or log view.
+
 ## Deployment orchestration
 
 `internal/orchestrator` implements the resumable deployment workflow from
@@ -74,8 +255,8 @@ cancellation. A DNS failure preserves the healthy Remnawave Node, records
 `DNS_FAILED`, and can be resumed with the DNS-only retry operation. Certificate
 material is obtained only through the centralized Certificate Manager.
 
-The manager enforces one active certificate per normalized SNI, obtains and
-renews certificates with ACME DNS-01 through Cloudflare, stores protected
+The manager enforces one active certificate per panel and normalized SNI, obtains and
+renews certificates with a panel-scoped ACME account and Cloudflare credential, stores protected
 immutable versions, and distributes renewed material to DNS-configured Nodes.
 Node activation follows the pinned xray-sni external contract and rolls back on
 reload or TLS health failure.
@@ -90,12 +271,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000002_deployment_ssh_host
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager.down.sql
@@ -105,14 +288,15 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000001_deployments.down.sq
 
 ## Run with Docker Compose
 
-After creating `.env` and the SSH key file referenced by it:
+After creating `.env`, copying `config/panels.yml.example` to
+`config/panels.yml`, and creating the SSH key file referenced by `.env`:
 
 ```sh
 docker compose up --build
 ```
 
 The Compose stack persists PostgreSQL in `postgres_data` and protected
-certificate versions/account key in `certificate_store`. The deployer runs as
+certificate versions/account keys in panel-specific directories inside `certificate_store`. The deployer runs as
 root so a root-owned `0600` file-backed Compose secret works without host UID
 coordination. Its root filesystem remains read-only; all capabilities are
 dropped except `DAC_OVERRIDE` and `FOWNER`, which also permit reuse of volumes

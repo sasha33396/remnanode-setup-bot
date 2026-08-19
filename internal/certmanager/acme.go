@@ -50,32 +50,32 @@ func (i *ACMEIssuer) Issue(ctx context.Context, sni string) (certificates.Materi
 		return certificates.Material{}, err
 	}
 	if err := i.ensureAccount(ctx); err != nil {
-		return certificates.Material{}, ErrIssuanceFailed
+		return certificates.Material{}, safe("ACME account registration failed", ErrIssuanceFailed)
 	}
 	order, err := i.client.AuthorizeOrder(ctx, []acme.AuthzID{{Type: "dns", Value: domain}})
 	if err != nil {
-		return certificates.Material{}, ErrIssuanceFailed
+		return certificates.Material{}, safe("ACME certificate order failed", ErrIssuanceFailed)
 	}
 	for _, authorizationURL := range order.AuthzURLs {
 		authorization, err := i.client.GetAuthorization(ctx, authorizationURL)
 		if err != nil {
-			return certificates.Material{}, ErrIssuanceFailed
+			return certificates.Material{}, safe("ACME authorization lookup failed", ErrIssuanceFailed)
 		}
 		if authorization.Status == acme.StatusValid {
 			continue
 		}
 		challenge := dnsChallenge(authorization)
 		if challenge == nil {
-			return certificates.Material{}, ErrIssuanceFailed
+			return certificates.Material{}, safe("ACME server did not offer a DNS-01 challenge", ErrIssuanceFailed)
 		}
 		value, err := i.client.DNS01ChallengeRecord(challenge.Token)
 		if err != nil {
-			return certificates.Material{}, ErrIssuanceFailed
+			return certificates.Material{}, safe("ACME DNS-01 challenge value could not be generated", ErrIssuanceFailed)
 		}
 		challengeName := "_acme-challenge." + domain
 		cleanup, err := i.dns.Present(ctx, challengeName, value)
 		if err != nil {
-			return certificates.Material{}, ErrIssuanceFailed
+			return certificates.Material{}, safe(SafeMessage(err, "ACME DNS-01 challenge could not be presented"), ErrIssuanceFailed)
 		}
 		authorizationErr := func() error {
 			defer func() { _ = cleanup(context.WithoutCancel(ctx)) }()
@@ -89,12 +89,12 @@ func (i *ACMEIssuer) Issue(ctx context.Context, sni string) (certificates.Materi
 			return err
 		}()
 		if authorizationErr != nil {
-			return certificates.Material{}, ErrIssuanceFailed
+			return certificates.Material{}, safe(SafeMessage(authorizationErr, "ACME DNS-01 authorization failed"), ErrIssuanceFailed)
 		}
 	}
 	order, err = i.client.WaitOrder(ctx, order.URI)
 	if err != nil {
-		return certificates.Material{}, ErrIssuanceFailed
+		return certificates.Material{}, safe("ACME certificate order did not become ready", ErrIssuanceFailed)
 	}
 	certificateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -106,7 +106,7 @@ func (i *ACMEIssuer) Issue(ctx context.Context, sni string) (certificates.Materi
 	}
 	derChain, _, err := i.client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
 	if err != nil || len(derChain) == 0 {
-		return certificates.Material{}, ErrIssuanceFailed
+		return certificates.Material{}, safe("ACME certificate finalization failed", ErrIssuanceFailed)
 	}
 	fullchain := make([]byte, 0)
 	for _, der := range derChain {

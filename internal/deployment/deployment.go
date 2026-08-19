@@ -86,6 +86,7 @@ func (s StepStatus) Terminal() bool {
 // credentials; the initial root password must only ever exist in memory.
 type Deployment struct {
 	ID                        string
+	PanelID                   string
 	TelegramOperatorUserID    int64
 	SelectedRemnawaveHostUUID string
 	SelectedHostRemark        string

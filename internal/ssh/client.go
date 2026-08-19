@@ -14,6 +14,25 @@ import (
 
 const defaultSSHPort = 22
 
+// A pinned fingerprint identifies the key, but not its SSH algorithm. Some
+// servers advertise a newer ED25519/ECDSA key before an older pinned RSA key.
+// Try modern algorithms separately so a rejected key does not abort before the
+// server can present the pinned one. Deliberately exclude SHA-1 ssh-rsa.
+var pinnedHostKeyAlgorithmAttempts = [][]string{
+	{gossh.CertAlgoED25519v01},
+	{gossh.CertAlgoECDSA256v01},
+	{gossh.CertAlgoECDSA384v01},
+	{gossh.CertAlgoECDSA521v01},
+	{gossh.CertAlgoRSASHA512v01},
+	{gossh.CertAlgoRSASHA256v01},
+	{gossh.KeyAlgoED25519},
+	{gossh.KeyAlgoECDSA256},
+	{gossh.KeyAlgoECDSA384},
+	{gossh.KeyAlgoECDSA521},
+	{gossh.KeyAlgoRSASHA512},
+	{gossh.KeyAlgoRSASHA256},
+}
+
 var ErrInvalidConfiguration = errors.New("invalid SSH configuration")
 
 // ParseDeploymentPrivateKey parses the backend key without including key data
@@ -83,16 +102,46 @@ func (c *Client) connect(ctx context.Context, deploymentID string, address netip
 	connectCtx, cancel := context.WithTimeout(ctx, c.connectTimeout)
 	defer cancel()
 
+	_, pinned, err := c.hostKeys.Get(connectCtx, deploymentID)
+	if err != nil {
+		return nil, fmt.Errorf("load trusted SSH host key: %w", err)
+	}
+	attempts := [][]string{nil}
+	if pinned {
+		attempts = pinnedHostKeyAlgorithmAttempts
+	}
+
+	var lastErr error
+	for _, algorithms := range attempts {
+		connection, hostKeyAccepted, err := c.connectAttempt(connectCtx, deploymentID, address, username, auth, algorithms)
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+		if hostKeyAccepted {
+			// The pinned server was reached. Retrying another host-key
+			// algorithm cannot repair authentication or transport failures.
+			return nil, err
+		}
+		if err := connectCtx.Err(); err != nil {
+			return nil, fmt.Errorf("establish verified SSH connection: %w", err)
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) connectAttempt(connectCtx context.Context, deploymentID string, address netip.Addr, username string, auth gossh.AuthMethod, hostKeyAlgorithms []string) (*Connection, bool, error) {
 	verifier := newHostKeySession(connectCtx, deploymentID, c.hostKeys)
 	config := &gossh.ClientConfig{
-		User:            username,
-		Auth:            []gossh.AuthMethod{auth},
-		HostKeyCallback: verifier.callback,
+		User:              username,
+		Auth:              []gossh.AuthMethod{auth},
+		HostKeyCallback:   verifier.callback,
+		HostKeyAlgorithms: hostKeyAlgorithms,
 	}
 	endpoint := net.JoinHostPort(address.String(), fmt.Sprint(defaultSSHPort))
 	netConnection, err := (&net.Dialer{}).DialContext(connectCtx, "tcp", endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("connect to SSH endpoint: %w", err)
+		return nil, false, fmt.Errorf("connect to SSH endpoint: %w", err)
 	}
 	defer func() {
 		if netConnection != nil {
@@ -115,11 +164,11 @@ func (c *Client) connect(ctx context.Context, deploymentID string, address netip
 	clientConnection, channels, requests, err := gossh.NewClientConn(netConnection, endpoint, config)
 	close(handshakeFinished)
 	if err != nil {
-		return nil, fmt.Errorf("establish verified SSH connection: %w", err)
+		return nil, verifier.accepted(), fmt.Errorf("establish verified SSH connection: %w", err)
 	}
 	if err := verifier.commit(); err != nil {
 		_ = clientConnection.Close()
-		return nil, err
+		return nil, verifier.accepted(), err
 	}
 	_ = netConnection.SetDeadline(time.Time{})
 	sshClient := gossh.NewClient(clientConnection, channels, requests)
@@ -129,7 +178,7 @@ func (c *Client) connect(ctx context.Context, deploymentID string, address netip
 		defaultTimeout: c.commandTimeout,
 		stdoutLimit:    c.stdoutLimit,
 		stderrLimit:    c.stderrLimit,
-	}, nil
+	}, true, nil
 }
 
 // Connection is an authenticated, host-key-verified SSH connection.
