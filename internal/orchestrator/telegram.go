@@ -534,7 +534,7 @@ func (a *TelegramApplication) MoveNodeToHost(ctx context.Context, input telegram
 	return telegram.NodeHostMoveResult{
 		NodeName: result.NodeName, PreviousHostKnown: result.PreviousHostKnown,
 		PreviousHost: result.PreviousHost, TargetHost: result.TargetHost,
-		TargetAddress: result.TargetAddress, Managed: result.Managed,
+		TargetAddress: result.TargetAddress, Managed: result.Managed, DNSUpdated: result.DNSUpdated,
 	}, nil
 }
 

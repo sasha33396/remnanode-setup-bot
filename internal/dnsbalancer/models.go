@@ -47,3 +47,10 @@ type ReplaceIPResult struct {
 	IPs     []string
 	Nodes   []ZoneNode
 }
+
+// MoveIPResult reports an idempotent transfer between two DNS zones.
+type MoveIPResult struct {
+	SourceFQDN string
+	TargetFQDN string
+	Changed    bool
+}

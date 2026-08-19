@@ -104,6 +104,7 @@ type DNSAPI interface {
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
+	MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
 }
 
 type DeploymentRepository interface {

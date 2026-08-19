@@ -20,5 +20,8 @@ func (Disabled) AddIP(context.Context, string, netip.Addr) (AddIPResult, error) 
 func (Disabled) ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (ReplaceIPResult, error) {
 	return ReplaceIPResult{}, ErrInvalidInput
 }
+func (Disabled) MoveIP(context.Context, string, string, netip.Addr) (MoveIPResult, error) {
+	return MoveIPResult{}, ErrInvalidInput
+}
 
 var _ API = Disabled{}

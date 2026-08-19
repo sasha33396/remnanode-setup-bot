@@ -105,6 +105,97 @@ func TestReplaceIPPreservesOtherAddresses(t *testing.T) {
 	}
 }
 
+func TestMoveIPAddsTargetBeforeRemovingSource(t *testing.T) {
+	var mu sync.Mutex
+	sourceIPs := []string{"192.0.2.10", "192.0.2.11"}
+	targetIPs := []string{"198.51.100.20"}
+	var patchOrder []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			fmt.Fprintf(w, `[{"domain":"example.com","zones":[{"name":"old","ttl":60,"proxied":false,"ips":%s},{"name":"new","ttl":60,"proxied":false,"ips":%s}]}]`, mustJSON(sourceIPs), mustJSON(targetIPs))
+		case http.MethodPatch:
+			var request patchZoneRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			zone := strings.TrimPrefix(r.URL.Path, "/api/config/domains/example.com/zones/")
+			patchOrder = append(patchOrder, zone)
+			if zone == "old" {
+				sourceIPs = append([]string(nil), request.IPs...)
+			} else if zone == "new" {
+				targetIPs = append([]string(nil), request.IPs...)
+			}
+			fmt.Fprint(w, `{"status":"ok"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	result, err := client.MoveIP(context.Background(), "old.example.com", "new.example.com", netip.MustParseAddr("192.0.2.10"))
+	if err != nil || !result.Changed {
+		t.Fatalf("MoveIP() = %#v, %v", result, err)
+	}
+	if strings.Join(patchOrder, ",") != "new,old" {
+		t.Fatalf("PATCH order = %v", patchOrder)
+	}
+	if strings.Join(sourceIPs, ",") != "192.0.2.11" || strings.Join(targetIPs, ",") != "198.51.100.20,192.0.2.10" {
+		t.Fatalf("zones after move: source=%v target=%v", sourceIPs, targetIPs)
+	}
+}
+
+func TestMoveIPRestoresTargetWhenSourcePatchFails(t *testing.T) {
+	var mu sync.Mutex
+	sourceIPs := []string{"192.0.2.10"}
+	targetIPs := []string{"198.51.100.20"}
+	var patchOrder []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet {
+			fmt.Fprintf(w, `[{"domain":"example.com","zones":[{"name":"old","ttl":60,"proxied":false,"ips":%s},{"name":"new","ttl":60,"proxied":false,"ips":%s}]}]`, mustJSON(sourceIPs), mustJSON(targetIPs))
+			return
+		}
+		var request patchZoneRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		zone := strings.TrimPrefix(r.URL.Path, "/api/config/domains/example.com/zones/")
+		patchOrder = append(patchOrder, zone)
+		if zone == "old" {
+			http.Error(w, "failed", http.StatusInternalServerError)
+			return
+		}
+		targetIPs = append([]string(nil), request.IPs...)
+		fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	_, err := client.MoveIP(context.Background(), "old.example.com", "new.example.com", netip.MustParseAddr("192.0.2.10"))
+	if err == nil {
+		t.Fatal("MoveIP() succeeded after source PATCH failure")
+	}
+	if strings.Join(patchOrder, ",") != "new,old,new" {
+		t.Fatalf("PATCH order = %v", patchOrder)
+	}
+	if strings.Join(targetIPs, ",") != "198.51.100.20" {
+		t.Fatalf("target zone was not restored: %v", targetIPs)
+	}
+}
+
+func mustJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
 func TestFindAndReplaceAdvancedNodeIP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

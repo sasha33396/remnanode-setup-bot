@@ -151,6 +151,10 @@ func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
 		{UUID: testHostUUID, Remark: "old-host", Address: "old.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID}},
 		{UUID: secondHostUUID, Remark: "new-host", Address: "new.example.com", Inbound: remnawave.HostInbound{ConfigProfileUUID: &secondProfileUUID, ConfigProfileInboundUUID: &secondInboundUUID}},
 	}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{
+		{FQDN: "old.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8", "9.9.9.9"}}},
+		{FQDN: "new.example.com", Zone: dnsbalancer.Zone{IPs: []string{"1.1.1.1"}}},
+	}
 
 	target, options, err := fixture.service.PrepareNodeHostMove(context.Background(), testNodeUUID)
 	if err != nil || target.Managed || !target.CurrentHostKnown || target.CurrentHostRemark != "old-host" || len(options) != 1 || options[0].UUID != secondHostUUID {
@@ -170,6 +174,9 @@ func TestMoveNodeToHostSupportsLegacyNode(t *testing.T) {
 	}
 	if got := fixture.remnawave.nodes[0]; got.ActiveConfigProfileUUID == nil || *got.ActiveConfigProfileUUID != secondProfileUUID || len(got.ActiveInboundUUIDs) != 1 || got.ActiveInboundUUIDs[0] != secondInboundUUID || got.Address != "8.8.8.8" {
 		t.Fatalf("updated Node = %#v", got)
+	}
+	if fixture.dns.moveCalls != 1 || len(fixture.dns.zones[0].Zone.IPs) != 1 || fixture.dns.zones[0].Zone.IPs[0] != "9.9.9.9" || len(fixture.dns.zones[1].Zone.IPs) != 2 || fixture.dns.zones[1].Zone.IPs[1] != "8.8.8.8" {
+		t.Fatalf("DNS zones were not moved: %#v", fixture.dns.zones)
 	}
 }
 
@@ -1117,10 +1124,46 @@ func (f *fakeCertificateProvider) Bootstrap(context.Context, string, int64) (cer
 type fakeDNS struct {
 	mu sync.Mutex
 
-	events   *eventLog
-	addErr   error
-	addCalls int
-	zones    []dnsbalancer.ZoneMatch
+	events    *eventLog
+	addErr    error
+	addCalls  int
+	moveCalls int
+	zones     []dnsbalancer.ZoneMatch
+}
+
+func (f *fakeDNS) MoveIP(_ context.Context, sourceFQDN, targetFQDN string, ip netip.Addr) (dnsbalancer.MoveIPResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.moveCalls++
+	f.events.add("dns.move")
+	if f.addErr != nil {
+		return dnsbalancer.MoveIPResult{}, f.addErr
+	}
+	changed := false
+	for zoneIndex := range f.zones {
+		zone := &f.zones[zoneIndex]
+		if zone.FQDN == sourceFQDN {
+			kept := zone.Zone.IPs[:0]
+			for _, value := range zone.Zone.IPs {
+				if value == ip.String() {
+					changed = true
+					continue
+				}
+				kept = append(kept, value)
+			}
+			zone.Zone.IPs = kept
+		}
+		if zone.FQDN == targetFQDN {
+			found := false
+			for _, value := range zone.Zone.IPs {
+				found = found || value == ip.String()
+			}
+			if !found {
+				zone.Zone.IPs = append(zone.Zone.IPs, ip.String())
+			}
+		}
+	}
+	return dnsbalancer.MoveIPResult{SourceFQDN: sourceFQDN, TargetFQDN: targetFQDN, Changed: changed}, nil
 }
 
 func (f *fakeDNS) FindZonesByIP(_ context.Context, ip netip.Addr) ([]dnsbalancer.ZoneMatch, error) {
