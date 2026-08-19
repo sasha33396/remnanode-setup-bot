@@ -42,6 +42,7 @@ const (
 	stateSelectingNodeMoveHost
 	stateAwaitingNodeMoveConfirmation
 	stateAwaitingNodeMovePassword
+	stateAwaitingNodeSearch
 )
 
 type wizard struct {

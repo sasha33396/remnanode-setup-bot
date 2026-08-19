@@ -34,6 +34,7 @@ type API interface {
 	FindZonesByIP(context.Context, netip.Addr) ([]ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (ReplaceIPResult, error)
+	MoveIP(context.Context, string, string, netip.Addr) (MoveIPResult, error)
 }
 
 // FindZonesByIP returns every simple or advanced zone containing ip.
@@ -292,6 +293,158 @@ func (c *Client) ReplaceIP(ctx context.Context, fqdn string, oldIP, newIP netip.
 		return ReplaceIPResult{}, invalidResponse("PATCH status is missing or not ok")
 	}
 	return ReplaceIPResult{FQDN: match.FQDN, Changed: true, IPs: complete}, nil
+}
+
+// MoveIP transfers ip between two zones while holding both zone locks. The
+// target is patched first; a source PATCH failure restores the target snapshot.
+func (c *Client) MoveIP(ctx context.Context, sourceFQDN, targetFQDN string, ip netip.Addr) (MoveIPResult, error) {
+	sourceKey, targetKey := normalizeFQDN(sourceFQDN), normalizeFQDN(targetFQDN)
+	if sourceKey == "" || targetKey == "" || sourceKey == targetKey || !ip.IsValid() {
+		return MoveIPResult{}, fmt.Errorf("FQDN or IP: %w", ErrInvalidInput)
+	}
+	keys := []string{sourceKey, targetKey}
+	if keys[1] < keys[0] {
+		keys[0], keys[1] = keys[1], keys[0]
+	}
+	unlockFirst, err := c.locker.Lock(ctx, keys[0])
+	if err != nil {
+		return MoveIPResult{}, fmt.Errorf("lock DNS zone: %w", err)
+	}
+	defer unlockFirst()
+	unlockSecond, err := c.locker.Lock(ctx, keys[1])
+	if err != nil {
+		return MoveIPResult{}, fmt.Errorf("lock DNS zone: %w", err)
+	}
+	defer unlockSecond()
+
+	domains, err := c.GetDomains(ctx)
+	if err != nil {
+		return MoveIPResult{}, fmt.Errorf("read DNS configuration: %w", err)
+	}
+	source, err := LocateZone(domains, sourceKey)
+	if err != nil {
+		return MoveIPResult{}, err
+	}
+	target, err := LocateZone(domains, targetKey)
+	if err != nil {
+		return MoveIPResult{}, err
+	}
+	if (source.Zone.Nodes != nil) != (target.Zone.Nodes != nil) {
+		return MoveIPResult{}, fmt.Errorf("source and target zone formats differ: %w", ErrInvalidInput)
+	}
+	ip = ip.Unmap()
+	sourceRequest, sourceFound, sourceNode, err := zoneWithoutIP(source.Zone, ip)
+	if err != nil {
+		return MoveIPResult{}, err
+	}
+	targetRequest, targetFound, err := zoneWithIP(target.Zone, ip, sourceNode)
+	if err != nil {
+		return MoveIPResult{}, err
+	}
+	result := MoveIPResult{SourceFQDN: source.FQDN, TargetFQDN: target.FQDN}
+	if !sourceFound {
+		if targetFound {
+			return result, nil
+		}
+		return MoveIPResult{}, fmt.Errorf("source IP is absent: %w", ErrNotFound)
+	}
+	if !targetFound {
+		if err := c.patchZone(ctx, target, targetRequest); err != nil {
+			return MoveIPResult{}, err
+		}
+	}
+	if err := c.patchZone(ctx, source, sourceRequest); err != nil {
+		if !targetFound {
+			_ = c.patchZone(ctx, target, zoneSnapshotRequest(target.Zone))
+		}
+		return MoveIPResult{}, err
+	}
+	result.Changed = true
+	return result, nil
+}
+
+func zoneWithoutIP(zone Zone, ip netip.Addr) (patchZoneRequest, bool, *ZoneNode, error) {
+	if zone.Nodes != nil {
+		nodes := make([]ZoneNode, 0, len(zone.Nodes))
+		var moved *ZoneNode
+		for _, item := range zone.Nodes {
+			parsed, err := netip.ParseAddr(strings.TrimSpace(item.IP))
+			if err != nil {
+				return patchZoneRequest{}, false, nil, invalidResponse("zone contains an invalid advanced-node IP")
+			}
+			if parsed.Unmap() == ip {
+				copy := item
+				moved = &copy
+				continue
+			}
+			nodes = append(nodes, item)
+		}
+		return patchZoneRequest{Nodes: nodes}, moved != nil, moved, nil
+	}
+	ips := make([]string, 0, len(zone.IPs))
+	found := false
+	for _, value := range zone.IPs {
+		parsed, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			return patchZoneRequest{}, false, nil, invalidResponse("zone contains an invalid IP")
+		}
+		if parsed.Unmap() == ip {
+			found = true
+			continue
+		}
+		ips = append(ips, parsed.Unmap().String())
+	}
+	return patchZoneRequest{IPs: ips}, found, nil, nil
+}
+
+func zoneWithIP(zone Zone, ip netip.Addr, sourceNode *ZoneNode) (patchZoneRequest, bool, error) {
+	if zone.Nodes != nil {
+		nodes := append([]ZoneNode(nil), zone.Nodes...)
+		for _, item := range nodes {
+			parsed, err := netip.ParseAddr(strings.TrimSpace(item.IP))
+			if err != nil {
+				return patchZoneRequest{}, false, invalidResponse("zone contains an invalid advanced-node IP")
+			}
+			if parsed.Unmap() == ip {
+				return patchZoneRequest{Nodes: nodes}, true, nil
+			}
+		}
+		if sourceNode == nil {
+			return patchZoneRequest{}, false, fmt.Errorf("cannot infer advanced-node address: %w", ErrInvalidInput)
+		}
+		nodes = append(nodes, *sourceNode)
+		return patchZoneRequest{Nodes: nodes}, false, nil
+	}
+	ips := append([]string(nil), zone.IPs...)
+	for _, value := range ips {
+		parsed, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			return patchZoneRequest{}, false, invalidResponse("zone contains an invalid IP")
+		}
+		if parsed.Unmap() == ip {
+			return patchZoneRequest{IPs: ips}, true, nil
+		}
+	}
+	ips = append(ips, ip.String())
+	return patchZoneRequest{IPs: ips}, false, nil
+}
+
+func zoneSnapshotRequest(zone Zone) patchZoneRequest {
+	if zone.Nodes != nil {
+		return patchZoneRequest{Nodes: append([]ZoneNode(nil), zone.Nodes...)}
+	}
+	return patchZoneRequest{IPs: append([]string(nil), zone.IPs...)}
+}
+
+func (c *Client) patchZone(ctx context.Context, match ZoneMatch, request patchZoneRequest) error {
+	var response statusResponse
+	if err := c.doJSON(ctx, http.MethodPatch, c.zoneEndpoint(match.Domain, match.ZoneName), request, http.StatusOK, &response); err != nil {
+		return err
+	}
+	if response.Status == nil || *response.Status != "ok" {
+		return invalidResponse("PATCH status is missing or not ok")
+	}
+	return nil
 }
 
 func (c *Client) endpoint(path string) *url.URL {

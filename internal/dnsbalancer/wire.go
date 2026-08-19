@@ -1,6 +1,7 @@
 package dnsbalancer
 
 import (
+	"encoding/json"
 	"net/netip"
 	"strings"
 )
@@ -72,8 +73,19 @@ func (z zoneWire) model() (Zone, error) {
 }
 
 type patchZoneRequest struct {
-	IPs   []string   `json:"ips,omitempty"`
-	Nodes []ZoneNode `json:"nodes,omitempty"`
+	IPs   []string
+	Nodes []ZoneNode
+}
+
+func (r patchZoneRequest) MarshalJSON() ([]byte, error) {
+	if r.Nodes != nil {
+		return json.Marshal(struct {
+			Nodes []ZoneNode `json:"nodes"`
+		}{Nodes: r.Nodes})
+	}
+	return json.Marshal(struct {
+		IPs []string `json:"ips"`
+	}{IPs: r.IPs})
 }
 
 type statusResponse struct {

@@ -52,6 +52,7 @@ type NodeHostMoveResult struct {
 	TargetHost        string
 	TargetAddress     string
 	Managed           bool
+	DNSUpdated        bool
 }
 
 // PrepareNodeHostMove resolves the live Node and only returns enabled Hosts
@@ -112,8 +113,9 @@ func (s *DeploymentService) PrepareNodeHostMove(ctx context.Context, nodeUUID st
 }
 
 // MoveNodeToHost re-reads both the Node and Host, switches the server-side SNI,
-// and then updates Remnawave's configProfile binding. The Node address and DNS
-// records are never modified.
+// then updates Remnawave's configProfile binding, and finally moves the Node IP
+// from the previous SNI zone to the target SNI zone. The Node address is never
+// modified.
 func (s *DeploymentService) MoveNodeToHost(ctx context.Context, input NodeHostMoveInput) (NodeHostMoveResult, error) {
 	input.NodeUUID = strings.TrimSpace(input.NodeUUID)
 	input.TargetHostUUID = strings.TrimSpace(input.TargetHostUUID)
@@ -194,23 +196,33 @@ func (s *DeploymentService) MoveNodeToHost(ctx context.Context, input NodeHostMo
 	}
 	updated, err := s.remnawave.UpdateNodeProfile(runCtx, remnawave.UpdateNodeProfileInput{UUID: node.UUID, Host: *selected})
 	if err != nil {
-		s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate)
+		s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate, false)
 		return NodeHostMoveResult{}, ErrNodeHostMoveFailed
 	}
 	updatedProfile, updatedInbounds := nodeProfileFingerprint(updated)
 	if !sameNodeProfile(updatedProfile, updatedInbounds, targetProfile.ActiveConfigProfileUUID, targetProfile.ActiveInbounds) {
-		s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate)
+		s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate, false)
 		return NodeHostMoveResult{}, ErrNodeHostMoveFailed
+	}
+	dnsChanged := false
+	dnsUpdated := !s.config.DNSDisabled
+	if !s.config.DNSDisabled {
+		dnsResult, err := s.dns.MoveIP(runCtx, previousProfile.SNIDomain, targetProfile.SNIDomain, address)
+		if err != nil {
+			s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate, false)
+			return NodeHostMoveResult{}, ErrDNSUpdateFailed
+		}
+		dnsChanged = dnsResult.Changed
 	}
 	if managed {
 		if _, err := s.repository.SetNodeHostBinding(runCtx, managedDeployment.ID, repository.SetNodeHostBindingParams{
 			HostUUID: selected.UUID, HostRemark: selected.Remark, SNIDomain: targetProfile.SNIDomain,
 		}); err != nil {
-			s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate)
+			s.rollbackNodeHostMove(runCtx, node.UUID, previous[0], address, targetProfile.SNIDomain, input.Password, targetCertificate, previousCertificate, dnsChanged)
 			return NodeHostMoveResult{}, ErrPersistenceFailed
 		}
 	}
-	result := NodeHostMoveResult{NodeName: node.Name, TargetHost: selected.Remark, TargetAddress: targetProfile.SNIDomain, Managed: managed}
+	result := NodeHostMoveResult{NodeName: node.Name, TargetHost: selected.Remark, TargetAddress: targetProfile.SNIDomain, Managed: managed, DNSUpdated: dnsUpdated}
 	if len(previous) == 1 {
 		result.PreviousHostKnown = true
 		result.PreviousHost = previous[0].Remark
@@ -218,13 +230,16 @@ func (s *DeploymentService) MoveNodeToHost(ctx context.Context, input NodeHostMo
 	return result, nil
 }
 
-func (s *DeploymentService) rollbackNodeHostMove(ctx context.Context, nodeUUID string, previousHost remnawave.Host, address netip.Addr, targetSNI string, password []byte, targetCertificate, previousCertificate certificates.Material) {
+func (s *DeploymentService) rollbackNodeHostMove(ctx context.Context, nodeUUID string, previousHost remnawave.Host, address netip.Addr, targetSNI string, password []byte, targetCertificate, previousCertificate certificates.Material, dnsChanged bool) {
 	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
 	_, _ = s.remnawave.UpdateNodeProfile(rollbackCtx, remnawave.UpdateNodeProfileInput{UUID: nodeUUID, Host: previousHost})
 	previousProfile, err := remnawave.DeploymentProfileFromHost(previousHost)
 	if err != nil {
 		return
+	}
+	if dnsChanged {
+		_, _ = s.dns.MoveIP(rollbackCtx, targetSNI, previousProfile.SNIDomain, address)
 	}
 	_ = s.config.NodeSNISwitcher.SwitchNodeSNI(rollbackCtx, NodeSNISwitchInput{
 		Address: address, PreviousSNI: targetSNI, TargetSNI: previousProfile.SNIDomain,

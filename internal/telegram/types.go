@@ -151,6 +151,7 @@ type NodeHostMoveResult struct {
 	TargetHost        string
 	TargetAddress     string
 	Managed           bool
+	DNSUpdated        bool
 }
 
 // NodeDNSSyncTarget is an operator-safe preview. Address is always the

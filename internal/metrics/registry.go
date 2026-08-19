@@ -184,6 +184,7 @@ type DNSClient struct {
 		FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 		AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 		ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
+		MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
 	}
 	metrics *Registry
 }
@@ -193,6 +194,7 @@ func ObserveDNS(next interface {
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
+	MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
 }, registry *Registry) *DNSClient {
 	return &DNSClient{next: next, metrics: registry}
 }
@@ -214,6 +216,11 @@ func (c *DNSClient) AddIP(ctx context.Context, sni string, ip netip.Addr) (dnsba
 }
 func (c *DNSClient) ReplaceIP(ctx context.Context, sni string, oldIP, newIP netip.Addr) (dnsbalancer.ReplaceIPResult, error) {
 	value, err := c.next.ReplaceIP(ctx, sni, oldIP, newIP)
+	c.observe(err)
+	return value, err
+}
+func (c *DNSClient) MoveIP(ctx context.Context, sourceSNI, targetSNI string, ip netip.Addr) (dnsbalancer.MoveIPResult, error) {
+	value, err := c.next.MoveIP(ctx, sourceSNI, targetSNI, ip)
 	c.observe(err)
 	return value, err
 }

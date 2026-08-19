@@ -67,10 +67,13 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 
 	handleMessage(t, controller, 1, MenuNodes)
 	first := messenger.lastSent()
-	if !strings.Contains(first.text, "Выберите Remnawave-панель") || len(first.keyboard.Inline) != 2 {
+	if !strings.Contains(first.text, "Выберите Remnawave-панель") || len(first.keyboard.Inline) != 3 {
 		t.Fatalf("panel picker = %q %#v", first.text, first.keyboard)
 	}
-	if got := first.keyboard.Inline[0][0]; got.Text != "Hit — 5" || got.CallbackData != "nodes:p:0" {
+	if got := first.keyboard.Inline[0][0]; got.Text != "🔎 Найти ноду" || got.CallbackData != "nodes:search" {
+		t.Fatalf("search button = %#v", got)
+	}
+	if got := first.keyboard.Inline[1][0]; got.Text != "Hit — 5" || got.CallbackData != "nodes:p:0" {
 		t.Fatalf("Hit button = %#v", got)
 	}
 	handleCallback(t, controller, "nodes-panel", "nodes:p:0", first.message)
@@ -98,6 +101,38 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	card := edits[len(edits)-1]
 	if !strings.Contains(card.text, "Нода: de-low") || !strings.Contains(card.text, "Рекомендация") || strings.Contains(card.text, nodes[0].UUID) {
 		t.Fatalf("node card = %q", card.text)
+	}
+}
+
+func TestNodeSearchFindsByPartialNameAndIP(t *testing.T) {
+	nodes := []NodeSummary{
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "PL-Primary", Address: "2.26.173.226", Connected: true},
+		{PanelID: "horda", PanelName: "Horda", UUID: "00000000-0000-0000-0000-000000000002", Name: "pl-backup", Address: "1.1.1.1", Connected: true},
+	}
+	application := &fakeApplication{panels: []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}, nodes: nodes}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuNodes)
+	root := messenger.lastSent()
+	handleCallback(t, controller, "search", "nodes:search", root.message)
+	handleMessage(t, controller, 2, "PL-")
+	edits := messenger.editsSnapshot()
+	results := edits[len(edits)-1]
+	if !strings.Contains(results.text, "Найдено: 2") || len(results.keyboard.Inline) != 3 {
+		t.Fatalf("name search results = %q %#v", results.text, results.keyboard)
+	}
+	if got := results.keyboard.Inline[0][0]; got.CallbackData != "nodes:o:"+nodes[1].UUID && got.CallbackData != "nodes:o:"+nodes[0].UUID {
+		t.Fatalf("unexpected search result = %#v", got)
+	}
+
+	handleCallback(t, controller, "root", "nodes:root", root.message)
+	handleCallback(t, controller, "search-ip", "nodes:search", root.message)
+	handleMessage(t, controller, 3, "2.26.173.226")
+	edits = messenger.editsSnapshot()
+	results = edits[len(edits)-1]
+	if !strings.Contains(results.text, "Найдено: 1") || results.keyboard.Inline[0][0].CallbackData != "nodes:o:"+nodes[0].UUID {
+		t.Fatalf("IP search results = %q %#v", results.text, results.keyboard)
 	}
 }
 
