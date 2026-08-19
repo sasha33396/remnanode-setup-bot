@@ -199,6 +199,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return err
 	case stateAwaitingNodeMovePassword:
 		return c.acceptNodeMovePassword(ctx, message, session)
+	case stateAwaitingNodeSearch:
+		return c.acceptNodeSearch(ctx, message, session)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -319,7 +321,10 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 		switch action.action {
 		case "root":
+			c.cancelExisting(ctx, callback.FromUserID)
 			return c.showNodePanels(ctx, callback.Message.ChatID, callback.Message.ID)
+		case "search":
+			return c.beginNodeSearch(ctx, callback)
 		case "panel":
 			return c.showNodePanel(ctx, callback.Message.ChatID, callback.Message.ID, action.panelIndex)
 		case "group":

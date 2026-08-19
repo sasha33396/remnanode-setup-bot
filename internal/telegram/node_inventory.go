@@ -10,6 +10,8 @@ import (
 
 const nodeGroupPageSize = 12
 
+const nodeSearchResultLimit = 20
+
 type NodePolicy struct {
 	CriticalOnlineThreshold int
 }
@@ -129,7 +131,8 @@ func (c *Controller) showNodePanels(ctx context.Context, chatID int64, messageID
 	}
 	var builder strings.Builder
 	builder.WriteString("📡 Ноды\nВыберите Remnawave-панель. Число на кнопке — общее количество нод.")
-	rows := make([][]Button, 0, len(snapshots))
+	rows := make([][]Button, 0, len(snapshots)+1)
+	rows = append(rows, []Button{{Text: "🔎 Найти ноду", CallbackData: "nodes:search"}})
 	for index, snapshot := range snapshots {
 		rows = append(rows, []Button{{Text: fmt.Sprintf("%s — %d", safeLine(snapshot.Panel.Name, 42), len(snapshot.All)), CallbackData: fmt.Sprintf("nodes:p:%d", index)}})
 	}
@@ -342,6 +345,9 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 	if len(parts) == 2 && parts[0] == "nodes" && parts[1] == "root" {
 		return nodesCallback{action: "root"}, true
 	}
+	if len(parts) == 2 && parts[0] == "nodes" && parts[1] == "search" {
+		return nodesCallback{action: "search"}, true
+	}
 	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "p" {
 		panel, err := strconv.Atoi(parts[2])
 		return nodesCallback{action: "panel", panelIndex: panel}, err == nil && panel >= 0
@@ -375,6 +381,86 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 		return nodesCallback{action: action, uuid: parts[3]}, action != ""
 	}
 	return nodesCallback{}, false
+}
+
+func (c *Controller) beginNodeSearch(ctx context.Context, callback *CallbackQuery) error {
+	nonce, err := c.nonce()
+	if err != nil {
+		return c.renderNodeInventoryFailure(ctx, callback.Message.ChatID, callback.Message.ID)
+	}
+	c.cancelExisting(ctx, callback.FromUserID)
+	c.putSession(&wizard{
+		userID: callback.FromUserID, chatID: callback.Message.ChatID, nonce: nonce,
+		state: stateAwaitingNodeSearch, expiresAt: c.now().Add(c.ttl), statusMsgID: callback.Message.ID,
+	})
+	return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID,
+		"🔎 Поиск ноды\n\nОтправьте имя ноды или её IP-адрес.",
+		Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:root"}}}},
+	)
+}
+
+func (c *Controller) acceptNodeSearch(ctx context.Context, message *Message, session *wizard) error {
+	query := strings.TrimSpace(message.Text)
+	if query == "" || len(query) > 100 {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите имя ноды или IP-адрес длиной до 100 символов.", Keyboard{})
+		return err
+	}
+	nodes, err := c.app.ListNodes(ctx)
+	if err != nil {
+		return c.renderNodeInventoryFailure(ctx, session.chatID, session.statusMsgID)
+	}
+	matches := searchNodes(nodes, query)
+	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
+	if len(matches) == 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID,
+			fmt.Sprintf("🔎 Поиск ноды\n\nПо запросу «%s» ничего не найдено. Отправьте другое имя или IP-адрес.", safeLine(query, 100)),
+			Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:root"}}}},
+		)
+	}
+	active := c.takeSession(message.FromUserID, session.nonce, stateAwaitingNodeSearch)
+	if active == nil {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	active.clear()
+	visible := matches
+	if len(visible) > nodeSearchResultLimit {
+		visible = visible[:nodeSearchResultLimit]
+	}
+	rows := make([][]Button, 0, len(visible)+1)
+	for _, node := range visible {
+		label := safeLine(fmt.Sprintf("%s · %s · %s", node.PanelName, node.Name, node.Address), 60)
+		rows = append(rows, []Button{{Text: label, CallbackData: "nodes:o:" + node.UUID}})
+	}
+	rows = append(rows, []Button{{Text: "⬅️ К панелям", CallbackData: "nodes:root"}})
+	text := fmt.Sprintf("🔎 Результаты поиска: %s\nНайдено: %d.", safeLine(query, 100), len(matches))
+	if len(matches) > len(visible) {
+		text += fmt.Sprintf(" Показаны первые %d; уточните запрос для более точного результата.", len(visible))
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, text, Keyboard{Inline: rows})
+}
+
+func searchNodes(nodes []NodeSummary, query string) []NodeSummary {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	result := make([]NodeSummary, 0)
+	for _, node := range nodes {
+		name := strings.ToLower(strings.TrimSpace(node.Name))
+		address := strings.ToLower(strings.TrimSpace(node.Address))
+		if strings.Contains(name, normalized) || strings.Contains(address, normalized) {
+			result = append(result, node)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		leftExact := strings.EqualFold(strings.TrimSpace(result[i].Name), query) || strings.EqualFold(strings.TrimSpace(result[i].Address), query)
+		rightExact := strings.EqualFold(strings.TrimSpace(result[j].Name), query) || strings.EqualFold(strings.TrimSpace(result[j].Address), query)
+		if leftExact != rightExact {
+			return leftExact
+		}
+		if !strings.EqualFold(result[i].PanelName, result[j].PanelName) {
+			return strings.ToLower(result[i].PanelName) < strings.ToLower(result[j].PanelName)
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result
 }
 
 func (c *Controller) beginNodeHostMove(ctx context.Context, callback *CallbackQuery, uuid string) error {
