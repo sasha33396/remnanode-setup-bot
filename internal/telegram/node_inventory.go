@@ -436,7 +436,7 @@ func renderNodeMoveTarget(target NodeHostMoveTarget) string {
 }
 
 func renderNodeMoveConfirmation(target NodeHostMoveTarget, host Host) string {
-	return renderNodeMoveTarget(target) + fmt.Sprintf("\nНовый Host: %s (%s)\n\nБот установит сертификат нового SNI, заменит SNI_DOMAIN в /opt/xray-sni/.env, пересоздаст контейнер с проверкой и только затем изменит профиль/inbound в Remnawave. IP ноды не изменится.", safeLine(host.Remark, 80), safeLine(host.Address, 180))
+	return renderNodeMoveTarget(target) + fmt.Sprintf("\nНовый Host: %s (%s)\n\nБот определит установленный xray-sni, заменит SNI_DOMAIN, пересоздаст контейнер с проверкой и только затем изменит профиль/inbound в Remnawave. IP ноды не изменится.", safeLine(host.Remark, 80), safeLine(host.Address, 180))
 }
 
 func renderNodeMoveResult(result NodeHostMoveResult) string {

@@ -43,6 +43,16 @@ func (s *PasswordNodeSNISwitcher) SwitchNodeSNI(ctx context.Context, input NodeS
 		return ErrNodeSNISwitchFailed
 	}
 	defer connection.Close()
+	installType, err := detectXraySNIInstallType(ctx, connection, s.timeout)
+	if err != nil {
+		return ErrNodeSNISwitchFailed
+	}
+	if installType == "legacy" {
+		if err := provisioner.SwitchLegacyXraySNI(ctx, connection, input.PreviousSNI, input.TargetSNI, s.timeout); err != nil {
+			return ErrNodeSNISwitchFailed
+		}
+		return nil
+	}
 	current, err := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{
 		RepositoryURL: s.repository,
 		Ref:           s.ref,
@@ -71,6 +81,25 @@ func (s *PasswordNodeSNISwitcher) SwitchNodeSNI(ctx context.Context, input NodeS
 		return ErrNodeSNISwitchFailed
 	}
 	return nil
+}
+
+func detectXraySNIInstallType(ctx context.Context, runner sshclient.CommandRunner, timeout time.Duration) (string, error) {
+	result, err := runner.Run(ctx, sshclient.CommandRequest{Command: `# xray-sni:detect-install
+if [ -f /opt/xray-sni/docker-compose.yml ] || [ -f /opt/xray-sni/compose.yml ]; then
+    printf managed
+elif [ -f /root/xray-sni/docker-compose.yml ] || [ -f /root/xray-sni/compose.yml ]; then
+    printf legacy
+else
+    exit 1
+fi`, Timeout: timeout})
+	if err != nil {
+		return "", err
+	}
+	installType := strings.TrimSpace(result.Stdout)
+	if installType != "managed" && installType != "legacy" {
+		return "", ErrNodeSNISwitchFailed
+	}
+	return installType, nil
 }
 
 func nodeAddress(value string) (netip.Addr, error) {
