@@ -381,6 +381,77 @@ func (a *TelegramApplication) ReplaceNodeIP(ctx context.Context, input telegram.
 	return panel.Service.ReplaceNodeIP(ctx, NodeIPChangeInput{NodeUUID: input.NodeUUID, ExpectedIP: input.ExpectedIP, NewIP: input.NewIP})
 }
 
+func (a *TelegramApplication) PrepareBulkNodeIPChange(ctx context.Context, panelID string, mappings []telegram.BulkNodeIPMapping) (telegram.BulkNodeIPPlan, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return telegram.BulkNodeIPPlan{}, err
+	}
+	input := make([]BulkNodeIPMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		input = append(input, BulkNodeIPMapping{OldIP: mapping.OldIP, NewIP: mapping.NewIP})
+	}
+	plan, err := panel.Service.PrepareBulkNodeIPChange(ctx, input)
+	if err != nil {
+		return telegram.BulkNodeIPPlan{}, err
+	}
+	return telegramBulkNodeIPPlan(plan), nil
+}
+
+func (a *TelegramApplication) ApplyBulkNodeIPChange(ctx context.Context, input telegram.BulkNodeIPApplyInput, progress func(telegram.BulkNodeIPProgress)) (telegram.BulkNodeIPResult, error) {
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return telegram.BulkNodeIPResult{}, err
+	}
+	items := make([]BulkNodeIPPlanItem, 0, len(input.Items))
+	for _, item := range input.Items {
+		items = append(items, BulkNodeIPPlanItem{
+			NodeUUID: item.NodeUUID, NodeName: item.NodeName, OldIP: item.OldIP, NewIP: item.NewIP,
+			DNSZones: append([]string(nil), item.DNSZones...), Managed: item.Managed, WasDisabled: item.WasDisabled,
+		})
+	}
+	result, err := panel.Service.ApplyBulkNodeIPChange(ctx, BulkNodeIPApplyInput{Items: items, EnableDisabled: input.EnableDisabled}, func(update BulkNodeIPProgress) {
+		if progress != nil {
+			progress(telegram.BulkNodeIPProgress{Completed: update.Completed, Total: update.Total, Item: telegramBulkNodeIPItemResult(update.Item)})
+		}
+	})
+	converted := telegram.BulkNodeIPResult{Completed: result.Completed, Warnings: result.Warnings, Failed: result.Failed, Items: make([]telegram.BulkNodeIPItemResult, 0, len(result.Items))}
+	for _, item := range result.Items {
+		converted.Items = append(converted.Items, telegramBulkNodeIPItemResult(item))
+	}
+	return converted, err
+}
+
+func telegramBulkNodeIPPlan(plan BulkNodeIPPlan) telegram.BulkNodeIPPlan {
+	result := telegram.BulkNodeIPPlan{DisabledCount: plan.DisabledCount, WithoutDNS: plan.WithoutDNS, Items: make([]telegram.BulkNodeIPPlanItem, 0, len(plan.Items))}
+	for _, item := range plan.Items {
+		result.Items = append(result.Items, telegram.BulkNodeIPPlanItem{
+			NodeUUID: item.NodeUUID, NodeName: item.NodeName, OldIP: item.OldIP, NewIP: item.NewIP,
+			DNSZones: append([]string(nil), item.DNSZones...), Managed: item.Managed, WasDisabled: item.WasDisabled,
+		})
+	}
+	return result
+}
+
+func telegramBulkNodeIPItemResult(item BulkNodeIPItemResult) telegram.BulkNodeIPItemResult {
+	status := telegram.BulkNodeIPFailed
+	switch item.Status {
+	case BulkNodeIPCompleted:
+		status = telegram.BulkNodeIPCompleted
+	case BulkNodeIPWarning:
+		status = telegram.BulkNodeIPWarning
+	}
+	return telegram.BulkNodeIPItemResult{
+		Plan: telegram.BulkNodeIPPlanItem{
+			NodeUUID: item.Plan.NodeUUID, NodeName: item.Plan.NodeName, OldIP: item.Plan.OldIP, NewIP: item.Plan.NewIP,
+			DNSZones: append([]string(nil), item.Plan.DNSZones...), Managed: item.Plan.Managed, WasDisabled: item.Plan.WasDisabled,
+		},
+		Status: status, RemnawaveUpdated: item.RemnawaveUpdated, DNSZonesUpdated: item.DNSZonesUpdated,
+		DNSComplete: item.DNSComplete, PersistenceComplete: item.PersistenceComplete,
+		EnableAttempted: item.EnableAttempted, Enabled: item.Enabled, Connected: item.Connected,
+		Connecting: item.Connecting, LastStatusMessage: item.LastStatusMessage, SafeMessage: item.SafeMessage,
+	}
+}
+
 func (a *TelegramApplication) FindNodeForDNSSync(ctx context.Context, panelID, query string) (telegram.NodeDNSSyncTarget, error) {
 	panel, err := a.panel(panelID)
 	if err != nil {

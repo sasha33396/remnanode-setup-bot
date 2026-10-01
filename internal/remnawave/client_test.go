@@ -153,6 +153,30 @@ func TestUpdateNodeAddressSendsMinimalContract(t *testing.T) {
 	}
 }
 
+func TestSetNodeDisabledSendsMinimalContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/nodes" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 2 || body["uuid"] != testNodeUUID || body["isDisabled"] != false {
+			t.Errorf("PATCH body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":`+nodeJSON(testNodeUUID, "node-1", "198.51.100.20", false)+`}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	node, err := client.SetNodeDisabled(context.Background(), SetNodeDisabledInput{UUID: testNodeUUID, Disabled: false})
+	if err != nil || node.UUID != testNodeUUID || node.IsDisabled {
+		t.Fatalf("SetNodeDisabled() = %#v, %v", node, err)
+	}
+}
+
 func TestUpdateNodeProfileUsesValidatedHostContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch || r.URL.Path != "/api/nodes" {

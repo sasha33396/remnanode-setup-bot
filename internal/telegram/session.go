@@ -43,6 +43,11 @@ const (
 	stateAwaitingNodeMoveConfirmation
 	stateAwaitingNodeMovePassword
 	stateAwaitingNodeSearch
+	stateSelectingBulkIPPanel
+	stateAwaitingBulkIPList
+	stateAwaitingBulkIPConfirmation
+	stateBulkIPRunning
+	stateBulkIPCompleted
 )
 
 type wizard struct {
@@ -68,6 +73,9 @@ type wizard struct {
 	serverCurrentIP  netip.Addr
 	serverNewIP      netip.Addr
 	serverUpdateNode bool
+	bulkIPPlan       BulkNodeIPPlan
+	bulkIPResult     BulkNodeIPResult
+	bulkEnableNodes  bool
 	expiryTimer      *time.Timer
 }
 
@@ -85,6 +93,8 @@ func (w *wizard) clone() *wizard {
 	result.ipTarget.DNSZones = append([]string(nil), w.ipTarget.DNSZones...)
 	result.dnsSyncTarget.CurrentZones = append([]string(nil), w.dnsSyncTarget.CurrentZones...)
 	result.nodeMoveTarget.ExpectedInboundUUIDs = append([]string(nil), w.nodeMoveTarget.ExpectedInboundUUIDs...)
+	result.bulkIPPlan = cloneBulkNodeIPPlan(w.bulkIPPlan)
+	result.bulkIPResult = cloneBulkNodeIPResult(w.bulkIPResult)
 	return &result
 }
 
@@ -96,6 +106,26 @@ func (w *wizard) clear() {
 	clearBytes(w.password)
 	w.password = nil
 	w.dnsSyncResult = ""
+	w.bulkIPPlan = BulkNodeIPPlan{}
+	w.bulkIPResult = BulkNodeIPResult{}
+}
+
+func cloneBulkNodeIPPlan(value BulkNodeIPPlan) BulkNodeIPPlan {
+	result := value
+	result.Items = append([]BulkNodeIPPlanItem(nil), value.Items...)
+	for index := range result.Items {
+		result.Items[index].DNSZones = append([]string(nil), value.Items[index].DNSZones...)
+	}
+	return result
+}
+
+func cloneBulkNodeIPResult(value BulkNodeIPResult) BulkNodeIPResult {
+	result := value
+	result.Items = append([]BulkNodeIPItemResult(nil), value.Items...)
+	for index := range result.Items {
+		result.Items[index].Plan.DNSZones = append([]string(nil), value.Items[index].Plan.DNSZones...)
+	}
+	return result
 }
 
 func clearBytes(value []byte) {

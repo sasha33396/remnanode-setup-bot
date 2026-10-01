@@ -127,6 +127,11 @@ type updateNodeAddressRequest struct {
 	Address string `json:"address"`
 }
 
+type setNodeDisabledRequest struct {
+	UUID       string `json:"uuid"`
+	IsDisabled bool   `json:"isDisabled"`
+}
+
 type updateNodeProfileRequest struct {
 	UUID          string            `json:"uuid"`
 	ConfigProfile NodeConfigProfile `json:"configProfile"`

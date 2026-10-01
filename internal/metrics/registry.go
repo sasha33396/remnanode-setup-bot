@@ -109,6 +109,7 @@ type RemnawaveClient struct {
 		GetNode(context.Context, string) (remnawave.Node, error)
 		CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
 		UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
+		SetNodeDisabled(context.Context, remnawave.SetNodeDisabledInput) (remnawave.Node, error)
 		UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 	}
 	metrics *Registry
@@ -121,6 +122,7 @@ func ObserveRemnawave(next interface {
 	GetNode(context.Context, string) (remnawave.Node, error)
 	CreateNode(context.Context, remnawave.CreateNodeInput) (remnawave.Node, error)
 	UpdateNodeAddress(context.Context, remnawave.UpdateNodeAddressInput) (remnawave.Node, error)
+	SetNodeDisabled(context.Context, remnawave.SetNodeDisabledInput) (remnawave.Node, error)
 	UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 }, registry *Registry) *RemnawaveClient {
 	return &RemnawaveClient{next: next, metrics: registry}
@@ -164,6 +166,11 @@ func (c *RemnawaveClient) CreateNode(ctx context.Context, input remnawave.Create
 }
 func (c *RemnawaveClient) UpdateNodeAddress(ctx context.Context, input remnawave.UpdateNodeAddressInput) (remnawave.Node, error) {
 	value, err := c.next.UpdateNodeAddress(ctx, input)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) SetNodeDisabled(ctx context.Context, input remnawave.SetNodeDisabledInput) (remnawave.Node, error) {
+	value, err := c.next.SetNodeDisabled(ctx, input)
 	c.observe(err)
 	return value, err
 }

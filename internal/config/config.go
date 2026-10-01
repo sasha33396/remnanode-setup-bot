@@ -151,7 +151,7 @@ func load(lookup lookupFunc) (Config, error) {
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
 		NodeMonitorConfirmations:    2,
-		NodeCriticalOnlineThreshold: 50,
+		NodeCriticalOnlineThreshold: 20,
 	}
 	remnaAPIIP := legacyRequired("REMNA_API_IP")
 	if remnaAPIIP != "" {

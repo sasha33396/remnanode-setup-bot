@@ -26,7 +26,7 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
 		t.Fatalf("legacy panel = %#v", cfg.Panels)
 	}
-	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineThreshold != 50 {
+	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineThreshold != 20 {
 		t.Fatalf("node monitor defaults = interval %s, alert interval %s, confirmations %d, threshold %d", cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineThreshold)
 	}
 }

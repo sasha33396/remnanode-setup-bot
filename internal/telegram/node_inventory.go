@@ -17,7 +17,7 @@ type NodePolicy struct {
 }
 
 func DefaultNodePolicy() NodePolicy {
-	return NodePolicy{CriticalOnlineThreshold: 50}
+	return NodePolicy{CriticalOnlineThreshold: 20}
 }
 
 func normalizeNodePolicy(policy NodePolicy) NodePolicy {

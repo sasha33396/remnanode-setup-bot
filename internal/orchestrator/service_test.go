@@ -934,6 +934,8 @@ type fakeRemnawave struct {
 	alwaysConnecting bool
 	createCalls      int
 	profileUpdates   []remnawave.UpdateNodeProfileInput
+	disabledUpdates  []remnawave.SetNodeDisabledInput
+	disableErr       error
 }
 
 func (f *fakeRemnawave) GetHosts(context.Context) ([]remnawave.Host, error) {
@@ -994,6 +996,83 @@ func (f *fakeRemnawave) UpdateNodeAddress(_ context.Context, input remnawave.Upd
 		if f.nodes[index].UUID == input.UUID {
 			f.events.add("remnawave.update-address")
 			f.nodes[index].Address = input.Address.String()
+			return f.nodes[index], nil
+		}
+	}
+	return remnawave.Node{}, errors.New("Node not found")
+}
+
+func TestBulkNodeIPChangeIncludesDisabledNodeAndEnablesAfterDNS(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TelegramOperatorUserID: 42, SNIDomain: "edge.example.com", NodeName: "disabled-node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"), RemnawaveNodeUUID: stringPtr(testNodeUUID), Status: deployment.StatusCompleted}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "disabled-node", Address: "8.8.8.8", IsDisabled: true, IsConnecting: true}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}}}
+
+	plan, err := fixture.service.PrepareBulkNodeIPChange(context.Background(), []BulkNodeIPMapping{{OldIP: netip.MustParseAddr("8.8.8.8"), NewIP: netip.MustParseAddr("1.1.1.1")}})
+	if err != nil || len(plan.Items) != 1 || plan.DisabledCount != 1 || !plan.Items[0].WasDisabled || len(plan.Items[0].DNSZones) != 1 {
+		t.Fatalf("PrepareBulkNodeIPChange() = %#v, %v", plan, err)
+	}
+	result, err := fixture.service.ApplyBulkNodeIPChange(context.Background(), BulkNodeIPApplyInput{Items: plan.Items, EnableDisabled: true}, nil)
+	if err != nil || result.Completed != 1 || result.Warnings != 0 || result.Failed != 0 {
+		t.Fatalf("ApplyBulkNodeIPChange() = %#v, %v", result, err)
+	}
+	got := result.Items[0]
+	if !got.RemnawaveUpdated || !got.DNSComplete || !got.PersistenceComplete || !got.EnableAttempted || !got.Enabled || !got.Connecting {
+		t.Fatalf("item result = %#v", got)
+	}
+	if fixture.remnawave.nodes[0].Address != "1.1.1.1" || fixture.remnawave.nodes[0].IsDisabled {
+		t.Fatalf("updated Node = %#v", fixture.remnawave.nodes[0])
+	}
+	if persisted := fixture.repo.mustGet(item.ID).TargetVPSIP.String(); persisted != "1.1.1.1" {
+		t.Fatalf("persisted IP = %s", persisted)
+	}
+}
+
+func TestBulkNodeIPChangeKeepsNewPanelIPWhenDNSFails(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "legacy-node", Address: "8.8.8.8"}}
+	fixture.dns.zones = []dnsbalancer.ZoneMatch{{FQDN: "edge.example.com", Zone: dnsbalancer.Zone{IPs: []string{"8.8.8.8"}}}}
+	plan, err := fixture.service.PrepareBulkNodeIPChange(context.Background(), []BulkNodeIPMapping{{OldIP: netip.MustParseAddr("8.8.8.8"), NewIP: netip.MustParseAddr("1.1.1.1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.dns.addErr = errors.New("DNS unavailable")
+	result, err := fixture.service.ApplyBulkNodeIPChange(context.Background(), BulkNodeIPApplyInput{Items: plan.Items}, nil)
+	if err != nil || result.Warnings != 1 || result.Items[0].DNSComplete || !result.Items[0].RemnawaveUpdated {
+		t.Fatalf("ApplyBulkNodeIPChange() = %#v, %v", result, err)
+	}
+	if fixture.remnawave.nodes[0].Address != "1.1.1.1" {
+		t.Fatalf("Remnawave address rolled back to %s", fixture.remnawave.nodes[0].Address)
+	}
+}
+
+func TestPrepareBulkNodeIPChangeRejectsAddressSwap(t *testing.T) {
+	fixture := newFixture(t)
+	secondUUID := "55555555-5555-4555-8555-555555555555"
+	fixture.remnawave.nodes = []remnawave.Node{
+		{UUID: testNodeUUID, Name: "first", Address: "8.8.8.8"},
+		{UUID: secondUUID, Name: "second", Address: "1.1.1.1"},
+	}
+	_, err := fixture.service.PrepareBulkNodeIPChange(context.Background(), []BulkNodeIPMapping{
+		{OldIP: netip.MustParseAddr("8.8.8.8"), NewIP: netip.MustParseAddr("1.1.1.1")},
+		{OldIP: netip.MustParseAddr("1.1.1.1"), NewIP: netip.MustParseAddr("8.8.8.8")},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("swap error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func (f *fakeRemnawave) SetNodeDisabled(_ context.Context, input remnawave.SetNodeDisabledInput) (remnawave.Node, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.disableErr != nil {
+		return remnawave.Node{}, f.disableErr
+	}
+	for index := range f.nodes {
+		if f.nodes[index].UUID == input.UUID {
+			f.disabledUpdates = append(f.disabledUpdates, input)
+			f.nodes[index].IsDisabled = input.Disabled
 			return f.nodes[index], nil
 		}
 	}

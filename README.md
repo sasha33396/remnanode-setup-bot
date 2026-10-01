@@ -104,7 +104,7 @@ The Node IP is not changed. Hosts with disabled or incomplete mappings and
 Hosts that resolve to the already active profile/inbound are not offered.
 
 The critical threshold is fixed and configured by
-`NODE_CRITICAL_ONLINE_THRESHOLD` (50 by default). A connected, enabled Node is
+`NODE_CRITICAL_ONLINE_THRESHOLD` (20 by default). A connected, enabled Node is
 critical when its current online count is equal to or below this value; panel
 median and Node count do not affect classification. The background monitor
 samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
@@ -115,11 +115,22 @@ Node remains critical, the warning repeats every `NODE_CRITICAL_ALERT_INTERVAL`
 a duplicate warning; a recovery message is sent after online returns above the
 current threshold.
 
-The **Сменить IP** menu contains four workflows:
+The **Сменить IP** menu contains five workflows:
 
 - **Панель + DNS-балансировка** updates the Remnawave Node and every matching
   DNS-balancer zone. It supports both Nodes created by this bot and legacy
   Nodes that exist only in Remnawave.
+- **Массовая смена IP** accepts up to 50 strict `old IPv4 -> new IPv4`
+  mappings after panel selection. It validates the complete batch before any
+  write, resolves Nodes by their exact old address regardless of connected,
+  error, or disabled state, and updates Remnawave plus every DNS zone that
+  contained the old address. The hosting provider's new address is considered
+  authoritative, so a partial DNS failure never rolls Remnawave back to the
+  obsolete IP; failed items can be retried idempotently. Managed deployment
+  rows are updated as well. If disabled Nodes are present, the confirmation
+  offers to enable all of them only after their address, DNS, and persistence
+  updates succeed, then reports enabled/connected/connecting state. Address
+  swaps and cycles inside one batch are rejected.
 - **Смена IP на Cherry (сервер)** performs the operating-system step from the
   Cherry IP helper: it connects to the server with a transient root password,
   adds an already assigned floating IPv4 address live, and persists it in

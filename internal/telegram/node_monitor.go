@@ -17,8 +17,8 @@ type nodeAlertState struct {
 	lastNotification map[int64]time.Time
 }
 
-// NodeMonitor periodically checks connected nodes and notifies every allowed
-// operator when a node remains below its panel-relative online threshold.
+// NodeMonitor periodically checks connected, enabled nodes and notifies every
+// allowed operator when a node remains at or below the configured threshold.
 type NodeMonitor struct {
 	app            Application
 	messenger      Messenger

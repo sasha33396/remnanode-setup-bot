@@ -54,8 +54,8 @@ func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	panels := []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}
 	nodes := []NodeSummary{
-		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 50},
-		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 51},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "de-low", Address: "203.0.113.1", Connected: true, OnlineKnown: true, Online: 20},
+		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000002", Name: "de-good-1", Address: "203.0.113.2", Connected: true, OnlineKnown: true, Online: 21},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000003", Name: "de-good-2", Address: "203.0.113.3", Connected: true, OnlineKnown: true, Online: 360},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000004", Name: "de-off", Address: "203.0.113.4", Disabled: true},
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000005", Name: "de-disconnected", Address: "203.0.113.5"},
@@ -79,7 +79,7 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	handleCallback(t, controller, "nodes-panel", "nodes:p:0", first.message)
 	edits := messenger.editsSnapshot()
 	panel := edits[len(edits)-1]
-	if !strings.Contains(panel.text, "Критический порог: 50 онлайн или меньше") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
+	if !strings.Contains(panel.text, "Критический порог: 20 онлайн или меньше") || !strings.Contains(panel.text, "не участвуют в тревогах: 1") {
 		t.Fatalf("panel summary = %q", panel.text)
 	}
 	wantButtons := []string{"🚨 Критический онлайн — 1", "⏸ Отключённые — 1", "🟢 Активные / стабильные — 2"}
@@ -92,7 +92,7 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 	handleCallback(t, controller, "nodes-critical", "nodes:g:0:c:0", first.message)
 	edits = messenger.editsSnapshot()
 	critical := edits[len(edits)-1]
-	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 50" {
+	if !strings.Contains(critical.text, "Критический онлайн — Hit") || critical.keyboard.Inline[0][0].Text != "🚨 de-low — онлайн 20" {
 		t.Fatalf("critical list = %q %#v", critical.text, critical.keyboard)
 	}
 
@@ -807,6 +807,69 @@ func TestPublicIPValidation(t *testing.T) {
 	}
 }
 
+func TestBulkNodeIPMappingParser(t *testing.T) {
+	mappings, err := parseBulkNodeIPMappings("8.8.8.8 -> 1.1.1.1\n9.9.9.9 -> 4.4.4.4")
+	if err != nil || len(mappings) != 2 || mappings[0].OldIP.String() != "8.8.8.8" || mappings[1].NewIP.String() != "4.4.4.4" {
+		t.Fatalf("parseBulkNodeIPMappings() = %#v, %v", mappings, err)
+	}
+	for _, invalid := range []string{"", "8.8.8.8 1.1.1.1", "8.8.8.8 -> 8.8.8.8", "10.0.0.1 -> 1.1.1.1"} {
+		if _, err := parseBulkNodeIPMappings(invalid); err == nil {
+			t.Errorf("parseBulkNodeIPMappings(%q) unexpectedly succeeded", invalid)
+		}
+	}
+}
+
+func TestBulkNodeIPWizardOffersEnableAndRunsBatch(t *testing.T) {
+	planItem := BulkNodeIPPlanItem{
+		NodeUUID: "00000000-0000-0000-0000-000000000001", NodeName: "disabled-node",
+		OldIP: netip.MustParseAddr("8.8.8.8"), NewIP: netip.MustParseAddr("1.1.1.1"),
+		DNSZones: []string{"edge.example.com"}, WasDisabled: true,
+	}
+	application := &fakeBulkNodeIPApplication{
+		fakeApplication: &fakeApplication{panels: []Panel{{ID: "hit", Name: "Hit", DNSEnabled: true}}},
+		plan:            BulkNodeIPPlan{Items: []BulkNodeIPPlanItem{planItem}, DisabledCount: 1},
+		result: BulkNodeIPResult{Completed: 1, Items: []BulkNodeIPItemResult{{
+			Plan: planItem, Status: BulkNodeIPCompleted, RemnawaveUpdated: true, DNSComplete: true,
+			PersistenceComplete: true, EnableAttempted: true, Enabled: true, Connected: true,
+		}}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuChangeIP)
+	menu := messenger.lastSent()
+	var bulkCallback string
+	for _, row := range menu.keyboard.Inline {
+		if len(row) != 0 && row[0].Text == "Массовая смена IP" {
+			bulkCallback = row[0].CallbackData
+		}
+	}
+	if bulkCallback == "" {
+		t.Fatalf("bulk IP button missing: %#v", menu.keyboard)
+	}
+	handleCallback(t, controller, "bulk-mode", bulkCallback, menu.message)
+	handleMessage(t, controller, 2, "8.8.8.8 -> 1.1.1.1")
+	confirmation := messenger.lastSent()
+	if !strings.Contains(confirmation.text, "Отключённых: 1") || confirmation.keyboard.Inline[0][0].CallbackData != "bulk:run:fixed-nonce:1" {
+		t.Fatalf("bulk confirmation = %q %#v", confirmation.text, confirmation.keyboard)
+	}
+	handleCallback(t, controller, "bulk-run", confirmation.keyboard.Inline[0][0].CallbackData, confirmation.message)
+	controller.Wait()
+
+	application.mu.Lock()
+	applyCalls := application.applyCalls
+	input := application.input
+	application.mu.Unlock()
+	if applyCalls != 1 || !input.EnableDisabled || input.PanelID != "hit" || len(input.Items) != 1 {
+		t.Fatalf("bulk apply = calls %d input %#v", applyCalls, input)
+	}
+	edits := messenger.editsSnapshot()
+	last := edits[len(edits)-1]
+	if !strings.Contains(last.text, "Выполнено: 1") || !strings.Contains(last.text, "включена, подключена") {
+		t.Fatalf("bulk result = %q", last.text)
+	}
+}
+
 func testController(t *testing.T, app Application, messenger *fakeMessenger, now func() time.Time) *Controller {
 	t.Helper()
 	controller, err := newController([]int64{testAllowedUser}, app, messenger, 15*time.Minute, now, func() (string, error) { return "fixed-nonce", nil })
@@ -893,6 +956,19 @@ type fakeNodeIPApplication struct {
 	input        NodeIPChangeInput
 	findPanel    string
 	findQuery    string
+}
+
+type fakeBulkNodeIPApplication struct {
+	*fakeApplication
+	mu           sync.Mutex
+	plan         BulkNodeIPPlan
+	prepareErr   error
+	result       BulkNodeIPResult
+	applyErr     error
+	applyCalls   int
+	input        BulkNodeIPApplyInput
+	preparePanel string
+	mappings     []BulkNodeIPMapping
 }
 
 type fakeAllNodeIPApplication struct {
@@ -1027,6 +1103,29 @@ func (f *fakeNodeIPApplication) ReplaceNodeIP(_ context.Context, input NodeIPCha
 	f.replaceCalls++
 	f.input = input
 	return "IP изменён", f.replaceErr
+}
+
+func (f *fakeBulkNodeIPApplication) PrepareBulkNodeIPChange(_ context.Context, panelID string, mappings []BulkNodeIPMapping) (BulkNodeIPPlan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.preparePanel = panelID
+	f.mappings = append([]BulkNodeIPMapping(nil), mappings...)
+	return cloneBulkNodeIPPlan(f.plan), f.prepareErr
+}
+
+func (f *fakeBulkNodeIPApplication) ApplyBulkNodeIPChange(_ context.Context, input BulkNodeIPApplyInput, progress func(BulkNodeIPProgress)) (BulkNodeIPResult, error) {
+	f.mu.Lock()
+	f.applyCalls++
+	f.input = input
+	f.input.Items = append([]BulkNodeIPPlanItem(nil), input.Items...)
+	result, err := cloneBulkNodeIPResult(f.result), f.applyErr
+	f.mu.Unlock()
+	for index, item := range result.Items {
+		if progress != nil {
+			progress(BulkNodeIPProgress{Completed: index + 1, Total: len(result.Items), Item: item})
+		}
+	}
+	return result, err
 }
 
 func (f *fakeDNSSyncApplication) FindNodeForDNSSync(context.Context, string, string) (NodeDNSSyncTarget, error) {

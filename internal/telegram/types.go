@@ -120,6 +120,71 @@ type NodeIPChangeInput struct {
 	NewIP      netip.Addr
 }
 
+const MaxBulkNodeIPChanges = 50
+
+type BulkNodeIPMapping struct {
+	OldIP netip.Addr
+	NewIP netip.Addr
+}
+
+type BulkNodeIPPlanItem struct {
+	NodeUUID    string
+	NodeName    string
+	OldIP       netip.Addr
+	NewIP       netip.Addr
+	DNSZones    []string
+	Managed     bool
+	WasDisabled bool
+}
+
+type BulkNodeIPPlan struct {
+	Items         []BulkNodeIPPlanItem
+	DisabledCount int
+	WithoutDNS    int
+}
+
+type BulkNodeIPApplyInput struct {
+	PanelID        string
+	Items          []BulkNodeIPPlanItem
+	EnableDisabled bool
+}
+
+type BulkNodeIPItemStatus string
+
+const (
+	BulkNodeIPCompleted BulkNodeIPItemStatus = "COMPLETED"
+	BulkNodeIPWarning   BulkNodeIPItemStatus = "WARNING"
+	BulkNodeIPFailed    BulkNodeIPItemStatus = "FAILED"
+)
+
+type BulkNodeIPItemResult struct {
+	Plan                BulkNodeIPPlanItem
+	Status              BulkNodeIPItemStatus
+	RemnawaveUpdated    bool
+	DNSZonesUpdated     int
+	DNSComplete         bool
+	PersistenceComplete bool
+	EnableAttempted     bool
+	Enabled             bool
+	Connected           bool
+	Connecting          bool
+	LastStatusMessage   string
+	SafeMessage         string
+}
+
+type BulkNodeIPProgress struct {
+	Completed int
+	Total     int
+	Item      BulkNodeIPItemResult
+}
+
+type BulkNodeIPResult struct {
+	Items     []BulkNodeIPItemResult
+	Completed int
+	Warnings  int
+	Failed    int
+}
+
 // NodeHostMoveTarget is a safe preview of the Node's current profile binding.
 // Profile UUIDs stay in transient server-side state and are never rendered.
 type NodeHostMoveTarget struct {
@@ -341,6 +406,13 @@ type RecoveryApplication interface {
 type NodeIPApplication interface {
 	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
+}
+
+// BulkNodeIPApplication updates Remnawave and DNS from an operator-supplied
+// old-to-new IPv4 mapping. Disabled and unhealthy Nodes remain eligible.
+type BulkNodeIPApplication interface {
+	PrepareBulkNodeIPChange(context.Context, string, []BulkNodeIPMapping) (BulkNodeIPPlan, error)
+	ApplyBulkNodeIPChange(context.Context, BulkNodeIPApplyInput, func(BulkNodeIPProgress)) (BulkNodeIPResult, error)
 }
 
 // NodeHostMoveApplication moves both managed and legacy Nodes between valid

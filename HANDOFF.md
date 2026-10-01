@@ -28,7 +28,7 @@ git pull --ff-only
 - Each panel separates Nodes into critically low online, disabled, and
   active/stable groups. Group buttons display live counts and each Node opens
   an operator-safe card.
-- A connected, enabled Node is critical when `usersOnline <= 50`. This is a
+- A connected, enabled Node is critical when `usersOnline <= 20`. This is a
   fixed configurable threshold; panel median and Node count are not used.
 - Disabled Nodes are medium priority. Disconnected/connecting Nodes and Nodes
   without a fresh metric are excluded from low-online alerts because connection
@@ -50,6 +50,13 @@ git pull --ff-only
 - Cherry/Royal paths reuse the selected Node's current public IPv4 as the SSH
   target, request the new provider-specific IP and transient root password,
   configure the server, then update that same Remnawave Node and DNS zones.
+- **Массовая смена IP** selects one DNS-enabled panel and accepts up to 50
+  `old IPv4 -> new IPv4` mappings. Disabled, disconnected, and error-state
+  Nodes are valid targets. The batch is fully prevalidated, executes each Node
+  independently, keeps the new Remnawave address when DNS only partially
+  succeeds, and exposes an idempotent retry for warnings/failures. Disabled
+  Nodes may optionally be enabled after their IP, DNS, and managed deployment
+  record are all updated; the final receipt reports their connection state.
 - Managed and legacy Node cards, including cards opened from critical alerts,
   expose **Переместить между Host**. The picker contains only enabled Hosts with
   a complete profile/inbound mapping from the Node's current panel.
@@ -87,7 +94,7 @@ explicit values in the server `.env`:
 NODE_MONITOR_INTERVAL=5m
 NODE_CRITICAL_ALERT_INTERVAL=15m
 NODE_MONITOR_CONFIRMATIONS=2
-NODE_CRITICAL_ONLINE_THRESHOLD=50
+NODE_CRITICAL_ONLINE_THRESHOLD=20
 ```
 
 The obsolete `NODE_CRITICAL_ONLINE_FLOOR`,

@@ -148,7 +148,7 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
 	case stateSelectingIPMode, stateSelectingServerIPScope:
@@ -171,6 +171,17 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return err
 	case stateAwaitingIPChangeQuery:
 		return c.acceptIPChangeQuery(ctx, message, session)
+	case stateAwaitingBulkIPList:
+		return c.acceptBulkIPList(ctx, message, session)
+	case stateAwaitingBulkIPConfirmation:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Подтвердите массовую смену IP кнопкой под планом.", Keyboard{})
+		return err
+	case stateBulkIPRunning:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "⏳ Массовая смена IP уже выполняется.", Keyboard{})
+		return err
+	case stateBulkIPCompleted:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Используйте кнопки под итоговым сообщением.", Keyboard{})
+		return err
 	case stateAwaitingIPChangeConfirmation:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Используйте кнопки «Сменить» или «Отменить» под карточкой ноды.", Keyboard{})
 		return err
@@ -370,6 +381,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.beginServerIPScope(ctx, callback, session, serverIPProviderRoyal)
 		case 3:
 			return c.beginDNSSync(ctx, callback, session)
+		case 4:
+			return c.beginBulkIPChange(ctx, callback, session)
 		default:
 			return c.expiredCallback(ctx, callback)
 		}
@@ -413,6 +426,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.expiredCallback(ctx, callback)
 		}
 		return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите точное имя ноды или её актуальный IP из Remnawave.", Keyboard{})
+	case "bulk_panel":
+		return c.selectBulkIPPanel(ctx, callback, session, index)
 	case "panel":
 		if session.state != stateSelectingPanel || index < 0 || index >= len(session.panels) {
 			return c.expiredCallback(ctx, callback)
@@ -502,6 +517,20 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		}
 		removed.clear()
 		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Смена IP отменена.", Keyboard{})
+	case "bulk_run":
+		return c.startBulkIPChange(ctx, callback, session, index == 1, false)
+	case "bulk_retry":
+		return c.startBulkIPChange(ctx, callback, session, session.bulkEnableNodes, true)
+	case "bulk_cancel":
+		if session.statusMsgID != callback.Message.ID || (session.state != stateAwaitingBulkIPConfirmation && session.state != stateBulkIPCompleted) {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed := c.takeSession(callback.FromUserID, nonce, session.state)
+		if removed == nil {
+			return c.expiredCallback(ctx, callback)
+		}
+		removed.clear()
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Массовая смена IP закрыта.", Keyboard{})
 	case "dns_sync":
 		if session.statusMsgID != callback.Message.ID || !session.dnsSyncTarget.CanSync {
 			return c.expiredCallback(ctx, callback)
@@ -617,10 +646,11 @@ func (c *Controller) showHostPicker(ctx context.Context, userID, chatID int64, n
 func (c *Controller) beginIPChange(ctx context.Context, message *Message) error {
 	c.cancelExisting(ctx, message.FromUserID)
 	_, nodeAvailable := c.app.(NodeIPApplication)
+	_, bulkAvailable := c.app.(BulkNodeIPApplication)
 	_, cherryAvailable := c.app.(CherryIPApplication)
 	_, royalAvailable := c.app.(RoyalIPApplication)
 	_, dnsSyncAvailable := c.app.(NodeDNSSyncApplication)
-	if !nodeAvailable && !cherryAvailable && !royalAvailable && !dnsSyncAvailable {
+	if !nodeAvailable && !bulkAvailable && !cherryAvailable && !royalAvailable && !dnsSyncAvailable {
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Смена IP сейчас недоступна.", mainKeyboard())
 		return err
 	}
@@ -629,9 +659,12 @@ func (c *Controller) beginIPChange(ctx context.Context, message *Message) error 
 		_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось начать смену IP. Повторите позже.", mainKeyboard())
 		return errors.Join(err, sendErr)
 	}
-	rows := make([][]Button, 0, 4)
+	rows := make([][]Button, 0, 5)
 	if nodeAvailable {
 		rows = append(rows, []Button{{Text: "Панель + DNS-балансировка", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 0)}})
+	}
+	if bulkAvailable {
+		rows = append(rows, []Button{{Text: "Массовая смена IP", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 4)}})
 	}
 	if cherryAvailable {
 		rows = append(rows, []Button{{Text: "Смена IP на Cherry (сервер)", CallbackData: fmt.Sprintf("ip:mode:%s:%d", nonce, 1)}})
@@ -1722,10 +1755,32 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	}
 	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "mode" {
 		parsed, err := strconv.Atoi(parts[3])
-		if err != nil || parsed < 0 || parsed > 3 {
+		if err != nil || parsed < 0 || parsed > 4 {
 			return "", "", 0, false
 		}
 		return "ip_mode", parts[2], parsed, true
+	}
+	if parts[0] == "bulk" && len(parts) == 4 && parts[1] == "panel" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 {
+			return "", "", 0, false
+		}
+		return "bulk_panel", parts[2], parsed, true
+	}
+	if parts[0] == "bulk" && len(parts) == 4 && parts[1] == "run" {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 || parsed > 1 {
+			return "", "", 0, false
+		}
+		return "bulk_run", parts[2], parsed, true
+	}
+	if parts[0] == "bulk" && len(parts) == 3 {
+		switch parts[1] {
+		case "retry":
+			return "bulk_retry", parts[2], 0, true
+		case "cancel":
+			return "bulk_cancel", parts[2], 0, true
+		}
 	}
 	if parts[0] == "dns" && len(parts) == 4 && parts[1] == "panel" {
 		parsed, err := strconv.Atoi(parts[3])

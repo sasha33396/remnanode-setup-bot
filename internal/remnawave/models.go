@@ -74,6 +74,13 @@ type UpdateNodeAddressInput struct {
 	Address netip.Addr
 }
 
+// SetNodeDisabledInput changes only the administrative disabled flag of an
+// existing Node. Connection state is reported separately by Remnawave.
+type SetNodeDisabledInput struct {
+	UUID     string
+	Disabled bool
+}
+
 // UpdateNodeProfileInput changes the active config profile and inbounds of an
 // existing Node to the validated mapping owned by a Host.
 type UpdateNodeProfileInput struct {
