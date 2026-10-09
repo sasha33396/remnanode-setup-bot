@@ -3,11 +3,8 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 )
-
-var balancerTagPattern = regexp.MustCompile(`^[A-Z0-9_:]+$`)
 
 func (c *Controller) beginAdvancedBalancer(ctx context.Context, message *Message) error {
 	app, ok := c.app.(AdvancedBalancerApplication)
@@ -59,7 +56,15 @@ func (c *Controller) showBalancerSquads(ctx context.Context, session *wizard, me
 		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, "Internal Squads недоступны.", mainKeyboard())
 		return sendErr
 	}
-	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerSquad, func(current *wizard) { current.squads = options.Squads }) {
+	if len(options.Tags) == 0 {
+		c.cancelExisting(ctx, session.userID)
+		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, "В панели нет тегов подходящих Host. Нужен включённый видимый Host с тегом и выбранным шаблоном Xray JSON.", mainKeyboard())
+		return sendErr
+	}
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerSquad, func(current *wizard) {
+		current.squads = options.Squads
+		current.balancerTags = options.Tags
+	}) {
 		return c.sendExpired(ctx, session.chatID)
 	}
 	rows := make([][]Button, 0, len(options.Squads))
@@ -79,23 +84,31 @@ func (c *Controller) selectBalancerSquad(ctx context.Context, callback *Callback
 		return c.expiredCallback(ctx, callback)
 	}
 	squad := session.squads[index]
-	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerSquad, func(current *wizard) { current.selectedSquad = squad; current.state = stateAwaitingBalancerTag }) {
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerSquad, func(current *wizard) { current.selectedSquad = squad; current.state = stateSelectingBalancerTag }) {
 		return c.expiredCallback(ctx, callback)
 	}
-	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Введите тег виртуального Host, например BALANCER_2. Уже должен существовать включённый видимый Host с таким же тегом.", Keyboard{})
+	current, _, _ := c.loadSession(session.userID)
+	rows := make([][]Button, 0, (len(current.balancerTags)+1)/2)
+	for tagIndex, tag := range current.balancerTags {
+		button := Button{Text: safeLine(tag, 36), CallbackData: fmt.Sprintf("bal:tag:%s:%d", current.nonce, tagIndex)}
+		if tagIndex%2 == 0 {
+			rows = append(rows, []Button{button})
+		} else {
+			rows[len(rows)-1] = append(rows[len(rows)-1], button)
+		}
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выберите тег включённого видимого Host. Показаны только Host с настроенным шаблоном Xray JSON.", Keyboard{Inline: rows})
 }
 
-func (c *Controller) acceptBalancerTag(ctx context.Context, message *Message, session *wizard) error {
-	tag := strings.ToUpper(strings.TrimSpace(message.Text))
-	if !balancerTagPattern.MatchString(tag) || len(tag) > 36 {
-		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Некорректный тег. Разрешены A-Z, 0-9, _, :; максимум 36 символов.", Keyboard{})
-		return err
+func (c *Controller) selectBalancerTag(ctx context.Context, callback *CallbackQuery, session *wizard, index int) error {
+	if session.state != stateSelectingBalancerTag || index < 0 || index >= len(session.balancerTags) {
+		return c.expiredCallback(ctx, callback)
 	}
-	if !c.updateSession(session.userID, session.nonce, stateAwaitingBalancerTag, func(current *wizard) { current.balancerTag = tag; current.state = stateAwaitingBalancerFQDN }) {
-		return c.sendExpired(ctx, message.ChatID)
+	tag := session.balancerTags[index]
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerTag, func(current *wizard) { current.balancerTag = tag; current.state = stateAwaitingBalancerFQDN }) {
+		return c.expiredCallback(ctx, callback)
 	}
-	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите полный новый поддомен Host, например gmb.wey-land.net. Бот создаст для него отдельную A-запись напрямую в Cloudflare.", Keyboard{})
-	return err
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID, "Выбран тег: "+safeLine(tag, 36)+"\n\nВведите полный новый поддомен Host, например gmb.wey-land.net. Бот создаст для него отдельную A-запись напрямую в Cloudflare.", Keyboard{})
 }
 
 func (c *Controller) acceptBalancerFQDN(ctx context.Context, message *Message, session *wizard) error {

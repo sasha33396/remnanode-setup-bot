@@ -93,6 +93,7 @@ type InternalSquad struct {
 
 type AdvancedBalancerOptions struct {
 	Squads []InternalSquad
+	Tags   []string
 }
 
 type AdvancedBalancerPreflightInput struct {

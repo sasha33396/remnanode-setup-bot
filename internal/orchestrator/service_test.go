@@ -887,6 +887,30 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 	assertBefore(t, events, "remnawave.host", "remnawave.squad")
 }
 
+func TestAdvancedBalancerOptionsListEligibleHostTags(t *testing.T) {
+	fixture := newFixture(t)
+	templateUUID := "88888888-8888-4888-8888-888888888888"
+	fixture.remnawave.squads = []remnawave.InternalSquad{{UUID: "77777777-7777-4777-8777-777777777777", Name: "Default-Squad"}}
+	fixture.remnawave.hosts = []remnawave.Host{
+		{UUID: testHostUUID, Remark: "visible", Address: "visible.example.com", Tags: []string{"BALANCER_2", "BALANCER_1"}, XrayJSONTemplateUUID: &templateUUID},
+		{UUID: "55555555-5555-4555-8555-555555555555", Remark: "duplicate", Address: "duplicate.example.com", Tags: []string{"BALANCER_2"}, XrayJSONTemplateUUID: &templateUUID},
+		{UUID: "66666666-6666-4666-8666-666666666666", Remark: "hidden", Address: "hidden.example.com", IsHidden: true, Tags: []string{"HIDDEN_TAG"}, XrayJSONTemplateUUID: &templateUUID},
+		{UUID: "99999999-9999-4999-8999-999999999999", Remark: "disabled", Address: "disabled.example.com", IsDisabled: true, Tags: []string{"DISABLED_TAG"}, XrayJSONTemplateUUID: &templateUUID},
+		{UUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Remark: "no-template", Address: "plain.example.com", Tags: []string{"NO_TEMPLATE"}},
+	}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := app.ListAdvancedBalancerOptions(context.Background(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Squads) != 1 || fmt.Sprint(options.Tags) != "[BALANCER_1 BALANCER_2]" {
+		t.Fatalf("advanced options = %#v", options)
+	}
+}
+
 func (r *memoryRepository) SetAdvancedProfile(_ context.Context, id string, params repository.SetAdvancedProfileParams) (deployment.Deployment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

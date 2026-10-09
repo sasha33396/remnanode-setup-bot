@@ -17,6 +17,8 @@ service.
 Before running the wizard, create or retain the client-visible virtual Host in
 the selected Remnawave panel. It must be enabled, visible, have the same
 uppercase tag entered in the wizard, and have an Xray JSON template selected.
+The wizard reads Hosts through the Remnawave API, deduplicates eligible tags,
+and presents those tags as buttons instead of asking the operator to type one.
 The template should use `sameTagAsRecipient` for tag-based balancing. In an
 Xray balancer selector, `"proxy"` includes tags beginning with `proxy`, while
 `"proxy-"` excludes an exact tag named only `proxy`.

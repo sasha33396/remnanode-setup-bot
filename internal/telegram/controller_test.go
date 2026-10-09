@@ -754,12 +754,19 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T) {
 	deploymentID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	base := &fakeApplication{preflightResult: PreflightResult{PreparedDeploymentID: deploymentID, CertificateReadiness: ReadinessReady, ConfigProfileReadiness: ReadinessReady}}
-	application := &fakeAdvancedApplication{fakeApplication: base, options: AdvancedBalancerOptions{Squads: []InternalSquad{{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Name: "Default-Squad"}}}}
+	application := &fakeAdvancedApplication{fakeApplication: base, options: AdvancedBalancerOptions{
+		Squads: []InternalSquad{{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Name: "Default-Squad"}},
+		Tags:   []string{"BALANCER_2", "BALANCER_3"},
+	}}
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuAddBalancer)
 	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
-	handleMessage(t, controller, 2, "balancer_2")
+	tagPicker := messenger.editsSnapshot()[0]
+	if len(tagPicker.keyboard.Inline) != 1 || len(tagPicker.keyboard.Inline[0]) != 2 || tagPicker.keyboard.Inline[0][0].Text != "BALANCER_2" {
+		t.Fatalf("tag picker = %q %#v", tagPicker.text, tagPicker.keyboard)
+	}
+	handleCallback(t, controller, "tag", "bal:tag:fixed-nonce:0", messenger.lastSent().message)
 	handleMessage(t, controller, 3, "gmb.example.com")
 	handleMessage(t, controller, 4, "gmb-node")
 	handleCallback(t, controller, "mode", "bal:ipmode:fixed-nonce:1", messenger.lastSent().message)

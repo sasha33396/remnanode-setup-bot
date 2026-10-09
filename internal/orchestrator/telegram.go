@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"sort"
 	"strings"
 
 	"remnanode-setup-bot/internal/certmanager"
@@ -145,10 +146,32 @@ func (a *TelegramApplication) ListAdvancedBalancerOptions(ctx context.Context, p
 	if err != nil {
 		return telegram.AdvancedBalancerOptions{}, errors.New("list Internal Squads failed")
 	}
+	hosts, err := panel.Service.remnawave.GetHosts(ctx)
+	if err != nil {
+		return telegram.AdvancedBalancerOptions{}, errors.New("list Hosts for balancer tags failed")
+	}
 	result := telegram.AdvancedBalancerOptions{Squads: make([]telegram.InternalSquad, 0, len(squads))}
 	for _, squad := range squads {
 		result.Squads = append(result.Squads, telegram.InternalSquad{ID: squad.UUID, Name: squad.Name})
 	}
+	tags := make(map[string]struct{})
+	for _, host := range hosts {
+		if host.IsDisabled || host.IsHidden || host.XrayJSONTemplateUUID == nil {
+			continue
+		}
+		for _, tag := range host.Tags {
+			tag = strings.TrimSpace(tag)
+			if !advancedTagPattern.MatchString(tag) || len(tag) > 36 {
+				continue
+			}
+			tags[tag] = struct{}{}
+		}
+	}
+	result.Tags = make([]string, 0, len(tags))
+	for tag := range tags {
+		result.Tags = append(result.Tags, tag)
+	}
+	sort.Strings(result.Tags)
 	return result, nil
 }
 

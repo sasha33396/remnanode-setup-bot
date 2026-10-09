@@ -50,7 +50,7 @@ const (
 	stateBulkIPCompleted
 	stateSelectingBalancerPanel
 	stateSelectingBalancerSquad
-	stateAwaitingBalancerTag
+	stateSelectingBalancerTag
 	stateAwaitingBalancerFQDN
 	stateAwaitingBalancerNodeName
 	stateSelectingBalancerIPMode
@@ -89,6 +89,7 @@ type wizard struct {
 	bulkEnableNodes  bool
 	advancedBalancer bool
 	squads           []InternalSquad
+	balancerTags     []string
 	selectedSquad    InternalSquad
 	balancerTag      string
 	hostFQDN         string
@@ -105,6 +106,7 @@ func (w *wizard) clone() *wizard {
 	result.hosts = append([]Host(nil), w.hosts...)
 	result.panels = append([]Panel(nil), w.panels...)
 	result.squads = append([]InternalSquad(nil), w.squads...)
+	result.balancerTags = append([]string(nil), w.balancerTags...)
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil
