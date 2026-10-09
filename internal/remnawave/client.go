@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,12 @@ var (
 // API is the deployment-facing subset of the supplied Remnawave OpenAPI.
 type API interface {
 	GetHosts(context.Context) ([]Host, error)
+	GetConfigProfiles(context.Context) ([]ConfigProfile, error)
+	CreateConfigProfile(context.Context, CreateConfigProfileInput) (ConfigProfile, error)
+	GenerateX25519(context.Context) (X25519Keypair, error)
+	GetInternalSquads(context.Context) ([]InternalSquad, error)
+	AddInboundToInternalSquad(context.Context, string, string) (InternalSquad, error)
+	CreateHost(context.Context, CreateHostInput) (Host, error)
 	GenerateSecretKey(context.Context) (string, error)
 	GetNodes(context.Context) ([]Node, error)
 	GetNode(context.Context, string) (Node, error)
@@ -66,6 +73,7 @@ type Client struct {
 	baseURL *url.URL
 	token   string
 	http    *http.Client
+	squadMu sync.Mutex
 }
 
 var _ API = (*Client)(nil)
@@ -173,9 +181,23 @@ func (c *Client) CreateNode(ctx context.Context, input CreateNodeInput) (Node, e
 	if !validNodeName(name) || !input.Address.IsValid() {
 		return Node{}, fmt.Errorf("Node name or address: %w", ErrInvalidInput)
 	}
-	profile, err := DeploymentProfileFromHost(input.Host)
-	if err != nil {
-		return Node{}, err
+	var profile NodeConfigProfile
+	if input.ConfigProfile != nil {
+		profile = NodeConfigProfile{ActiveConfigProfileUUID: strings.TrimSpace(input.ConfigProfile.ActiveConfigProfileUUID), ActiveInbounds: append([]string(nil), input.ConfigProfile.ActiveInbounds...)}
+		if !validUUID(profile.ActiveConfigProfileUUID) || len(profile.ActiveInbounds) == 0 {
+			return Node{}, fmt.Errorf("config profile: %w", ErrInvalidInput)
+		}
+		for _, inbound := range profile.ActiveInbounds {
+			if !validUUID(inbound) {
+				return Node{}, fmt.Errorf("config profile inbound: %w", ErrInvalidInput)
+			}
+		}
+	} else {
+		deploymentProfile, err := DeploymentProfileFromHost(input.Host)
+		if err != nil {
+			return Node{}, err
+		}
+		profile = NodeConfigProfile{ActiveConfigProfileUUID: deploymentProfile.ActiveConfigProfileUUID, ActiveInbounds: deploymentProfile.ActiveInbounds}
 	}
 	existing, err := c.GetNodes(ctx)
 	if err != nil {
@@ -186,13 +208,10 @@ func (c *Client) CreateNode(ctx context.Context, input CreateNodeInput) (Node, e
 	}
 
 	request := createNodeRequest{
-		Name:    name,
-		Address: input.Address.String(),
-		Port:    nodePort,
-		ConfigProfile: NodeConfigProfile{
-			ActiveConfigProfileUUID: profile.ActiveConfigProfileUUID,
-			ActiveInbounds:          profile.ActiveInbounds,
-		},
+		Name:          name,
+		Address:       input.Address.String(),
+		Port:          nodePort,
+		ConfigProfile: profile,
 	}
 	var envelope nodeEnvelope
 	if err := c.doJSON(ctx, http.MethodPost, "/api/nodes", request, http.StatusCreated, &envelope); err != nil {

@@ -108,6 +108,16 @@ func (s *Service) RecheckRemnawave(ctx context.Context, deploymentID string) (Re
 }
 
 func (s *Service) classify(ctx context.Context, item deployment.Deployment) (Result, error) {
+	if item.Kind == deployment.KindAdvancedBalancer && !item.Status.Terminal() {
+		switch item.CurrentStep {
+		case "prepare_certificate", "provisioning", "create_config_profile", "create_remnawave_node", "wait_remnawave", "add_dns", "create_host", "add_to_squad":
+			message := "Advanced deployment was interrupted; retry the current idempotent step from its card"
+			if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusFailed, CurrentStep: item.CurrentStep, SafeErrorCode: pointer("RETRY_AFTER_RESTART"), SafeErrorMessage: &message}); err != nil {
+				return Result{}, errors.New("persist advanced recovery state failed")
+			}
+			return Result{DeploymentID: item.ID, Classification: SafeToRecheck, SafeMessage: message}, nil
+		}
+	}
 	switch item.Status {
 	case deployment.StatusCompleted:
 		return Result{DeploymentID: item.ID, Classification: RecoveredCompleted, SafeMessage: "Deployment is already completed"}, nil
@@ -161,6 +171,13 @@ func (s *Service) inspectExternalState(ctx context.Context, item deployment.Depl
 	}
 	if !node.IsConnected {
 		return s.manual(ctx, item, safeNodeMessage(node.LastStatusMessage))
+	}
+	if item.Kind == deployment.KindAdvancedBalancer {
+		message := "Remnawave Node is connected; retry the direct Cloudflare DNS step from the deployment card"
+		if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusDNSFailed, CurrentStep: "add_dns", SafeErrorCode: pointer("DNS_RETRY_REQUIRED"), SafeErrorMessage: &message}); err != nil {
+			return Result{}, errors.New("persist advanced DNS retry state failed")
+		}
+		return Result{DeploymentID: item.ID, Classification: SafeToRetryDNS, SafeMessage: message}, nil
 	}
 	if s.dnsDisabled {
 		summary := "DNS balancing is disabled for this panel"

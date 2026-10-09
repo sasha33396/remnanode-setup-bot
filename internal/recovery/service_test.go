@@ -68,6 +68,23 @@ func TestRecoveryExposesExplicitDNSRetry(t *testing.T) {
 	}
 }
 
+func TestAdvancedRecoveryDoesNotCompleteWhenDNSBalancerIsDisabled(t *testing.T) {
+	item := recoveryDeployment(deployment.StatusFailed)
+	item.Kind = deployment.KindAdvancedBalancer
+	item.CurrentStep = "wait_remnawave"
+	uuid := "00000000-0000-4000-8000-000000000099"
+	item.RemnawaveNodeUUID = &uuid
+	repo := newRecoveryRepository(item)
+	service, _ := NewForPanelWithDNSMode(repo, &recoveryRemnawave{node: remnawave.Node{UUID: uuid, IsConnected: true}}, &recoveryDNS{}, "default", true)
+	result, err := service.RecheckRemnawave(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification != SafeToRetryDNS || repo.item.Status != deployment.StatusDNSFailed || repo.item.CurrentStep != "add_dns" {
+		t.Fatalf("result=%#v deployment=%#v", result, repo.item)
+	}
+}
+
 func recoveryDeployment(status deployment.Status) deployment.Deployment {
 	return deployment.Deployment{ID: "00000000-0000-4000-8000-000000000001", TelegramOperatorUserID: 1, SelectedRemnawaveHostUUID: "00000000-0000-4000-8000-000000000002", SNIDomain: "edge.example.com", NodeName: "node-one", TargetVPSIP: netip.MustParseAddr("203.0.113.10"), Status: status, CurrentStep: "step", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 }

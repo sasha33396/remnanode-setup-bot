@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -18,6 +19,66 @@ const maxCloudflareResponse = 2 << 20
 
 type TXTResolver interface {
 	LookupTXT(context.Context, string) ([]string, error)
+}
+
+// EnsureARecord creates one unproxied A record for a dedicated Advanced Host.
+// An identical record is a no-op; conflicting records are never overwritten.
+func (c *CloudflareDNS) EnsureARecord(ctx context.Context, fqdn string, address netip.Addr) (bool, error) {
+	name, err := canonicalSNI(fqdn)
+	if err != nil || !address.IsValid() || !address.Unmap().Is4() {
+		return false, ErrInvalidInput
+	}
+	address = address.Unmap()
+	zoneID, records, err := c.lookupARecords(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if len(records) > 0 {
+		if len(records) == 1 && records[0].Type == "A" && records[0].Name == name && records[0].Content == address.String() {
+			return false, nil
+		}
+		return false, safe("Cloudflare already has a conflicting DNS record for this hostname", ErrDistributionFailed)
+	}
+	var created cloudflareResponse[cloudflareRecord]
+	body := map[string]any{"type": "A", "name": name, "content": address.String(), "ttl": 60, "proxied": false}
+	if err := c.call(ctx, http.MethodPost, "zones/"+url.PathEscape(zoneID)+"/dns_records", body, &created); err != nil {
+		return false, safe(SafeMessage(err, "Cloudflare A record could not be created"), ErrDistributionFailed)
+	}
+	if !created.Success || created.Result.ID == "" {
+		return false, cloudflareRejected("Cloudflare rejected the A record", created.Errors)
+	}
+	return true, nil
+}
+
+func (c *CloudflareDNS) CheckARecord(ctx context.Context, fqdn string, address netip.Addr) error {
+	name, err := canonicalSNI(fqdn)
+	if err != nil || !address.IsValid() || !address.Unmap().Is4() {
+		return ErrInvalidInput
+	}
+	_, records, err := c.lookupARecords(ctx, name)
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 || (len(records) == 1 && records[0].Type == "A" && records[0].Name == name && records[0].Content == address.Unmap().String()) {
+		return nil
+	}
+	return safe("Cloudflare already has a conflicting DNS record for this hostname", ErrDistributionFailed)
+}
+
+func (c *CloudflareDNS) lookupARecords(ctx context.Context, name string) (string, []cloudflareRecord, error) {
+	zoneID, err := c.findZone(ctx, name)
+	if err != nil {
+		return "", nil, safe(SafeMessage(err, "Cloudflare DNS zone could not be resolved"), ErrDistributionFailed)
+	}
+	query := url.Values{"type": []string{"A"}, "name": []string{name}}
+	var listed cloudflareResponse[[]cloudflareRecord]
+	if err := c.call(ctx, http.MethodGet, "zones/"+url.PathEscape(zoneID)+"/dns_records?"+query.Encode(), nil, &listed); err != nil {
+		return "", nil, safe(SafeMessage(err, "Cloudflare A record could not be checked"), ErrDistributionFailed)
+	}
+	if !listed.Success {
+		return "", nil, cloudflareRejected("Cloudflare rejected the A record lookup", listed.Errors)
+	}
+	return zoneID, listed.Result, nil
 }
 
 type CloudflareDNS struct {
@@ -174,8 +235,8 @@ func canonicalChallengeName(value string) (string, error) {
 }
 
 type cloudflareResponse[T any] struct {
-	Success bool `json:"success"`
-	Result  T    `json:"result"`
+	Success bool                `json:"success"`
+	Result  T                   `json:"result"`
 	Errors  []cloudflareProblem `json:"errors"`
 }
 
@@ -194,7 +255,10 @@ type cloudflareZone struct {
 	ID string `json:"id"`
 }
 type cloudflareRecord struct {
-	ID string `json:"id"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
 }
 
 func (*CloudflareDNS) String() string   { return "CloudflareDNS{token:[REDACTED]}" }

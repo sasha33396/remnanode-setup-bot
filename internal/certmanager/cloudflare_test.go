@@ -6,11 +6,53 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCloudflareEnsureARecordCreatesDedicatedUnproxiedRecord(t *testing.T) {
+	var created bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/zones":
+			_, _ = writer.Write([]byte(`{"success":true,"result":[{"id":"zone-id"}],"errors":[]}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/zones/zone-id/dns_records":
+			_, _ = writer.Write([]byte(`{"success":true,"result":[],"errors":[]}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/zones/zone-id/dns_records":
+			created = true
+			_, _ = writer.Write([]byte(`{"success":true,"result":{"id":"record-id","type":"A","name":"gmb.example.com","content":"1.1.1.1"},"errors":[]}`))
+		default:
+			t.Fatalf("unexpected Cloudflare request: %s %s", request.Method, request.URL.String())
+		}
+	}))
+	defer server.Close()
+	provider := newTestCloudflareDNS(t, server.URL, "token")
+	changed, err := provider.EnsureARecord(context.Background(), "gmb.example.com", netip.MustParseAddr("1.1.1.1"))
+	if err != nil || !changed || !created {
+		t.Fatalf("EnsureARecord() = %v, %v; created=%v", changed, err, created)
+	}
+}
+
+func TestCloudflareEnsureARecordDoesNotOverwriteConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/zones" {
+			_, _ = writer.Write([]byte(`{"success":true,"result":[{"id":"zone-id"}],"errors":[]}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"success":true,"result":[{"id":"record-id","type":"A","name":"gmb.example.com","content":"9.9.9.9"}],"errors":[]}`))
+	}))
+	defer server.Close()
+	provider := newTestCloudflareDNS(t, server.URL, "token")
+	_, err := provider.EnsureARecord(context.Background(), "gmb.example.com", netip.MustParseAddr("1.1.1.1"))
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("EnsureARecord() error = %v", err)
+	}
+}
 
 func TestCloudflareDNSReportsAuthenticationFailureSafely(t *testing.T) {
 	const token = "protected-cloudflare-token"

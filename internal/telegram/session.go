@@ -48,6 +48,17 @@ const (
 	stateAwaitingBulkIPConfirmation
 	stateBulkIPRunning
 	stateBulkIPCompleted
+	stateSelectingBalancerPanel
+	stateSelectingBalancerSquad
+	stateAwaitingBalancerTag
+	stateAwaitingBalancerFQDN
+	stateAwaitingBalancerNodeName
+	stateSelectingBalancerIPMode
+	stateAwaitingBalancerIngressIP
+	stateAwaitingBalancerEgressIP
+	stateAwaitingBalancerPassword
+	stateBalancerPreflighting
+	stateAwaitingBalancerConfirmation
 )
 
 type wizard struct {
@@ -76,6 +87,13 @@ type wizard struct {
 	bulkIPPlan       BulkNodeIPPlan
 	bulkIPResult     BulkNodeIPResult
 	bulkEnableNodes  bool
+	advancedBalancer bool
+	squads           []InternalSquad
+	selectedSquad    InternalSquad
+	balancerTag      string
+	hostFQDN         string
+	egressIP         netip.Addr
+	dualIP           bool
 	expiryTimer      *time.Timer
 }
 
@@ -86,6 +104,7 @@ func (w *wizard) clone() *wizard {
 	result := *w
 	result.hosts = append([]Host(nil), w.hosts...)
 	result.panels = append([]Panel(nil), w.panels...)
+	result.squads = append([]InternalSquad(nil), w.squads...)
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil

@@ -17,9 +17,12 @@ const (
 	StatusPreflight            Status = "PREFLIGHT"
 	StatusPreparingCertificate Status = "PREPARING_CERTIFICATE"
 	StatusProvisioning         Status = "PROVISIONING"
+	StatusCreatingProfile      Status = "CREATING_CONFIG_PROFILE"
 	StatusCreatingRemnawave    Status = "CREATING_REMNAWAVE_NODE"
 	StatusWaitingRemnawave     Status = "WAITING_REMNAWAVE"
 	StatusAddingToDNS          Status = "ADDING_TO_DNS"
+	StatusCreatingHost         Status = "CREATING_HOST"
+	StatusAddingToSquad        Status = "ADDING_TO_SQUAD"
 	StatusCompleted            Status = "COMPLETED"
 	StatusFailed               Status = "FAILED"
 	StatusCancelled            Status = "CANCELLED"
@@ -32,7 +35,7 @@ func (s Status) Valid() bool {
 	switch s {
 	case StatusCreated, StatusPreflight, StatusPreparingCertificate,
 		StatusProvisioning, StatusCreatingRemnawave, StatusWaitingRemnawave,
-		StatusAddingToDNS, StatusCompleted, StatusFailed, StatusCancelled,
+		StatusCreatingProfile, StatusAddingToDNS, StatusCreatingHost, StatusAddingToSquad, StatusCompleted, StatusFailed, StatusCancelled,
 		StatusDNSFailed, StatusManualReview:
 		return true
 	default:
@@ -95,6 +98,13 @@ type Deployment struct {
 	TargetVPSIP               netip.Addr
 	RemnawaveNodeUUID         *string
 	SSHHostKeyFingerprint     *string
+	Kind                      Kind
+	AdvancedBalancerTag       string
+	AdvancedEgressIP          netip.Addr
+	AdvancedInternalSquadUUID string
+	AdvancedConfigProfileUUID string
+	AdvancedConfigProfileName string
+	AdvancedInboundUUID       string
 	Status                    Status
 	CurrentStep               string
 	SafeErrorCode             *string
@@ -104,6 +114,15 @@ type Deployment struct {
 	StartedAt                 *time.Time
 	CompletedAt               *time.Time
 }
+
+type Kind string
+
+const (
+	KindStandard         Kind = "STANDARD"
+	KindAdvancedBalancer Kind = "ADVANCED_BALANCER"
+)
+
+func (k Kind) Valid() bool { return k == KindStandard || k == KindAdvancedBalancer }
 
 // Step is the latest persisted record for a named deployment step.
 type Step struct {

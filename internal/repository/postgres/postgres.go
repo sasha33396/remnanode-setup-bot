@@ -28,6 +28,13 @@ const deploymentColumns = `
     host(target_vps_ip),
     remnawave_node_uuid::text,
     ssh_host_key_fingerprint,
+    deployment_kind,
+    advanced_balancer_tag,
+    host(advanced_egress_ip),
+    advanced_internal_squad_uuid::text,
+    advanced_config_profile_uuid::text,
+    advanced_config_profile_name,
+    advanced_inbound_uuid::text,
     status,
     current_step,
     safe_error_code,
@@ -71,7 +78,7 @@ func New(pool *pgxpool.Pool) *Repository {
 // service reports readiness.
 func (r *Repository) CheckSchema(ctx context.Context) error {
 	var deployments, certificateRecords, certificateVersions, certificateTargetReviews *string
-	var panelColumns int
+	var panelColumns, advancedColumns int
 	if err := r.pool.QueryRow(ctx, `
         SELECT to_regclass('public.deployments')::text,
                to_regclass('public.certificate_records')::text,
@@ -79,10 +86,13 @@ func (r *Repository) CheckSchema(ctx context.Context) error {
                to_regclass('public.certificate_target_reviews')::text,
                (SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'public' AND column_name = 'panel_id'
-                  AND table_name IN ('deployments', 'certificate_records', 'certificate_versions', 'certificate_distributions', 'certificate_target_reviews'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &panelColumns); err != nil {
+	                  AND table_name IN ('deployments', 'certificate_records', 'certificate_versions', 'certificate_distributions', 'certificate_target_reviews')),
+	               (SELECT count(*) FROM information_schema.columns
+	                WHERE table_schema = 'public' AND table_name = 'deployments'
+	                  AND column_name IN ('deployment_kind', 'advanced_balancer_tag', 'advanced_egress_ip', 'advanced_internal_squad_uuid', 'advanced_config_profile_uuid', 'advanced_config_profile_name', 'advanced_inbound_uuid'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &panelColumns, &advancedColumns); err != nil {
 		return errors.New("verify PostgreSQL schema failed")
 	}
-	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || panelColumns != 5 {
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || panelColumns != 5 || advancedColumns != 7 {
 		return errors.New("required PostgreSQL migrations are not applied")
 	}
 	return nil
@@ -100,6 +110,9 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
 			return deployment.Deployment{}, err
 		}
 	}
+	if params.Kind == "" {
+		params.Kind = deployment.KindStandard
+	}
 	if err := validateCreate(params); err != nil {
 		return deployment.Deployment{}, err
 	}
@@ -108,8 +121,9 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
         INSERT INTO deployments (
             id, panel_id, telegram_operator_user_id, selected_remnawave_host_uuid,
             selected_host_remark, sni_domain, node_name, target_vps_ip,
-            status, current_step
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            deployment_kind, advanced_balancer_tag, advanced_egress_ip,
+            advanced_internal_squad_uuid, status, current_step
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING `+deploymentColumns,
 		params.ID,
 		params.PanelID,
@@ -119,12 +133,36 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
 		params.SNIDomain,
 		params.NodeName,
 		params.TargetVPSIP.String(),
+		params.Kind,
+		nullString(params.AdvancedBalancerTag),
+		nullIP(params.AdvancedEgressIP),
+		nullString(params.AdvancedInternalSquadUUID),
 		deployment.StatusCreated,
 		"created",
 	)
 	result, err := scanDeployment(row)
 	if err != nil {
 		return deployment.Deployment{}, fmt.Errorf("create deployment: %w", err)
+	}
+	return result, nil
+}
+
+// SetAdvancedProfile persists the idempotency keys returned by Remnawave.
+func (r *Repository) SetAdvancedProfile(ctx context.Context, id string, params repositorycontract.SetAdvancedProfileParams) (deployment.Deployment, error) {
+	if !validUUID(id) || !validUUID(params.ProfileUUID) || !validUUID(params.InboundUUID) || strings.TrimSpace(params.ProfileName) == "" {
+		return deployment.Deployment{}, invalid("advanced profile binding")
+	}
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET advanced_config_profile_uuid = $2,
+            advanced_config_profile_name = $3,
+            advanced_inbound_uuid = $4,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns, id, params.ProfileUUID, strings.TrimSpace(params.ProfileName), params.InboundUUID)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("set advanced profile", err)
 	}
 	return result, nil
 }
@@ -431,6 +469,8 @@ type scanner interface {
 func scanDeployment(row scanner) (deployment.Deployment, error) {
 	var result deployment.Deployment
 	var ip string
+	var egressIP *string
+	var advancedTag, squadUUID, profileUUID, profileName, inboundUUID *string
 	err := row.Scan(
 		&result.ID,
 		&result.PanelID,
@@ -442,6 +482,13 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 		&ip,
 		&result.RemnawaveNodeUUID,
 		&result.SSHHostKeyFingerprint,
+		&result.Kind,
+		&advancedTag,
+		&egressIP,
+		&squadUUID,
+		&profileUUID,
+		&profileName,
+		&inboundUUID,
 		&result.Status,
 		&result.CurrentStep,
 		&result.SafeErrorCode,
@@ -457,6 +504,27 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 	result.TargetVPSIP, err = netip.ParseAddr(ip)
 	if err != nil {
 		return deployment.Deployment{}, fmt.Errorf("parse persisted target VPS IP: %w", err)
+	}
+	if advancedTag != nil {
+		result.AdvancedBalancerTag = *advancedTag
+	}
+	if squadUUID != nil {
+		result.AdvancedInternalSquadUUID = *squadUUID
+	}
+	if profileUUID != nil {
+		result.AdvancedConfigProfileUUID = *profileUUID
+	}
+	if profileName != nil {
+		result.AdvancedConfigProfileName = *profileName
+	}
+	if inboundUUID != nil {
+		result.AdvancedInboundUUID = *inboundUUID
+	}
+	if egressIP != nil {
+		result.AdvancedEgressIP, err = netip.ParseAddr(*egressIP)
+		if err != nil {
+			return deployment.Deployment{}, fmt.Errorf("parse persisted advanced egress IP: %w", err)
+		}
 	}
 	return result, nil
 }
@@ -497,7 +565,32 @@ func validateCreate(params repositorycontract.CreateDeploymentParams) error {
 	if !params.TargetVPSIP.IsValid() {
 		return invalid("target VPS IP")
 	}
+	if !params.Kind.Valid() {
+		return invalid("deployment kind")
+	}
+	if params.Kind == deployment.KindAdvancedBalancer {
+		if strings.TrimSpace(params.AdvancedBalancerTag) == "" || !validUUID(params.AdvancedInternalSquadUUID) {
+			return invalid("advanced balancer metadata")
+		}
+		if params.AdvancedEgressIP.IsValid() && params.AdvancedEgressIP.Unmap() == params.TargetVPSIP.Unmap() {
+			return invalid("advanced balancer egress IP")
+		}
+	}
 	return nil
+}
+
+func nullString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.TrimSpace(value)
+}
+
+func nullIP(value netip.Addr) any {
+	if !value.IsValid() {
+		return nil
+	}
+	return value.Unmap().String()
 }
 
 func validPanelID(value string) bool {

@@ -104,6 +104,12 @@ func escapeLabel(value string) string {
 type RemnawaveClient struct {
 	next interface {
 		GetHosts(context.Context) ([]remnawave.Host, error)
+		GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error)
+		CreateConfigProfile(context.Context, remnawave.CreateConfigProfileInput) (remnawave.ConfigProfile, error)
+		GenerateX25519(context.Context) (remnawave.X25519Keypair, error)
+		GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error)
+		AddInboundToInternalSquad(context.Context, string, string) (remnawave.InternalSquad, error)
+		CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
 		GenerateSecretKey(context.Context) (string, error)
 		GetNodes(context.Context) ([]remnawave.Node, error)
 		GetNode(context.Context, string) (remnawave.Node, error)
@@ -117,6 +123,12 @@ type RemnawaveClient struct {
 
 func ObserveRemnawave(next interface {
 	GetHosts(context.Context) ([]remnawave.Host, error)
+	GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error)
+	CreateConfigProfile(context.Context, remnawave.CreateConfigProfileInput) (remnawave.ConfigProfile, error)
+	GenerateX25519(context.Context) (remnawave.X25519Keypair, error)
+	GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error)
+	AddInboundToInternalSquad(context.Context, string, string) (remnawave.InternalSquad, error)
+	CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
 	GenerateSecretKey(context.Context) (string, error)
 	GetNodes(context.Context) ([]remnawave.Node, error)
 	GetNode(context.Context, string) (remnawave.Node, error)
@@ -130,6 +142,36 @@ func ObserveRemnawave(next interface {
 
 func (c *RemnawaveClient) GetHosts(ctx context.Context) ([]remnawave.Host, error) {
 	value, err := c.next.GetHosts(ctx)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) GetConfigProfiles(ctx context.Context) ([]remnawave.ConfigProfile, error) {
+	value, err := c.next.GetConfigProfiles(ctx)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) CreateConfigProfile(ctx context.Context, input remnawave.CreateConfigProfileInput) (remnawave.ConfigProfile, error) {
+	value, err := c.next.CreateConfigProfile(ctx, input)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) GenerateX25519(ctx context.Context) (remnawave.X25519Keypair, error) {
+	value, err := c.next.GenerateX25519(ctx)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) GetInternalSquads(ctx context.Context) ([]remnawave.InternalSquad, error) {
+	value, err := c.next.GetInternalSquads(ctx)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) AddInboundToInternalSquad(ctx context.Context, squad, inbound string) (remnawave.InternalSquad, error) {
+	value, err := c.next.AddInboundToInternalSquad(ctx, squad, inbound)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) CreateHost(ctx context.Context, input remnawave.CreateHostInput) (remnawave.Host, error) {
+	value, err := c.next.CreateHost(ctx, input)
 	c.observe(err)
 	return value, err
 }

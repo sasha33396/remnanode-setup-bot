@@ -26,6 +26,16 @@ type CreateDeploymentParams struct {
 	SNIDomain                 string
 	NodeName                  string
 	TargetVPSIP               netip.Addr
+	Kind                      deployment.Kind
+	AdvancedBalancerTag       string
+	AdvancedEgressIP          netip.Addr
+	AdvancedInternalSquadUUID string
+}
+
+type SetAdvancedProfileParams struct {
+	ProfileUUID string
+	ProfileName string
+	InboundUUID string
 }
 
 // UpdateDeploymentStateParams contains an atomic state transition snapshot.

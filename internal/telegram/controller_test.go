@@ -42,6 +42,7 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 	menu := mainKeyboard()
 	wantReply := [][]string{{"➕ Добавить ноду", "🔄 Сменить IP"}, {"📡 Ноды", "📜 Развёртывания"}}
+	wantReply = [][]string{{MenuAddNode, MenuAddBalancer}, {MenuChangeIP, MenuNodes}, {MenuDeployments}}
 	if fmt.Sprint(menu.Reply) != fmt.Sprint(wantReply) {
 		t.Fatalf("main keyboard = %#v, want %#v", menu.Reply, wantReply)
 	}
@@ -750,6 +751,32 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	}
 }
 
+func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T) {
+	deploymentID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	base := &fakeApplication{preflightResult: PreflightResult{PreparedDeploymentID: deploymentID, CertificateReadiness: ReadinessReady, ConfigProfileReadiness: ReadinessReady}}
+	application := &fakeAdvancedApplication{fakeApplication: base, options: AdvancedBalancerOptions{Squads: []InternalSquad{{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Name: "Default-Squad"}}}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuAddBalancer)
+	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
+	handleMessage(t, controller, 2, "balancer_2")
+	handleMessage(t, controller, 3, "gmb.example.com")
+	handleMessage(t, controller, 4, "gmb-node")
+	handleCallback(t, controller, "mode", "bal:ipmode:fixed-nonce:1", messenger.lastSent().message)
+	handleMessage(t, controller, 5, "8.8.8.8")
+	handleMessage(t, controller, 6, "1.1.1.1")
+	handleMessage(t, controller, 7, "temporary-password")
+	if application.advancedCalls != 1 || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
+		t.Fatalf("advanced preflight input = %#v; calls=%d", application.advancedInput, application.advancedCalls)
+	}
+	confirmation := messenger.lastSent()
+	handleCallback(t, controller, "deploy", "bal:deploy:fixed-nonce", confirmation.message)
+	controller.Wait()
+	if base.deploymentInput.PreparedDeploymentID != deploymentID || base.deploymentInput.HostID != deploymentID {
+		t.Fatalf("deployment input = %#v", base.deploymentInput)
+	}
+}
+
 func TestExpiredWizardClearsPasswordAndRejectsIncompleteConversation(t *testing.T) {
 	now := time.Unix(100, 0)
 	application := &fakeApplication{hosts: []Host{{ID: "host", Remark: "Host", Address: "host.example.com"}}}
@@ -932,6 +959,23 @@ type fakeRecoveryApplication struct {
 	details           DeploymentDetails
 	retryCalls        int
 	logs              []DeploymentLogEntry
+}
+
+type fakeAdvancedApplication struct {
+	*fakeApplication
+	options       AdvancedBalancerOptions
+	advancedInput AdvancedBalancerPreflightInput
+	advancedCalls int
+}
+
+func (f *fakeAdvancedApplication) ListAdvancedBalancerOptions(context.Context, string) (AdvancedBalancerOptions, error) {
+	return f.options, nil
+}
+func (f *fakeAdvancedApplication) PreflightAdvancedBalancer(_ context.Context, input AdvancedBalancerPreflightInput) (PreflightResult, error) {
+	f.advancedCalls++
+	f.advancedInput = input
+	f.advancedInput.Password = nil
+	return f.preflightResult, f.preflightErr
 }
 
 func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error {

@@ -5,6 +5,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"time"
 
@@ -54,6 +55,10 @@ type CertificateBootstrapper interface {
 	Bootstrap(context.Context, string, int64) (certmanager.BootstrapResult, error)
 }
 
+type NewTargetCertificateProvider interface {
+	PrepareForNewTarget(context.Context, string) (certificates.Material, error)
+}
+
 // VPSOperator hides SSH connectivity and provisioner construction from the
 // workflow. Implementations must not retain password, SECRET_KEY, or
 // certificate material after the method returns.
@@ -99,6 +104,15 @@ type RemnawaveAPI interface {
 	UpdateNodeProfile(context.Context, remnawave.UpdateNodeProfileInput) (remnawave.Node, error)
 }
 
+type AdvancedRemnawaveAPI interface {
+	GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error)
+	CreateConfigProfile(context.Context, remnawave.CreateConfigProfileInput) (remnawave.ConfigProfile, error)
+	GenerateX25519(context.Context) (remnawave.X25519Keypair, error)
+	GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error)
+	AddInboundToInternalSquad(context.Context, string, string) (remnawave.InternalSquad, error)
+	CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
+}
+
 type DNSAPI interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
@@ -107,8 +121,17 @@ type DNSAPI interface {
 	MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
 }
 
+type DNSRecordAPI interface {
+	CheckARecord(context.Context, string, netip.Addr) error
+	EnsureARecord(context.Context, string, netip.Addr) (bool, error)
+}
+
 type DeploymentRepository interface {
 	repository.DeploymentRepository
+}
+
+type AdvancedDeploymentRepository interface {
+	SetAdvancedProfile(context.Context, string, repository.SetAdvancedProfileParams) (deployment.Deployment, error)
 }
 
 type Config struct {
@@ -120,6 +143,8 @@ type Config struct {
 	MaxPollBackoff           time.Duration
 	Observer                 Observer
 	NodeSNISwitcher          NodeSNISwitcher
+	Logger                   *slog.Logger
+	DNSRecords               DNSRecordAPI
 }
 
 type Observer interface {
@@ -137,6 +162,18 @@ type PrepareInput struct {
 	NodeName       string
 	VPSIP          netip.Addr
 	Password       []byte
+}
+
+type PrepareAdvancedBalancerInput struct {
+	PanelID         string
+	OperatorUserID  int64
+	InternalSquadID string
+	BalancerTag     string
+	HostFQDN        string
+	NodeName        string
+	IngressIP       netip.Addr
+	EgressIP        netip.Addr
+	Password        []byte
 }
 
 type PreparedDeployment struct {

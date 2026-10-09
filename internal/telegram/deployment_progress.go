@@ -11,9 +11,12 @@ const (
 	progressStepPreflight    = "preflight"
 	progressStepCertificate  = "prepare_certificate"
 	progressStepProvisioning = "provisioning"
+	progressStepProfile      = "create_config_profile"
 	progressStepCreateNode   = "create_remnawave_node"
 	progressStepWaitNode     = "wait_remnawave"
 	progressStepDNS          = "add_dns"
+	progressStepHost         = "create_host"
+	progressStepSquad        = "add_to_squad"
 )
 
 var deploymentStepOrder = []string{
@@ -25,13 +28,22 @@ var deploymentStepOrder = []string{
 	progressStepDNS,
 }
 
+var advancedDeploymentStepOrder = []string{
+	progressStepPreflight, progressStepCertificate, progressStepProvisioning,
+	progressStepProfile, progressStepCreateNode, progressStepWaitNode,
+	progressStepDNS, progressStepHost, progressStepSquad,
+}
+
 var deploymentStepLabels = map[string]string{
 	progressStepPreflight:    "Проверка VPS",
 	progressStepCertificate:  "Подготовка сертификата",
 	progressStepProvisioning: "Настройка VPS",
+	progressStepProfile:      "Создание Config Profile",
 	progressStepCreateNode:   "Создание ноды в Remnawave",
 	progressStepWaitNode:     "Подключение ноды",
-	progressStepDNS:          "DNS-балансировка",
+	progressStepDNS:          "Настройка DNS",
+	progressStepHost:         "Создание скрытого Host",
+	progressStepSquad:        "Добавление inbound в Squad",
 }
 
 var provisioningStepOrder = []string{
@@ -67,6 +79,7 @@ type deploymentProgressView struct {
 	failed     bool
 	completed  bool
 	activeStep string
+	advanced   bool
 }
 
 func newDeploymentProgressView(warnings []OperatorNotice) *deploymentProgressView {
@@ -83,6 +96,9 @@ func newDeploymentProgressView(warnings []OperatorNotice) *deploymentProgressVie
 
 func (v *deploymentProgressView) Update(progress Progress) {
 	step := strings.TrimSpace(progress.Step)
+	if step == progressStepProfile || step == progressStepHost || step == progressStepSquad {
+		v.advanced = true
+	}
 	if step == "" || step == "starting" {
 		return
 	}
@@ -119,7 +135,7 @@ func (v *deploymentProgressView) Update(progress Progress) {
 }
 
 func (v *deploymentProgressView) completeBefore(step string) {
-	for _, candidate := range deploymentStepOrder {
+	for _, candidate := range v.order() {
 		if candidate == step {
 			return
 		}
@@ -154,7 +170,7 @@ func (v *deploymentProgressView) Fail(err error) {
 }
 
 func (v *deploymentProgressView) Complete() {
-	for _, step := range deploymentStepOrder {
+	for _, step := range v.order() {
 		entry := v.steps[step]
 		if entry.status == "" || entry.status == ProgressRunning {
 			entry.status = ProgressCompleted
@@ -174,8 +190,8 @@ func (v *deploymentProgressView) Render() string {
 	default:
 		builder.WriteString("🚀 Развёртывание ноды\n")
 	}
-	fmt.Fprintf(&builder, "Прогресс: %d/%d\n\n", v.completedCount(), len(deploymentStepOrder))
-	for _, step := range deploymentStepOrder {
+	fmt.Fprintf(&builder, "Прогресс: %d/%d\n\n", v.completedCount(), len(v.order()))
+	for _, step := range v.order() {
 		entry := v.steps[step]
 		fmt.Fprintf(&builder, "%s %s%s\n", progressIcon(entry), deploymentStepLabels[step], progressSuffix(entry))
 		if step == progressStepProvisioning && len(v.provision) > 0 {
@@ -200,13 +216,20 @@ func (v *deploymentProgressView) Render() string {
 
 func (v *deploymentProgressView) completedCount() int {
 	count := 0
-	for _, step := range deploymentStepOrder {
+	for _, step := range v.order() {
 		switch v.steps[step].status {
 		case ProgressCompleted, ProgressWarning, ProgressSkipped:
 			count++
 		}
 	}
 	return count
+}
+
+func (v *deploymentProgressView) order() []string {
+	if v.advanced {
+		return advancedDeploymentStepOrder
+	}
+	return deploymentStepOrder
 }
 
 func (v *deploymentProgressView) unattachedWarnings() []OperatorNotice {
@@ -313,12 +336,18 @@ func deploymentStepForError(code, fallback string) string {
 		return progressStepCertificate
 	case strings.Contains(code, "PROVISION") || strings.Contains(code, "KEYGEN"):
 		return progressStepProvisioning
+	case strings.Contains(code, "PROFILE") || strings.Contains(code, "X25519"):
+		return progressStepProfile
 	case strings.Contains(code, "NODE-CREATE") || strings.Contains(code, "DUPLICATE") || strings.Contains(code, "NODE-UUID"):
 		return progressStepCreateNode
 	case strings.Contains(code, "NODE-CONNECTION") || strings.Contains(code, "NODE-WAIT") || strings.Contains(code, "NODE-NOT-CONNECTED"):
 		return progressStepWaitNode
 	case strings.Contains(code, "DNS") || strings.Contains(code, "NODE-NOT-HEALTHY"):
 		return progressStepDNS
+	case strings.Contains(code, "HOST"):
+		return progressStepHost
+	case strings.Contains(code, "SQUAD"):
+		return progressStepSquad
 	case deploymentStepLabels[fallback] != "":
 		return fallback
 	default:

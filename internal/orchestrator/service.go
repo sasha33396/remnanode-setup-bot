@@ -3,13 +3,16 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"remnanode-setup-bot/internal/certificates"
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/provisioner"
@@ -21,11 +24,17 @@ const (
 	stepPreflight          = "preflight"
 	stepPrepareCertificate = "prepare_certificate"
 	stepProvisioning       = "provisioning"
+	stepCreateProfile      = "create_config_profile"
 	stepCreateNode         = "create_remnawave_node"
 	stepWaitNode           = "wait_remnawave"
 	stepAddDNS             = "add_dns"
+	stepCreateHost         = "create_host"
+	stepAddSquad           = "add_to_squad"
 	workflowStepCount      = 6
+	advancedWorkflowSteps  = 9
 )
+
+var advancedTagPattern = regexp.MustCompile(`^[A-Z0-9_:]+$`)
 
 type execution struct {
 	cancel context.CancelFunc
@@ -44,6 +53,7 @@ type DeploymentService struct {
 
 	mu      sync.Mutex
 	running map[string]*execution
+	logger  *slog.Logger
 }
 
 func NewDeploymentService(repository DeploymentRepository, remnawaveAPI RemnawaveAPI, dns DNSAPI, certificateProvider CertificateProvider, vps VPSOperator, config Config) (*DeploymentService, error) {
@@ -77,6 +87,7 @@ func NewDeploymentService(repository DeploymentRepository, remnawaveAPI Remnawav
 		config:       config,
 		semaphore:    make(chan struct{}, config.MaxConcurrentDeployments),
 		running:      make(map[string]*execution),
+		logger:       config.Logger,
 	}, nil
 }
 
@@ -183,6 +194,136 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 	return prepared, nil
 }
 
+// PrepareAdvancedBalancer creates a durable deployment before any Remnawave
+// profile, Node, Host, DNS record, or Squad mutation is attempted.
+func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input PrepareAdvancedBalancerInput) (PreparedDeployment, error) {
+	advanced, ok := s.remnawave.(AdvancedRemnawaveAPI)
+	if !ok {
+		return PreparedDeployment{}, safeError("ADVANCED_API_UNAVAILABLE", "Remnawave Advanced API is unavailable", ErrHostUnavailable)
+	}
+	if s.config.DNSRecords == nil || (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.IngressIP) || len(input.Password) == 0 {
+		return PreparedDeployment{}, ErrInvalidInput
+	}
+	tag := strings.ToUpper(strings.TrimSpace(input.BalancerTag))
+	if !advancedTagPattern.MatchString(tag) || len(tag) > 36 {
+		return PreparedDeployment{}, ErrInvalidInput
+	}
+	fqdn, err := certmanager.NormalizeSNI(input.HostFQDN)
+	if err != nil || len(fqdn) > 40 {
+		return PreparedDeployment{}, ErrInvalidInput
+	}
+	if input.EgressIP.IsValid() {
+		input.EgressIP = input.EgressIP.Unmap()
+		if !publicIP(input.EgressIP) || input.EgressIP == input.IngressIP.Unmap() {
+			return PreparedDeployment{}, ErrInvalidInput
+		}
+	}
+	hosts, err := s.remnawave.GetHosts(ctx)
+	if err != nil {
+		return PreparedDeployment{}, safeError("HOSTS_UNAVAILABLE", "Remnawave Hosts are unavailable", ErrHostUnavailable)
+	}
+	recipientFound := false
+	for _, host := range hosts {
+		if normalizeDomain(host.Address) == normalizeDomain(fqdn) {
+			return PreparedDeployment{}, safeError("HOST_ADDRESS_EXISTS", "A Remnawave Host already uses this hostname", ErrHostUnavailable)
+		}
+		if host.IsDisabled || host.IsHidden || host.XrayJSONTemplateUUID == nil {
+			continue
+		}
+		for _, hostTag := range host.Tags {
+			if hostTag == tag {
+				recipientFound = true
+				break
+			}
+		}
+	}
+	if !recipientFound {
+		return PreparedDeployment{}, safeError("BALANCER_RECIPIENT_MISSING", "No enabled visible virtual Host has the requested balancer tag", ErrHostUnavailable)
+	}
+	if err := s.config.DNSRecords.CheckARecord(ctx, fqdn, input.IngressIP.Unmap()); err != nil {
+		return PreparedDeployment{}, safeError("CLOUDFLARE_A_CONFLICT", "Cloudflare hostname is unavailable or points to another IP", ErrDNSUpdateFailed)
+	}
+	squads, err := advanced.GetInternalSquads(ctx)
+	if err != nil {
+		return PreparedDeployment{}, safeError("SQUADS_UNAVAILABLE", "Internal Squads are unavailable", ErrHostUnavailable)
+	}
+	squadFound := false
+	for _, squad := range squads {
+		if squad.UUID == input.InternalSquadID {
+			squadFound = true
+			break
+		}
+	}
+	if !squadFound {
+		return PreparedDeployment{}, safeError("SQUAD_NOT_FOUND", "Selected Internal Squad is unavailable", ErrHostUnavailable)
+	}
+	if err := s.checkUnique(ctx, strings.TrimSpace(input.NodeName), input.IngressIP, "", false); err != nil {
+		return PreparedDeployment{}, err
+	}
+	id, err := deployment.NewID()
+	if err != nil {
+		return PreparedDeployment{}, safeError("DEPLOYMENT_ID_FAILED", "Could not create deployment state", ErrPersistenceFailed)
+	}
+	created, err := s.repository.CreateDeployment(ctx, repository.CreateDeploymentParams{
+		ID: id, PanelID: s.config.PanelID, TelegramOperatorUserID: input.OperatorUserID,
+		SelectedRemnawaveHostUUID: id, SelectedHostRemark: fqdn, SNIDomain: fqdn,
+		NodeName: strings.TrimSpace(input.NodeName), TargetVPSIP: input.IngressIP.Unmap(),
+		Kind: deployment.KindAdvancedBalancer, AdvancedBalancerTag: tag,
+		AdvancedEgressIP: input.EgressIP, AdvancedInternalSquadUUID: input.InternalSquadID,
+	})
+	if err != nil {
+		return PreparedDeployment{}, safeError("PERSISTENCE_CREATE_FAILED", "Could not create deployment state", ErrPersistenceFailed)
+	}
+	if s.config.Observer != nil {
+		s.config.Observer.DeploymentCreated()
+	}
+	runCtx, release, err := s.beginExecution(ctx, created.ID)
+	if err != nil {
+		return PreparedDeployment{}, err
+	}
+	defer release()
+	if err := s.acquire(runCtx); err != nil {
+		return PreparedDeployment{}, err
+	}
+	defer s.releaseSlot()
+	if err := s.beginStage(runCtx, created.ID, deployment.StatusPreflight, stepPreflight); err != nil {
+		return PreparedDeployment{}, err
+	}
+	password := append([]byte(nil), input.Password...)
+	result, preflightErr := s.vps.Preflight(runCtx, PreflightVPSInput{DeploymentID: created.ID, Address: input.IngressIP.Unmap(), Password: password})
+	clear(password)
+	if runCtx.Err() != nil {
+		return PreparedDeployment{}, runCtx.Err()
+	}
+	if preflightErr != nil {
+		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, "PREFLIGHT_FAILED", "VPS preflight could not be completed", ErrPreflightFailed)
+	}
+	if !result.Passed() {
+		message := "VPS did not pass preflight"
+		if len(result.FatalFailures) > 0 {
+			message = safeText(result.FatalFailures[0].Message, message)
+		}
+		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, "PREFLIGHT_REJECTED", message, ErrPreflightFailed)
+	}
+	if err := s.completeStage(runCtx, created.ID, stepPreflight, "VPS preflight passed"); err != nil {
+		return PreparedDeployment{}, err
+	}
+	created, err = s.repository.GetDeployment(runCtx, created.ID)
+	if err != nil {
+		return PreparedDeployment{}, safeError("PERSISTENCE_READ_FAILED", "Could not load prepared deployment", ErrPersistenceFailed)
+	}
+	prepared := PreparedDeployment{Deployment: created, DNSZone: fqdn, ConfigProfileReadiness: true, CertificateReadiness: CertificateUnknown}
+	if readiness, readinessErr := s.certificates.Readiness(runCtx, fqdn); readinessErr == nil {
+		prepared.CertificateReadiness = readiness
+	}
+	for _, warning := range result.Warnings {
+		if text := safeText(warning.Message, ""); text != "" {
+			prepared.Warnings = append(prepared.Warnings, OperatorNotice{Code: warningCode(warning.Code), Message: warningMessage(warning.Code, text)})
+		}
+	}
+	return prepared, nil
+}
+
 func warningMessage(code, fallback string) string {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
 	case "DOCKER_NOT_INSTALLED":
@@ -254,6 +395,9 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 	if current.Status == deployment.StatusFailed || current.Status == deployment.StatusCancelled || current.Status == deployment.StatusCreated {
 		return ErrDeploymentNotRunnable
 	}
+	if current.Kind == deployment.KindAdvancedBalancer {
+		return s.deployAdvanced(runCtx, &current, progress)
+	}
 
 	host, profile, err := s.selectedHost(runCtx, current.SelectedRemnawaveHostUUID)
 	if runCtx.Err() != nil {
@@ -321,7 +465,17 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 			return err
 		}
 	}
-	material, err := s.certificates.Prepare(ctx, current.SNIDomain)
+	var material certificates.Material
+	var err error
+	if current.Kind == deployment.KindAdvancedBalancer {
+		provider, ok := s.certificates.(NewTargetCertificateProvider)
+		if !ok {
+			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "NEW_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for a new DNS target is unavailable", ErrCertificateUnavailable)
+		}
+		material, err = provider.PrepareForNewTarget(ctx, current.SNIDomain)
+	} else {
+		material, err = s.certificates.Prepare(ctx, current.SNIDomain)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -387,6 +541,9 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		return err
 	}
 	emit(progress, Progress{Step: stepProvisioning, Completed: 3, Total: workflowStepCount, SafeMessage: "VPS provisioning completed", Status: deployment.StepStatusCompleted})
+	if current.Kind == deployment.KindAdvancedBalancer {
+		return s.beginStage(ctx, current.ID, deployment.StatusCreatingProfile, stepCreateProfile)
+	}
 	return s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode)
 }
 
@@ -413,7 +570,11 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 		if recovered != nil {
 			node = *recovered
 		} else {
-			node, err = s.remnawave.CreateNode(ctx, remnawave.CreateNodeInput{Name: current.NodeName, Address: current.TargetVPSIP, Host: host})
+			input := remnawave.CreateNodeInput{Name: current.NodeName, Address: current.TargetVPSIP, Host: host}
+			if current.Kind == deployment.KindAdvancedBalancer {
+				input.ConfigProfile = &remnawave.NodeConfigProfile{ActiveConfigProfileUUID: current.AdvancedConfigProfileUUID, ActiveInbounds: []string{current.AdvancedInboundUUID}}
+			}
+			node, err = s.remnawave.CreateNode(ctx, input)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -468,7 +629,11 @@ func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *dep
 }
 
 func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
-	emit(progress, Progress{Step: stepAddDNS, Completed: 5, Total: workflowStepCount, SafeMessage: "Updating DNS balancing", Status: deployment.StepStatusRunning})
+	total, completed, message := workflowStepCount, 5, "Updating DNS balancing"
+	if current.Kind == deployment.KindAdvancedBalancer {
+		total, completed, message = advancedWorkflowSteps, 6, "Creating direct Cloudflare A record"
+	}
+	emit(progress, Progress{Step: stepAddDNS, Completed: completed, Total: total, SafeMessage: message, Status: deployment.StepStatusRunning})
 	if current.RemnawaveNodeUUID == nil {
 		return ErrDeploymentNotRunnable
 	}
@@ -477,7 +642,7 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 			return err
 		}
 	}
-	if s.config.DNSDisabled {
+	if current.Kind != deployment.KindAdvancedBalancer && s.config.DNSDisabled {
 		summary := "DNS balancing is disabled for this panel"
 		if _, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: current.ID, Name: stepAddDNS, Status: deployment.StepStatusSkipped, SafeSummary: &summary}); err != nil {
 			return safeError("DNS_SKIP_PERSIST_FAILED", "Could not persist skipped DNS step", ErrPersistenceFailed)
@@ -495,7 +660,17 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	if err != nil || !node.IsConnected {
 		return s.failStage(ctx, current.ID, stepAddDNS, deployment.StatusFailed, "NODE_NOT_HEALTHY", "DNS was not changed because the Node is not connected", ErrNodeConnectionFailed)
 	}
-	if _, err := s.dns.AddIP(ctx, current.SNIDomain, current.TargetVPSIP); err != nil {
+	var dnsErr error
+	if current.Kind == deployment.KindAdvancedBalancer {
+		if s.config.DNSRecords == nil {
+			dnsErr = ErrDNSUpdateFailed
+		} else {
+			_, dnsErr = s.config.DNSRecords.EnsureARecord(ctx, current.SNIDomain, current.TargetVPSIP)
+		}
+	} else {
+		_, dnsErr = s.dns.AddIP(ctx, current.SNIDomain, current.TargetVPSIP)
+	}
+	if dnsErr != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -504,10 +679,194 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	if err := s.completeStage(ctx, current.ID, stepAddDNS, "DNS updated"); err != nil {
 		return err
 	}
+	if current.Kind == deployment.KindAdvancedBalancer {
+		emit(progress, Progress{Step: stepAddDNS, Completed: 7, Total: advancedWorkflowSteps, SafeMessage: "Direct Cloudflare A record is ready", Status: deployment.StepStatusCompleted})
+		return s.beginStage(ctx, current.ID, deployment.StatusCreatingHost, stepCreateHost)
+	}
 	if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
 		return err
 	}
 	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS updated", Status: deployment.StepStatusCompleted})
+	return nil
+}
+
+func (s *DeploymentService) deployAdvanced(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	if current.AdvancedBalancerTag == "" || current.AdvancedInternalSquadUUID == "" {
+		return s.failStage(ctx, current.ID, current.CurrentStep, deployment.StatusFailed, "ADVANCED_METADATA_MISSING", "Advanced balancer metadata is incomplete", ErrPersistenceFailed)
+	}
+	allowRecovery := current.Status == deployment.StatusCreatingProfile || current.Status == deployment.StatusCreatingRemnawave || current.Status == deployment.StatusWaitingRemnawave || current.Status == deployment.StatusAddingToDNS || current.Status == deployment.StatusCreatingHost || current.Status == deployment.StatusAddingToSquad
+	if err := s.checkUnique(ctx, current.NodeName, current.TargetVPSIP, nodeUUID(*current), allowRecovery); err != nil {
+		return s.failStage(ctx, current.ID, current.CurrentStep, deployment.StatusFailed, "DUPLICATE_NODE", "Node name or address is no longer unique", err)
+	}
+	var err error
+	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
+		if err := s.prepareAndProvision(ctx, current, progress); err != nil {
+			return err
+		}
+		*current, err = s.repository.GetDeployment(ctx, current.ID)
+		if err != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not reload deployment", ErrPersistenceFailed)
+		}
+	}
+	if current.Status == deployment.StatusCreatingProfile || current.AdvancedConfigProfileUUID == "" {
+		if err := s.createAdvancedProfile(ctx, current, progress); err != nil {
+			return err
+		}
+		*current, err = s.repository.GetDeployment(ctx, current.ID)
+		if err != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not reload Config Profile", ErrPersistenceFailed)
+		}
+	}
+	if current.Status == deployment.StatusCreatingRemnawave || current.RemnawaveNodeUUID == nil {
+		if err := s.createNode(ctx, current, remnawave.Host{}, progress); err != nil {
+			return err
+		}
+		*current, err = s.repository.GetDeployment(ctx, current.ID)
+		if err != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not reload created Node", ErrPersistenceFailed)
+		}
+	}
+	if current.Status == deployment.StatusWaitingRemnawave || current.Status == deployment.StatusCreatingRemnawave {
+		if err := s.waitForHealthyNode(ctx, current, progress); err != nil {
+			return err
+		}
+		*current, err = s.repository.GetDeployment(ctx, current.ID)
+		if err != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not reload healthy Node", ErrPersistenceFailed)
+		}
+	}
+	if current.Status == deployment.StatusAddingToDNS || current.Status == deployment.StatusWaitingRemnawave {
+		if err := s.addDNS(ctx, current, progress); err != nil {
+			return err
+		}
+		*current, err = s.repository.GetDeployment(ctx, current.ID)
+		if err != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not reload DNS state", ErrPersistenceFailed)
+		}
+	}
+	return s.finishAdvanced(ctx, current, progress)
+}
+
+func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	advanced, ok := s.remnawave.(AdvancedRemnawaveAPI)
+	if !ok {
+		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "ADVANCED_API_UNAVAILABLE", "Remnawave Advanced API is unavailable", ErrRemnawaveCreationFailed)
+	}
+	emit(progress, Progress{Step: stepCreateProfile, Completed: 3, Total: advancedWorkflowSteps, SafeMessage: "Creating dedicated Config Profile", Status: deployment.StepStatusRunning})
+	if current.Status != deployment.StatusCreatingProfile {
+		if err := s.beginStage(ctx, current.ID, deployment.StatusCreatingProfile, stepCreateProfile); err != nil {
+			return err
+		}
+	}
+	profileName := "Balancer-" + strings.ReplaceAll(current.ID[:8], "-", "")
+	profiles, err := advanced.GetConfigProfiles(ctx)
+	if err != nil {
+		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_LIST_FAILED", "Could not inspect Config Profiles", ErrRemnawaveCreationFailed)
+	}
+	var profile *remnawave.ConfigProfile
+	for index := range profiles {
+		if profiles[index].Name == profileName {
+			if profile != nil || len(profiles[index].Inbounds) != 1 {
+				return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_RECOVERY_AMBIGUOUS", "Dedicated Config Profile could not be recovered safely", ErrRemnawaveCreationFailed)
+			}
+			profile = &profiles[index]
+		}
+	}
+	if profile == nil {
+		pair, keyErr := advanced.GenerateX25519(ctx)
+		if keyErr != nil {
+			return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "X25519_GENERATION_FAILED", "Could not generate Reality keys", ErrRemnawaveCreationFailed)
+		}
+		inboundTag := "VLESS_TCP_REALITY_" + strings.ToUpper(strings.ReplaceAll(current.ID[:8], "-", ""))
+		var egress *netip.Addr
+		if current.AdvancedEgressIP.IsValid() {
+			value := current.AdvancedEgressIP
+			egress = &value
+		}
+		created, createErr := advanced.CreateConfigProfile(ctx, remnawave.CreateConfigProfileInput{Name: profileName, Config: remnawave.AdvancedBalancerConfig(inboundTag, current.SNIDomain, pair.PrivateKey, egress)})
+		pair.PrivateKey = ""
+		pair.PublicKey = ""
+		if createErr != nil {
+			return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_CREATE_FAILED", "Dedicated Config Profile could not be created", ErrRemnawaveCreationFailed)
+		}
+		profile = &created
+	}
+	if len(profile.Inbounds) != 1 {
+		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_INBOUND_INVALID", "Dedicated Config Profile does not contain exactly one inbound", ErrRemnawaveCreationFailed)
+	}
+	advancedRepository, ok := s.repository.(AdvancedDeploymentRepository)
+	if !ok {
+		return safeError("ADVANCED_PERSISTENCE_UNAVAILABLE", "Advanced deployment persistence is unavailable", ErrPersistenceFailed)
+	}
+	if _, err := advancedRepository.SetAdvancedProfile(ctx, current.ID, repository.SetAdvancedProfileParams{ProfileUUID: profile.UUID, ProfileName: profile.Name, InboundUUID: profile.Inbounds[0].UUID}); err != nil {
+		return safeError("PROFILE_PERSIST_FAILED", "Config Profile was created but its identifiers could not be persisted", ErrPersistenceFailed)
+	}
+	if err := s.completeStage(ctx, current.ID, stepCreateProfile, "Dedicated Config Profile created"); err != nil {
+		return err
+	}
+	emit(progress, Progress{Step: stepCreateProfile, Completed: 4, Total: advancedWorkflowSteps, SafeMessage: "Dedicated Config Profile created", Status: deployment.StepStatusCompleted})
+	return s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode)
+}
+
+func (s *DeploymentService) finishAdvanced(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+	advanced, ok := s.remnawave.(AdvancedRemnawaveAPI)
+	if !ok {
+		return safeError("ADVANCED_API_UNAVAILABLE", "Remnawave Advanced API is unavailable", ErrRemnawaveCreationFailed)
+	}
+	if current.RemnawaveNodeUUID == nil || current.AdvancedConfigProfileUUID == "" || current.AdvancedInboundUUID == "" {
+		return ErrDeploymentNotRunnable
+	}
+	if current.Status == deployment.StatusCreatingHost {
+		emit(progress, Progress{Step: stepCreateHost, Completed: 7, Total: advancedWorkflowSteps, SafeMessage: "Creating hidden injected Host", Status: deployment.StepStatusRunning})
+		hosts, err := s.remnawave.GetHosts(ctx)
+		if err != nil {
+			return s.failStage(ctx, current.ID, stepCreateHost, deployment.StatusFailed, "HOST_LIST_FAILED", "Could not inspect Remnawave Hosts", ErrRemnawaveCreationFailed)
+		}
+		var selected *remnawave.Host
+		for index := range hosts {
+			if normalizeDomain(hosts[index].Address) != normalizeDomain(current.SNIDomain) {
+				continue
+			}
+			if hosts[index].Inbound.ConfigProfileUUID != nil && *hosts[index].Inbound.ConfigProfileUUID == current.AdvancedConfigProfileUUID && hosts[index].Inbound.ConfigProfileInboundUUID != nil && *hosts[index].Inbound.ConfigProfileInboundUUID == current.AdvancedInboundUUID {
+				if selected != nil {
+					return s.failStage(ctx, current.ID, stepCreateHost, deployment.StatusFailed, "HOST_RECOVERY_AMBIGUOUS", "Injected Host could not be recovered safely", ErrRemnawaveCreationFailed)
+				}
+				selected = &hosts[index]
+			}
+		}
+		if selected == nil {
+			created, createErr := advanced.CreateHost(ctx, remnawave.CreateHostInput{Remark: current.SNIDomain, Address: current.SNIDomain, Port: 443, Tag: current.AdvancedBalancerTag, ConfigProfileUUID: current.AdvancedConfigProfileUUID, InboundUUID: current.AdvancedInboundUUID, NodeUUID: *current.RemnawaveNodeUUID})
+			if createErr != nil {
+				return s.failStage(ctx, current.ID, stepCreateHost, deployment.StatusFailed, "HOST_CREATE_FAILED", "Hidden injected Host could not be created", ErrRemnawaveCreationFailed)
+			}
+			selected = &created
+		}
+		if _, err := s.repository.SetNodeHostBinding(ctx, current.ID, repository.SetNodeHostBindingParams{HostUUID: selected.UUID, HostRemark: selected.Remark, SNIDomain: current.SNIDomain}); err != nil {
+			return safeError("HOST_PERSIST_FAILED", "Host was created but its identifier could not be persisted", ErrPersistenceFailed)
+		}
+		if err := s.completeStage(ctx, current.ID, stepCreateHost, "Hidden injected Host created"); err != nil {
+			return err
+		}
+		emit(progress, Progress{Step: stepCreateHost, Completed: 8, Total: advancedWorkflowSteps, SafeMessage: "Hidden injected Host created", Status: deployment.StepStatusCompleted})
+		if err := s.beginStage(ctx, current.ID, deployment.StatusAddingToSquad, stepAddSquad); err != nil {
+			return err
+		}
+		current.Status = deployment.StatusAddingToSquad
+	}
+	if current.Status != deployment.StatusAddingToSquad {
+		return ErrDeploymentNotRunnable
+	}
+	emit(progress, Progress{Step: stepAddSquad, Completed: 8, Total: advancedWorkflowSteps, SafeMessage: "Adding inbound to Internal Squad", Status: deployment.StepStatusRunning})
+	if _, err := advanced.AddInboundToInternalSquad(ctx, current.AdvancedInternalSquadUUID, current.AdvancedInboundUUID); err != nil {
+		return s.failStage(ctx, current.ID, stepAddSquad, deployment.StatusFailed, "SQUAD_UPDATE_FAILED", "Inbound could not be added to the Internal Squad", ErrRemnawaveCreationFailed)
+	}
+	if err := s.completeStage(ctx, current.ID, stepAddSquad, "Inbound added to Internal Squad"); err != nil {
+		return err
+	}
+	if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
+		return err
+	}
+	emit(progress, Progress{Step: stepAddSquad, Completed: advancedWorkflowSteps, Total: advancedWorkflowSteps, SafeMessage: "Advanced balancer Host is ready", Status: deployment.StepStatusCompleted})
 	return nil
 }
 
@@ -540,7 +899,17 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 		return err
 	}
 	current.Status = deployment.StatusAddingToDNS
-	return s.addDNS(runCtx, &current, progress)
+	if err := s.addDNS(runCtx, &current, progress); err != nil {
+		return err
+	}
+	if current.Kind != deployment.KindAdvancedBalancer {
+		return nil
+	}
+	current, err = s.repository.GetDeployment(runCtx, current.ID)
+	if err != nil {
+		return safeError("PERSISTENCE_READ_FAILED", "Could not reload DNS state", ErrPersistenceFailed)
+	}
+	return s.finishAdvanced(runCtx, &current, progress)
 }
 
 // RetryFailedStep retries only stages whose side effects have an idempotent
@@ -560,6 +929,8 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 		resume = deployment.StatusPreflight
 	case stepProvisioning:
 		resume = deployment.StatusProvisioning
+	case stepCreateProfile:
+		resume = deployment.StatusCreatingProfile
 	case stepCreateNode:
 		resume = deployment.StatusCreatingRemnawave
 	case stepWaitNode:
@@ -569,6 +940,10 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 			return err
 		}
 		return s.RetryDNS(ctx, current.ID, progress)
+	case stepCreateHost:
+		resume = deployment.StatusCreatingHost
+	case stepAddSquad:
+		resume = deployment.StatusAddingToSquad
 	default:
 		return ErrDeploymentNotRunnable
 	}
@@ -801,6 +1176,9 @@ func (s *DeploymentService) beginStage(ctx context.Context, deploymentID string,
 	if err := s.setState(ctx, deploymentID, status, step, "", ""); err != nil {
 		return err
 	}
+	if s.logger != nil {
+		s.logger.Info("deployment step started", slog.String("panel_id", s.config.PanelID), slog.String("deployment_id", deploymentID), slog.String("step", step))
+	}
 	_, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: deploymentID, Name: step, Status: deployment.StepStatusRunning, SafeSummary: stringPtr("started")})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -822,6 +1200,9 @@ func (s *DeploymentService) completeStage(ctx context.Context, deploymentID, ste
 		}
 		return safeError("STEP_PERSIST_FAILED", "Could not persist deployment step", ErrPersistenceFailed)
 	}
+	if s.logger != nil {
+		s.logger.Info("deployment step completed", slog.String("panel_id", s.config.PanelID), slog.String("deployment_id", deploymentID), slog.String("step", step))
+	}
 	return nil
 }
 
@@ -830,6 +1211,9 @@ func (s *DeploymentService) failStage(ctx context.Context, deploymentID, step st
 		return err
 	}
 	message = safeText(message, "Deployment step failed")
+	if s.logger != nil {
+		s.logger.Error("deployment step failed", slog.String("panel_id", s.config.PanelID), slog.String("deployment_id", deploymentID), slog.String("step", stepOrFallback(step)), slog.String("code", code), slog.String("safe_message", message))
+	}
 	if s.config.Observer != nil {
 		s.config.Observer.DeploymentFailed()
 	}

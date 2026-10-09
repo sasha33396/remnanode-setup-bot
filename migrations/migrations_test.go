@@ -97,3 +97,21 @@ func TestMultiPanelMigrationScopesDeploymentsAndCertificates(t *testing.T) {
 		}
 	}
 }
+
+func TestAdvancedBalancerMigrationPersistsRecoveryIdentifiersWithoutSecrets(t *testing.T) {
+	contents, err := Files.ReadFile("000007_advanced_balancer_hosts.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"deployment_kind", "advanced_balancer_tag", "advanced_egress_ip", "advanced_internal_squad_uuid", "advanced_config_profile_uuid", "advanced_config_profile_name", "advanced_inbound_uuid", "creating_config_profile", "creating_host", "adding_to_squad"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("advanced balancer migration does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"root_password", "private_key", "cf_api_token"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("advanced balancer migration contains forbidden secret field %q", forbidden)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 const (
 	MenuAddNode     = "➕ Добавить ноду"
+	MenuAddBalancer = "⚖️ Добавить балансировщик"
 	MenuNodes       = "📡 Ноды"
 	MenuDeployments = "📜 Развёртывания"
 	MenuChangeIP    = "🔄 Сменить IP"
@@ -83,6 +84,27 @@ type Panel struct {
 	ID         string
 	Name       string
 	DNSEnabled bool
+}
+
+type InternalSquad struct {
+	ID   string
+	Name string
+}
+
+type AdvancedBalancerOptions struct {
+	Squads []InternalSquad
+}
+
+type AdvancedBalancerPreflightInput struct {
+	PanelID         string
+	OperatorUserID  int64
+	InternalSquadID string
+	BalancerTag     string
+	HostFQDN        string
+	NodeName        string
+	IngressIP       netip.Addr
+	EgressIP        netip.Addr
+	Password        []byte
 }
 
 type NodeSummary struct {
@@ -284,6 +306,7 @@ type RoyalIPResult struct {
 
 type DeploymentSummary struct {
 	PanelName     string
+	Kind          string
 	ID            string
 	NodeName      string
 	Status        string
@@ -388,6 +411,11 @@ type Application interface {
 	CancelDeployment(context.Context, string) error
 	ListNodes(context.Context) ([]NodeSummary, error)
 	ListDeployments(context.Context, int) ([]DeploymentSummary, error)
+}
+
+type AdvancedBalancerApplication interface {
+	ListAdvancedBalancerOptions(context.Context, string) (AdvancedBalancerOptions, error)
+	PreflightAdvancedBalancer(context.Context, AdvancedBalancerPreflightInput) (PreflightResult, error)
 }
 
 // RecoveryApplication is optional. Controller exposes these operations only

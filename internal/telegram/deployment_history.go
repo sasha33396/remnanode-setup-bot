@@ -15,7 +15,7 @@ func renderDeploymentsList(deployments []DeploymentSummary) string {
 	}
 	for _, item := range deployments {
 		icon, status := deploymentStatusText(item.Status)
-		completed, total := deploymentProgress(item.Status, item.CurrentStep)
+		completed, total := deploymentProgress(item.Kind, item.Status, item.CurrentStep)
 		fmt.Fprintf(&builder, "\n%s [%s] %s — %s", icon, safeLine(item.PanelName, 40), safeLine(item.NodeName, 60), status)
 		fmt.Fprintf(&builder, "\n   Этап: %s • %d/%d", deploymentStepText(item.CurrentStep), completed, total)
 		if !item.UpdatedAt.IsZero() {
@@ -40,11 +40,14 @@ func renderDeploymentCard(details DeploymentDetails, notice string) string {
 		builder.WriteString("\n\n")
 	}
 	icon, status := deploymentStatusText(details.Status)
-	completed, total := deploymentProgress(details.Status, details.CurrentStep)
+	completed, total := deploymentProgress(details.Kind, details.Status, details.CurrentStep)
 	builder.WriteString("📜 Развёртывание\n")
 	fmt.Fprintf(&builder, "%s Статус: %s\n", icon, status)
 	fmt.Fprintf(&builder, "Панель: %s\n", safeLine(details.PanelName, 80))
 	fmt.Fprintf(&builder, "Нода: %s\n", safeLine(details.NodeName, 80))
+	if details.Kind == "ADVANCED_BALANCER" {
+		fmt.Fprintf(&builder, "Тип: Advanced Balancer Host\nFQDN: %s\n", safeLine(details.SNI, 255))
+	}
 	if details.TargetIP.IsValid() {
 		fmt.Fprintf(&builder, "IP сервера: %s\n", details.TargetIP)
 	}
@@ -196,35 +199,54 @@ func deploymentLogStepText(step string) string {
 	return deploymentStepText(step)
 }
 
-func deploymentProgress(status, step string) (int, int) {
+func deploymentProgress(kind, status, step string) (int, int) {
+	total := 6
+	if kind == "ADVANCED_BALANCER" {
+		total = 9
+	}
 	if strings.EqualFold(status, "COMPLETED") {
-		return 6, 6
+		return total, total
 	}
 	if strings.EqualFold(status, "CREATED") {
-		return 0, 6
+		return 0, total
 	}
 	if strings.EqualFold(status, "FAILED") && strings.TrimSpace(step) == progressStepPreflight {
-		return 0, 6
+		return 0, total
 	}
 	switch strings.TrimSpace(step) {
 	case progressStepPreflight:
-		return 1, 6
+		return 1, total
 	case "created":
-		return 0, 6
+		return 0, total
 	case progressStepCertificate:
-		return 1, 6
+		return 1, total
 	case progressStepProvisioning:
-		return 2, 6
+		return 2, total
+	case progressStepProfile:
+		return 3, total
 	case progressStepCreateNode:
-		return 3, 6
+		if total == 9 {
+			return 4, total
+		}
+		return 3, total
 	case progressStepWaitNode:
-		return 4, 6
+		if total == 9 {
+			return 5, total
+		}
+		return 4, total
 	case progressStepDNS:
-		return 5, 6
+		if total == 9 {
+			return 6, total
+		}
+		return 5, total
+	case progressStepHost:
+		return 7, total
+	case progressStepSquad:
+		return 8, total
 	case "completed":
-		return 6, 6
+		return total, total
 	default:
-		return 0, 6
+		return 0, total
 	}
 }
 

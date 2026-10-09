@@ -29,8 +29,9 @@ PostgreSQL URL.
 credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 `v0.1.0-external` tag; branch names such as `main` are rejected.
 
-`ACME_EMAIL` is the ACME account contact. `CF_API_TOKEN` is used only by the
-central DNS-01 client and is never copied to a Node. Certificate versions and
+`ACME_EMAIL` is the ACME account contact. `CF_API_TOKEN` is used by the
+central DNS-01 client and for direct Advanced Balancer Host A records; it is
+never copied to a Node. Certificate versions and
 the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
 
 Multi-panel mode is configured in `config/panels.yml`. Copy
@@ -56,7 +57,7 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-Migrations `000001` through `000006` must be applied first. Startup verifies
+Migrations `000001` through `000007` must be applied first. Startup verifies
 PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
@@ -70,6 +71,16 @@ Temporary root passwords are deleted from Telegram when possible, retained only
 in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
+
+The **Add balancer** wizard creates a separate Xray JSON config profile, Node,
+hidden Host, and inbound-to-internal-squad association for every physical
+balancer host. It asks whether the server has one IP or separate ingress and
+egress IPs. The ingress IP is used for SSH, the Node address, and a direct
+Cloudflare A record. The optional egress IP is used only as Xray's
+`sendThrough`; the field is omitted in one-IP mode. These records are not sent
+to the DNS-balancer service. See
+[`docs/advanced-balancer-host.md`](docs/advanced-balancer-host.md) for the
+Remnawave prerequisites and recovery behavior.
 
 The **Ноды** menu first separates inventory by Remnawave panel. Inside each
 panel it shows three operator groups with live counts: critically low online
@@ -283,12 +294,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000003_certificate_manager
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery.down.sql

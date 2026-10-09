@@ -767,13 +767,16 @@ func (r *memoryRepository) CreateDeployment(_ context.Context, params repository
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextID++
-	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", r.nextID)
+	id := params.ID
+	if id == "" {
+		id = fmt.Sprintf("00000000-0000-4000-8000-%012d", r.nextID)
+	}
 	now := time.Now()
 	panelID := params.PanelID
 	if panelID == "" {
 		panelID = "default"
 	}
-	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
+	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Kind: params.Kind, AdvancedBalancerTag: params.AdvancedBalancerTag, AdvancedEgressIP: params.AdvancedEgressIP, AdvancedInternalSquadUUID: params.AdvancedInternalSquadUUID, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
 	r.items[id] = item
 	return item, nil
 }
@@ -838,6 +841,60 @@ func (r *memoryRepository) SetNodeHostBinding(_ context.Context, id string, para
 	item.SelectedHostRemark = params.HostRemark
 	item.SNIDomain = params.SNIDomain
 	item.UpdatedAt = time.Now()
+	r.items[id] = item
+	return item, nil
+}
+
+func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.service.config.DNSDisabled = true // Direct Cloudflare records do not depend on DNS-balancer mode.
+	const squadUUID = "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.hosts[0].Tags = []string{"BALANCER_2"}
+	fixture.remnawave.hosts[0].XrayJSONTemplateUUID = stringPtr("88888888-8888-4888-8888-888888888888")
+	fixture.remnawave.squads = []remnawave.InternalSquad{{UUID: squadUUID, Name: "Default-Squad"}}
+	dnsRecords := &fakeDNSRecords{events: fixture.events}
+	fixture.service.config.DNSRecords = dnsRecords
+	prepared, err := fixture.service.PrepareAdvancedBalancer(context.Background(), PrepareAdvancedBalancerInput{
+		OperatorUserID: 42, InternalSquadID: squadUUID, BalancerTag: "BALANCER_2",
+		HostFQDN: "gmb.example.com", NodeName: "gmb-node", IngressIP: netip.MustParseAddr("8.8.8.8"),
+		EgressIP: netip.MustParseAddr("1.1.1.1"), Password: []byte("temporary-password"),
+	})
+	if err != nil {
+		t.Fatalf("PrepareAdvancedBalancer() error = %v", err)
+	}
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatalf("Deploy() error = %v", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.Status != deployment.StatusCompleted || stored.Kind != deployment.KindAdvancedBalancer || stored.AdvancedEgressIP.String() != "1.1.1.1" {
+		t.Fatalf("stored deployment = %#v", stored)
+	}
+	if dnsRecords.calls != 1 || dnsRecords.fqdn != "gmb.example.com" || dnsRecords.address.String() != "8.8.8.8" {
+		t.Fatalf("Cloudflare call = %#v", dnsRecords)
+	}
+	if len(fixture.remnawave.squads[0].Inbounds) != 1 || fixture.remnawave.squads[0].Inbounds[0] != testInboundUUID {
+		t.Fatalf("updated squad = %#v", fixture.remnawave.squads[0])
+	}
+	config := fixture.remnawave.lastProfileConfig.(map[string]any)
+	outbounds := config["outbounds"].([]any)
+	if got := outbounds[0].(map[string]any)["sendThrough"]; got != "1.1.1.1" {
+		t.Fatalf("sendThrough = %#v", got)
+	}
+	events := fixture.events.snapshot()
+	assertBefore(t, events, "remnawave.profile", "remnawave.create")
+	assertBefore(t, events, "remnawave.connected", "cloudflare.a")
+	assertBefore(t, events, "cloudflare.a", "remnawave.host")
+	assertBefore(t, events, "remnawave.host", "remnawave.squad")
+}
+
+func (r *memoryRepository) SetAdvancedProfile(_ context.Context, id string, params repository.SetAdvancedProfileParams) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[id]
+	if !found {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.AdvancedConfigProfileUUID, item.AdvancedConfigProfileName, item.AdvancedInboundUUID = params.ProfileUUID, params.ProfileName, params.InboundUUID
 	r.items[id] = item
 	return item, nil
 }
@@ -924,18 +981,82 @@ func cloneString(value *string) *string {
 type fakeRemnawave struct {
 	mu sync.Mutex
 
-	events           *eventLog
-	hosts            []remnawave.Host
-	nodes            []remnawave.Node
-	secret           string
-	createErr        error
-	pollStates       []remnawave.Node
-	pollIndex        int
-	alwaysConnecting bool
-	createCalls      int
-	profileUpdates   []remnawave.UpdateNodeProfileInput
-	disabledUpdates  []remnawave.SetNodeDisabledInput
-	disableErr       error
+	events            *eventLog
+	hosts             []remnawave.Host
+	nodes             []remnawave.Node
+	secret            string
+	createErr         error
+	pollStates        []remnawave.Node
+	pollIndex         int
+	alwaysConnecting  bool
+	createCalls       int
+	profileUpdates    []remnawave.UpdateNodeProfileInput
+	disabledUpdates   []remnawave.SetNodeDisabledInput
+	disableErr        error
+	profiles          []remnawave.ConfigProfile
+	squads            []remnawave.InternalSquad
+	lastProfileConfig any
+}
+
+func (f *fakeRemnawave) GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]remnawave.ConfigProfile(nil), f.profiles...), nil
+}
+func (f *fakeRemnawave) GenerateX25519(context.Context) (remnawave.X25519Keypair, error) {
+	return remnawave.X25519Keypair{PublicKey: "public", PrivateKey: "private"}, nil
+}
+func (f *fakeRemnawave) CreateConfigProfile(_ context.Context, input remnawave.CreateConfigProfileInput) (remnawave.ConfigProfile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastProfileConfig = input.Config
+	profile := remnawave.ConfigProfile{UUID: testProfileUUID, Name: input.Name, Inbounds: []remnawave.ConfigProfileInbound{{UUID: testInboundUUID, Tag: "VLESS_TCP_REALITY_TEST"}}}
+	f.profiles = append(f.profiles, profile)
+	f.events.add("remnawave.profile")
+	return profile, nil
+}
+
+type fakeDNSRecords struct {
+	events  *eventLog
+	calls   int
+	fqdn    string
+	address netip.Addr
+	err     error
+}
+
+func (f *fakeDNSRecords) CheckARecord(context.Context, string, netip.Addr) error { return f.err }
+
+func (f *fakeDNSRecords) EnsureARecord(_ context.Context, fqdn string, address netip.Addr) (bool, error) {
+	f.calls++
+	f.fqdn, f.address = fqdn, address
+	f.events.add("cloudflare.a")
+	return f.err == nil, f.err
+}
+func (f *fakeRemnawave) GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]remnawave.InternalSquad(nil), f.squads...), nil
+}
+func (f *fakeRemnawave) AddInboundToInternalSquad(_ context.Context, squadUUID, inboundUUID string) (remnawave.InternalSquad, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := range f.squads {
+		if f.squads[index].UUID == squadUUID {
+			f.squads[index].Inbounds = append(f.squads[index].Inbounds, inboundUUID)
+			f.events.add("remnawave.squad")
+			return f.squads[index], nil
+		}
+	}
+	return remnawave.InternalSquad{}, errors.New("squad not found")
+}
+func (f *fakeRemnawave) CreateHost(_ context.Context, input remnawave.CreateHostInput) (remnawave.Host, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	hostUUID := "99999999-9999-4999-8999-999999999999"
+	host := remnawave.Host{UUID: hostUUID, Remark: input.Remark, Address: input.Address, IsHidden: true, Tags: []string{input.Tag}, Nodes: []string{input.NodeUUID}, Inbound: remnawave.HostInbound{ConfigProfileUUID: stringPtr(input.ConfigProfileUUID), ConfigProfileInboundUUID: stringPtr(input.InboundUUID)}}
+	f.hosts = append(f.hosts, host)
+	f.events.add("remnawave.host")
+	return host, nil
 }
 
 func (f *fakeRemnawave) GetHosts(context.Context) ([]remnawave.Host, error) {
@@ -1192,6 +1313,11 @@ func (f *fakeCertificateProvider) Readiness(context.Context, string) (Certificat
 
 func (f *fakeCertificateProvider) Prepare(context.Context, string) (certificates.Material, error) {
 	f.events.add("certificate.prepare")
+	return f.material.Clone(), f.err
+}
+
+func (f *fakeCertificateProvider) PrepareForNewTarget(context.Context, string) (certificates.Material, error) {
+	f.events.add("certificate.prepare-new")
 	return f.material.Clone(), f.err
 }
 

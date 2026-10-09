@@ -110,6 +110,59 @@ func (m *Manager) Prepare(ctx context.Context, sni string) (certificates.Materia
 	return m.issueAndActivate(ctx, domain, nil)
 }
 
+// PrepareForNewTarget returns a certificate for a brand-new, dedicated DNS
+// name without resolving or distributing to pre-existing DNS-balancer targets.
+// The caller installs the returned material on the new VPS in the same run.
+func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certificates.Material, error) {
+	domain, err := canonicalSNI(sni)
+	if err != nil {
+		return certificates.Material{}, err
+	}
+	unlock, err := m.locker.Lock(ctx, domain)
+	if err != nil {
+		return certificates.Material{}, safe("Certificate preparation lock is unavailable", ErrPersistenceFailed)
+	}
+	defer unlock()
+	if _, active, loadErr := m.loadActive(ctx, domain, true); loadErr == nil {
+		return active, nil
+	} else if !errors.Is(loadErr, ErrNotFound) && !errors.Is(loadErr, certificates.ErrInvalidMaterial) {
+		return certificates.Material{}, loadErr
+	}
+	issueCtx, cancel := context.WithTimeout(ctx, m.config.IssueTimeout)
+	defer cancel()
+	material, err := m.issuer.Issue(issueCtx, domain)
+	if err != nil {
+		return certificates.Material{}, safe(SafeMessage(err, "Certificate issuance failed"), ErrIssuanceFailed)
+	}
+	valid := false
+	defer func() {
+		if !valid {
+			material.Destroy()
+		}
+	}()
+	info, err := certificates.Validate(material, domain, m.now())
+	if err != nil {
+		return certificates.Material{}, safe("Issued certificate is invalid", certificates.ErrInvalidMaterial)
+	}
+	version, err := m.store.Stage(ctx, domain, material)
+	if err != nil {
+		return certificates.Material{}, err
+	}
+	metadata := Version{SNI: domain, Version: version, Fingerprint: info.Fingerprint, Serial: info.Serial, IssuedAt: info.IssuedAt, ExpiresAt: info.ExpiresAt, Status: VersionPending, CreatedAt: m.now().UTC()}
+	if err := m.repository.SaveVersion(ctx, metadata); err != nil {
+		return certificates.Material{}, safe("Certificate metadata could not be saved", ErrPersistenceFailed)
+	}
+	if err := m.store.Activate(ctx, domain, version); err != nil {
+		return certificates.Material{}, err
+	}
+	if err := m.repository.ActivateVersion(ctx, domain, version, false); err != nil {
+		return certificates.Material{}, safe("Certificate metadata could not be activated", ErrPersistenceFailed)
+	}
+	m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
+	valid = true
+	return material, nil
+}
+
 // Renew forces a new ACME order even when the active certificate is not near
 // expiration. It is serialized with Prepare and other renewals for the SNI.
 func (m *Manager) Renew(ctx context.Context, sni string) error {

@@ -2,18 +2,23 @@
 package remnawave
 
 import (
+	"encoding/json"
 	"net/netip"
 	"time"
 )
 
 // Host contains the Remnawave Host fields needed to deploy a Node.
 type Host struct {
-	UUID       string
-	Remark     string
-	Address    string
-	SNI        *string
-	IsDisabled bool
-	Inbound    HostInbound
+	UUID                 string
+	Remark               string
+	Address              string
+	SNI                  *string
+	IsDisabled           bool
+	IsHidden             bool
+	Tags                 []string
+	Nodes                []string
+	XrayJSONTemplateUUID *string
+	Inbound              HostInbound
 }
 
 // HostInbound identifies the config profile and inbound selected by a Host.
@@ -63,9 +68,50 @@ type NodeMetric struct {
 // CreateNodeInput contains operator input plus the selected Host. The API port
 // and Node config profile are deliberately not caller-controlled.
 type CreateNodeInput struct {
-	Name    string
-	Address netip.Addr
-	Host    Host
+	Name          string
+	Address       netip.Addr
+	Host          Host
+	ConfigProfile *NodeConfigProfile
+}
+
+// ConfigProfile is a server-side Xray configuration and its generated
+// inbound identities.
+type ConfigProfile struct {
+	UUID     string
+	Name     string
+	Config   json.RawMessage
+	Inbounds []ConfigProfileInbound
+}
+
+type ConfigProfileInbound struct {
+	UUID string
+	Tag  string
+}
+
+type InternalSquad struct {
+	UUID     string
+	Name     string
+	Inbounds []string
+}
+
+type X25519Keypair struct {
+	PublicKey  string
+	PrivateKey string
+}
+
+type CreateConfigProfileInput struct {
+	Name   string
+	Config any
+}
+
+type CreateHostInput struct {
+	Remark            string
+	Address           string
+	Port              int
+	Tag               string
+	ConfigProfileUUID string
+	InboundUUID       string
+	NodeUUID          string
 }
 
 // UpdateNodeAddressInput changes only the address of an existing Node.

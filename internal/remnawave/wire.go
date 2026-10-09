@@ -1,18 +1,25 @@
 package remnawave
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type hostsEnvelope struct {
 	Response *[]hostWire `json:"response"`
 }
 
 type hostWire struct {
-	UUID       *string          `json:"uuid"`
-	Remark     *string          `json:"remark"`
-	Address    *string          `json:"address"`
-	SNI        *string          `json:"sni"`
-	IsDisabled *bool            `json:"isDisabled"`
-	Inbound    *hostInboundWire `json:"inbound"`
+	UUID                 *string          `json:"uuid"`
+	Remark               *string          `json:"remark"`
+	Address              *string          `json:"address"`
+	SNI                  *string          `json:"sni"`
+	IsDisabled           *bool            `json:"isDisabled"`
+	IsHidden             *bool            `json:"isHidden"`
+	Tags                 []string         `json:"tags"`
+	Nodes                []string         `json:"nodes"`
+	XrayJSONTemplateUUID *string          `json:"xrayJsonTemplateUuid"`
+	Inbound              *hostInboundWire `json:"inbound"`
 }
 
 type hostInboundWire struct {
@@ -25,11 +32,15 @@ func (h hostWire) model() (Host, error) {
 		return Host{}, ErrInvalidResponse
 	}
 	return Host{
-		UUID:       *h.UUID,
-		Remark:     *h.Remark,
-		Address:    *h.Address,
-		SNI:        h.SNI,
-		IsDisabled: *h.IsDisabled,
+		UUID:                 *h.UUID,
+		Remark:               *h.Remark,
+		Address:              *h.Address,
+		SNI:                  h.SNI,
+		IsDisabled:           *h.IsDisabled,
+		IsHidden:             h.IsHidden != nil && *h.IsHidden,
+		Tags:                 append([]string(nil), h.Tags...),
+		Nodes:                append([]string(nil), h.Nodes...),
+		XrayJSONTemplateUUID: h.XrayJSONTemplateUUID,
 		Inbound: HostInbound{
 			ConfigProfileUUID:        h.Inbound.ConfigProfileUUID,
 			ConfigProfileInboundUUID: h.Inbound.ConfigProfileInboundUUID,
@@ -120,6 +131,102 @@ type createNodeRequest struct {
 	Address       string            `json:"address"`
 	Port          int               `json:"port"`
 	ConfigProfile NodeConfigProfile `json:"configProfile"`
+}
+
+type configProfilesEnvelope struct {
+	Response *struct {
+		ConfigProfiles []configProfileWire `json:"configProfiles"`
+	} `json:"response"`
+}
+
+type configProfileEnvelope struct {
+	Response *configProfileWire `json:"response"`
+}
+
+type configProfileWire struct {
+	UUID     *string                    `json:"uuid"`
+	Name     *string                    `json:"name"`
+	Config   json.RawMessage            `json:"config"`
+	Inbounds []configProfileInboundWire `json:"inbounds"`
+}
+
+type configProfileInboundWire struct {
+	UUID *string `json:"uuid"`
+	Tag  *string `json:"tag"`
+}
+
+func (p configProfileWire) model() (ConfigProfile, error) {
+	if p.UUID == nil || !validUUID(*p.UUID) || p.Name == nil || *p.Name == "" || len(p.Config) == 0 {
+		return ConfigProfile{}, ErrInvalidResponse
+	}
+	result := ConfigProfile{UUID: *p.UUID, Name: *p.Name, Config: append(json.RawMessage(nil), p.Config...)}
+	for _, inbound := range p.Inbounds {
+		if inbound.UUID == nil || !validUUID(*inbound.UUID) || inbound.Tag == nil || *inbound.Tag == "" {
+			return ConfigProfile{}, ErrInvalidResponse
+		}
+		result.Inbounds = append(result.Inbounds, ConfigProfileInbound{UUID: *inbound.UUID, Tag: *inbound.Tag})
+	}
+	return result, nil
+}
+
+type internalSquadsEnvelope struct {
+	Response *struct {
+		InternalSquads []internalSquadWire `json:"internalSquads"`
+	} `json:"response"`
+}
+
+type internalSquadEnvelope struct {
+	Response *internalSquadWire `json:"response"`
+}
+
+type internalSquadWire struct {
+	UUID     *string                    `json:"uuid"`
+	Name     *string                    `json:"name"`
+	Inbounds []configProfileInboundWire `json:"inbounds"`
+}
+
+func (s internalSquadWire) model() (InternalSquad, error) {
+	if s.UUID == nil || !validUUID(*s.UUID) || s.Name == nil || *s.Name == "" {
+		return InternalSquad{}, ErrInvalidResponse
+	}
+	result := InternalSquad{UUID: *s.UUID, Name: *s.Name}
+	for _, inbound := range s.Inbounds {
+		if inbound.UUID == nil || !validUUID(*inbound.UUID) {
+			return InternalSquad{}, ErrInvalidResponse
+		}
+		result.Inbounds = append(result.Inbounds, *inbound.UUID)
+	}
+	return result, nil
+}
+
+type x25519Envelope struct {
+	Response *struct {
+		Keypairs []X25519Keypair `json:"keypairs"`
+	} `json:"response"`
+}
+
+type createConfigProfileRequest struct {
+	Name   string `json:"name"`
+	Config any    `json:"config"`
+}
+
+type createHostRequest struct {
+	Inbound struct {
+		ConfigProfileUUID string `json:"configProfileUuid"`
+		InboundUUID       string `json:"configProfileInboundUuid"`
+	} `json:"inbound"`
+	Remark     string   `json:"remark"`
+	Address    string   `json:"address"`
+	Port       int      `json:"port"`
+	Tags       []string `json:"tags"`
+	IsHidden   bool     `json:"isHidden"`
+	IsDisabled bool     `json:"isDisabled"`
+	Nodes      []string `json:"nodes"`
+}
+
+type updateInternalSquadRequest struct {
+	UUID     string   `json:"uuid"`
+	Inbounds []string `json:"inbounds"`
 }
 
 type updateNodeAddressRequest struct {

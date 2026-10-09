@@ -194,7 +194,7 @@ func run() int {
 			return 1
 		}
 		certificateManagers = append(certificateManagers, certificateManager)
-		deploymentService, serviceErr := orchestrator.NewDeploymentService(repository, remnawaveAPI, dnsAPI, certificateManager, vps, orchestrator.Config{PanelID: panel.ID, DNSDisabled: panel.DNSMode == config.DNSModeDisabled, MaxConcurrentDeployments: cfg.MaxConcurrentDeployments, NodeConnectTimeout: cfg.NodeConnectTimeout, InitialPollBackoff: time.Second, MaxPollBackoff: 10 * time.Second, Observer: registry, NodeSNISwitcher: nodeSNISwitcher})
+		deploymentService, serviceErr := orchestrator.NewDeploymentService(repository, remnawaveAPI, dnsAPI, certificateManager, vps, orchestrator.Config{PanelID: panel.ID, DNSDisabled: panel.DNSMode == config.DNSModeDisabled, DNSRecords: cloudflare, MaxConcurrentDeployments: cfg.MaxConcurrentDeployments, NodeConnectTimeout: cfg.NodeConnectTimeout, InitialPollBackoff: time.Second, MaxPollBackoff: 10 * time.Second, Observer: registry, NodeSNISwitcher: nodeSNISwitcher, Logger: logger})
 		if serviceErr != nil {
 			logger.Error("deployment service initialization failed", slog.String("panel_id", panel.ID))
 			return 1

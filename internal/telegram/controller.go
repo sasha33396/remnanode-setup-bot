@@ -128,6 +128,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.cancelFromMessage(ctx, message)
 	case MenuAddNode, legacyMenuAddNode:
 		return c.beginAddNode(ctx, message)
+	case MenuAddBalancer:
+		return c.beginAdvancedBalancer(ctx, message)
 	case MenuNodes, legacyMenuNodes:
 		c.cancelExisting(ctx, message.FromUserID)
 		return c.showNodes(ctx, message.ChatID)
@@ -148,7 +150,7 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel, stateSelectingBalancerPanel, stateSelectingBalancerSquad, stateSelectingBalancerIPMode:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
 	case stateSelectingIPMode, stateSelectingServerIPScope:
@@ -163,6 +165,24 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptVPSIP(ctx, message, session)
 	case stateAwaitingPassword:
 		return c.acceptPassword(ctx, message, session)
+	case stateAwaitingBalancerTag:
+		return c.acceptBalancerTag(ctx, message, session)
+	case stateAwaitingBalancerFQDN:
+		return c.acceptBalancerFQDN(ctx, message, session)
+	case stateAwaitingBalancerNodeName:
+		return c.acceptBalancerNodeName(ctx, message, session)
+	case stateAwaitingBalancerIngressIP:
+		return c.acceptBalancerIngressIP(ctx, message, session)
+	case stateAwaitingBalancerEgressIP:
+		return c.acceptBalancerEgressIP(ctx, message, session)
+	case stateAwaitingBalancerPassword:
+		return c.acceptBalancerPassword(ctx, message, session)
+	case stateBalancerPreflighting:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Проверка VPS уже выполняется.", Keyboard{})
+		return err
+	case stateAwaitingBalancerConfirmation:
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Используйте кнопки под карточкой подтверждения.", Keyboard{})
+		return err
 	case statePreflighting:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Preflight is already running.", Keyboard{})
 		return err
@@ -368,6 +388,16 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 
 	switch action {
+	case "bal_panel":
+		return c.selectBalancerPanel(ctx, callback, session, index)
+	case "bal_squad":
+		return c.selectBalancerSquad(ctx, callback, session, index)
+	case "bal_ipmode":
+		return c.selectBalancerIPMode(ctx, callback, session, index)
+	case "bal_deploy":
+		return c.startDeployment(ctx, callback, session)
+	case "bal_cancel":
+		return c.cancelAdvancedBalancer(ctx, callback, session)
 	case "ip_mode":
 		if session.state != stateSelectingIPMode {
 			return c.expiredCallback(ctx, callback)
@@ -1215,10 +1245,14 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 }
 
 func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuery, session *wizard) error {
-	if session.state != stateAwaitingConfirmation || session.statusMsgID == 0 || callback.Message.ID != session.statusMsgID {
+	expectedState := stateAwaitingConfirmation
+	if session.advancedBalancer {
+		expectedState = stateAwaitingBalancerConfirmation
+	}
+	if session.state != expectedState || session.statusMsgID == 0 || callback.Message.ID != session.statusMsgID {
 		return c.expiredCallback(ctx, callback)
 	}
-	active := c.takeSession(callback.FromUserID, session.nonce, stateAwaitingConfirmation)
+	active := c.takeSession(callback.FromUserID, session.nonce, expectedState)
 	if active == nil {
 		return c.expiredCallback(ctx, callback)
 	}
@@ -1250,7 +1284,7 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 		})
 		if err != nil {
 			progressView.Fail(err)
-			_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
+			_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{Inline: [][]Button{{{Text: "🔧 Открыть карточку и повторить шаг", CallbackData: "dep:open:" + active.preflight.PreparedDeploymentID}}}})
 			return
 		}
 		progressView.Complete()
@@ -1568,7 +1602,7 @@ func (c *Controller) sendExpired(ctx context.Context, chatID int64) error {
 }
 
 func mainKeyboard() Keyboard {
-	return Keyboard{Reply: [][]string{{MenuAddNode, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
+	return Keyboard{Reply: [][]string{{MenuAddNode, MenuAddBalancer}, {MenuChangeIP, MenuNodes}, {MenuDeployments}}}
 }
 
 func ipChangeKeyboard(nonce string) Keyboard {
@@ -1731,6 +1765,16 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	parts := strings.Split(data, ":")
 	if len(parts) < 3 || parts[2] == "" {
 		return "", "", 0, false
+	}
+	if parts[0] == "bal" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "squad" || parts[1] == "ipmode") {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 || (parts[1] == "ipmode" && parsed > 1) {
+			return "", "", 0, false
+		}
+		return "bal_" + parts[1], parts[2], parsed, true
+	}
+	if parts[0] == "bal" && len(parts) == 3 && (parts[1] == "deploy" || parts[1] == "cancel") {
+		return "bal_" + parts[1], parts[2], 0, true
 	}
 	if parts[0] == "ip" && len(parts) == 4 && parts[1] == "panel" {
 		parsed, err := strconv.Atoi(parts[3])

@@ -132,6 +132,42 @@ func (a *TelegramApplication) ListHosts(ctx context.Context, panelID string) ([]
 	return result, nil
 }
 
+func (a *TelegramApplication) ListAdvancedBalancerOptions(ctx context.Context, panelID string) (telegram.AdvancedBalancerOptions, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return telegram.AdvancedBalancerOptions{}, err
+	}
+	advanced, ok := panel.Service.remnawave.(AdvancedRemnawaveAPI)
+	if !ok {
+		return telegram.AdvancedBalancerOptions{}, errors.New("advanced Remnawave API is unavailable")
+	}
+	squads, err := advanced.GetInternalSquads(ctx)
+	if err != nil {
+		return telegram.AdvancedBalancerOptions{}, errors.New("list Internal Squads failed")
+	}
+	result := telegram.AdvancedBalancerOptions{Squads: make([]telegram.InternalSquad, 0, len(squads))}
+	for _, squad := range squads {
+		result.Squads = append(result.Squads, telegram.InternalSquad{ID: squad.UUID, Name: squad.Name})
+	}
+	return result, nil
+}
+
+func (a *TelegramApplication) PreflightAdvancedBalancer(ctx context.Context, input telegram.AdvancedBalancerPreflightInput) (telegram.PreflightResult, error) {
+	panel, err := a.panel(input.PanelID)
+	if err != nil {
+		return telegram.PreflightResult{}, err
+	}
+	prepared, err := panel.Service.PrepareAdvancedBalancer(ctx, PrepareAdvancedBalancerInput{
+		PanelID: input.PanelID, OperatorUserID: input.OperatorUserID, InternalSquadID: input.InternalSquadID,
+		BalancerTag: input.BalancerTag, HostFQDN: input.HostFQDN, NodeName: input.NodeName,
+		IngressIP: input.IngressIP, EgressIP: input.EgressIP, Password: input.Password,
+	})
+	if err != nil {
+		return telegram.PreflightResult{}, err
+	}
+	return telegram.PreflightResult{PreparedDeploymentID: prepared.Deployment.ID, DNSZone: prepared.DNSZone, CertificateReadiness: telegramCertificateReadiness(prepared.CertificateReadiness), ConfigProfileReadiness: readiness(prepared.ConfigProfileReadiness), Warnings: telegramNotices(prepared.Warnings)}, nil
+}
+
 func (a *TelegramApplication) CheckNodeName(ctx context.Context, panelID, name string) error {
 	if remnawave.ValidateNodeName(name) != nil {
 		return ErrInvalidInput
@@ -270,7 +306,7 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 	}
 	if item.Status == deployment.StatusFailed {
 		switch item.CurrentStep {
-		case stepPrepareCertificate, stepProvisioning, stepCreateNode, stepWaitNode, stepAddDNS:
+		case stepPrepareCertificate, stepProvisioning, stepCreateProfile, stepCreateNode, stepWaitNode, stepAddDNS, stepCreateHost, stepAddSquad:
 			details.CanRetryStep = true
 		}
 		switch item.CurrentStep {
@@ -628,6 +664,7 @@ func (a *TelegramApplication) ListDeployments(ctx context.Context, limit int) ([
 func telegramDeploymentSummary(item deployment.Deployment, panelName string) telegram.DeploymentSummary {
 	result := telegram.DeploymentSummary{
 		PanelName:   panelName,
+		Kind:        string(item.Kind),
 		ID:          item.ID,
 		NodeName:    item.NodeName,
 		Status:      string(item.Status),
