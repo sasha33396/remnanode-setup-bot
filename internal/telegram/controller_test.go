@@ -852,6 +852,13 @@ func TestNodeNameValidationAcceptsCountryFlags(t *testing.T) {
 	}
 }
 
+func TestBalancerProfileNameUsesDomainWithoutTLD(t *testing.T) {
+	name, valid := balancerProfileName("gmb.wey-land.net")
+	if !valid || name != "gmb_wey-land" {
+		t.Fatalf("balancerProfileName() = %q, %t", name, valid)
+	}
+}
+
 func TestBulkNodeIPMappingParser(t *testing.T) {
 	mappings, err := parseBulkNodeIPMappings("8.8.8.8 -> 1.1.1.1\n9.9.9.9 -> 4.4.4.4")
 	if err != nil || len(mappings) != 2 || mappings[0].OldIP.String() != "8.8.8.8" || mappings[1].NewIP.String() != "4.4.4.4" {

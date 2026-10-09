@@ -34,7 +34,10 @@ const (
 	advancedWorkflowSteps  = 9
 )
 
-var advancedTagPattern = regexp.MustCompile(`^[A-Z0-9_:]+$`)
+var (
+	advancedTagPattern     = regexp.MustCompile(`^[A-Z0-9_:]+$`)
+	advancedProfilePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
 
 type execution struct {
 	cancel context.CancelFunc
@@ -209,9 +212,8 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	fqdn, err := certmanager.NormalizeSNI(input.HostFQDN)
-	// Remnawave Config Profile names are limited to 30 characters. The profile
-	// name is intentionally the exact Host FQDN requested by the operator.
-	if err != nil || len(fqdn) > 30 {
+	profileName, profileNameOK := advancedProfileName(fqdn)
+	if err != nil || len(fqdn) > 40 || !profileNameOK {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	if input.EgressIP.IsValid() {
@@ -264,8 +266,8 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, safeError("PROFILE_LIST_FAILED", "Config Profiles are unavailable", ErrHostUnavailable)
 	}
 	for _, profile := range profiles {
-		if strings.EqualFold(strings.TrimSpace(profile.Name), fqdn) {
-			return PreparedDeployment{}, safeError("PROFILE_NAME_EXISTS", "A Config Profile already uses this Host domain name", ErrHostUnavailable)
+		if strings.EqualFold(strings.TrimSpace(profile.Name), profileName) {
+			return PreparedDeployment{}, safeError("PROFILE_NAME_EXISTS", "A Config Profile already uses the derived Host profile name", ErrHostUnavailable)
 		}
 	}
 	if err := s.checkUnique(ctx, strings.TrimSpace(input.NodeName), input.IngressIP, "", false); err != nil {
@@ -769,7 +771,10 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 			return err
 		}
 	}
-	profileName := current.SNIDomain
+	profileName, validProfileName := advancedProfileName(current.SNIDomain)
+	if !validProfileName {
+		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_NAME_INVALID", "Host domain cannot be converted to a valid Config Profile name", ErrRemnawaveCreationFailed)
+	}
 	inboundTag := "VLESS_TCP_REALITY_" + strings.ToUpper(strings.ReplaceAll(current.ID[:8], "-", ""))
 	profiles, err := advanced.GetConfigProfiles(ctx)
 	if err != nil {
@@ -817,6 +822,18 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 	}
 	emit(progress, Progress{Step: stepCreateProfile, Completed: 4, Total: advancedWorkflowSteps, SafeMessage: "Dedicated Config Profile created", Status: deployment.StepStatusCompleted})
 	return s.beginStage(ctx, current.ID, deployment.StatusCreatingRemnawave, stepCreateNode)
+}
+
+// advancedProfileName converts a Host FQDN to Remnawave's profile-name format.
+// The final DNS label (TLD) is omitted and remaining dots become underscores:
+// gmb.wey-land.net -> gmb_wey-land.
+func advancedProfileName(fqdn string) (string, bool) {
+	labels := strings.Split(strings.ToLower(strings.TrimSuffix(strings.TrimSpace(fqdn), ".")), ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	name := strings.Join(labels[:len(labels)-1], "_")
+	return name, len(name) >= 2 && len(name) <= 30 && advancedProfilePattern.MatchString(name)
 }
 
 func (s *DeploymentService) finishAdvanced(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {

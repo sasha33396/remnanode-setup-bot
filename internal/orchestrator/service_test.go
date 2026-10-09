@@ -866,7 +866,7 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 		t.Fatalf("Deploy() error = %v", err)
 	}
 	stored := fixture.repo.mustGet(prepared.Deployment.ID)
-	if stored.Status != deployment.StatusCompleted || stored.Kind != deployment.KindAdvancedBalancer || stored.AdvancedEgressIP.String() != "1.1.1.1" || stored.AdvancedConfigProfileName != "gmb.example.com" {
+	if stored.Status != deployment.StatusCompleted || stored.Kind != deployment.KindAdvancedBalancer || stored.AdvancedEgressIP.String() != "1.1.1.1" || stored.AdvancedConfigProfileName != "gmb_example" {
 		t.Fatalf("stored deployment = %#v", stored)
 	}
 	if dnsRecords.calls != 1 || dnsRecords.fqdn != "gmb.example.com" || dnsRecords.address.String() != "8.8.8.8" {
@@ -885,6 +885,20 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 	assertBefore(t, events, "remnawave.connected", "cloudflare.a")
 	assertBefore(t, events, "cloudflare.a", "remnawave.host")
 	assertBefore(t, events, "remnawave.host", "remnawave.squad")
+}
+
+func TestAdvancedProfileNameUsesDomainWithoutTLD(t *testing.T) {
+	tests := map[string]string{
+		"gmb.wey-land.net":       "gmb_wey-land",
+		"edge.example.com":       "edge_example",
+		"one.two.example.co.uk.": "one_two_example_co",
+	}
+	for fqdn, want := range tests {
+		got, valid := advancedProfileName(fqdn)
+		if !valid || got != want {
+			t.Errorf("advancedProfileName(%q) = %q, %t; want %q", fqdn, got, valid, want)
+		}
+	}
 }
 
 func TestAdvancedBalancerOptionsListEligibleHostTags(t *testing.T) {

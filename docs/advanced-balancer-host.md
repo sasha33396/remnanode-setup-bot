@@ -12,12 +12,14 @@ as independent Remnawave resources:
 The direct Cloudflare record is intentionally not added to the DNS-balancer
 service.
 
-The Config Profile name is the exact Host FQDN (for example,
-`gmb.wey-land.net`). The Node name is requested separately in the wizard.
+The Config Profile name is derived from the Host FQDN using Remnawave's allowed
+characters. The final DNS label is removed and remaining dots become
+underscores: `gmb.wey-land.net` becomes `gmb_wey-land`. The Node name is
+requested separately in the wizard.
 Node names may include a country flag, for example `🇵🇼 Palau-01` or
 `🇷🇺 RU-01`.
-Because Remnawave limits Config Profile names, the FQDN is limited to 30
-characters in this workflow.
+Because Remnawave limits Config Profile names, the derived name must contain
+2–30 characters.
 
 ## Remnawave prerequisites
 

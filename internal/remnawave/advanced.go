@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-var hostTagPattern = regexp.MustCompile(`^[A-Z0-9_:]+$`)
+var (
+	hostTagPattern           = regexp.MustCompile(`^[A-Z0-9_:]+$`)
+	configProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9_\s-]+$`)
+)
 
 func (c *Client) GetConfigProfiles(ctx context.Context) ([]ConfigProfile, error) {
 	var envelope configProfilesEnvelope
@@ -32,7 +35,7 @@ func (c *Client) GetConfigProfiles(ctx context.Context) ([]ConfigProfile, error)
 
 func (c *Client) CreateConfigProfile(ctx context.Context, input CreateConfigProfileInput) (ConfigProfile, error) {
 	name := strings.TrimSpace(input.Name)
-	if len(name) < 2 || len(name) > 30 || input.Config == nil {
+	if len(name) < 2 || len(name) > 30 || !configProfileNamePattern.MatchString(name) || input.Config == nil {
 		return ConfigProfile{}, fmt.Errorf("config profile: %w", ErrInvalidInput)
 	}
 	var envelope configProfileEnvelope

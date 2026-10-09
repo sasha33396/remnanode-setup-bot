@@ -113,14 +113,15 @@ func (c *Controller) selectBalancerTag(ctx context.Context, callback *CallbackQu
 
 func (c *Controller) acceptBalancerFQDN(ctx context.Context, message *Message, session *wizard) error {
 	fqdn := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(message.Text), "."))
-	if !validBalancerFQDN(fqdn) {
-		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Некорректное доменное имя. Введите полный поддомен длиной не более 30 символов — он станет названием Config Profile.", Keyboard{})
+	profileName, profileNameOK := balancerProfileName(fqdn)
+	if !validBalancerFQDN(fqdn) || !profileNameOK {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Некорректное доменное имя. Для Config Profile оно должно преобразовываться в имя длиной 2–30 символов без точки, например gmb.wey-land.net → gmb_wey-land.", Keyboard{})
 		return err
 	}
 	if !c.updateSession(session.userID, session.nonce, stateAwaitingBalancerFQDN, func(current *wizard) { current.hostFQDN = fqdn; current.state = stateAwaitingBalancerNodeName }) {
 		return c.sendExpired(ctx, message.ChatID)
 	}
-	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите имя новой Node (3–30 символов). Можно использовать флаг страны, например 🇵🇼 Palau-01 или 🇷🇺 RU-01.", Keyboard{})
+	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Config Profile: "+profileName+"\n\nВведите имя новой Node (3–30 символов). Можно использовать флаг страны, например 🇵🇼 Palau-01 или 🇷🇺 RU-01.", Keyboard{})
 	return err
 }
 
@@ -276,11 +277,12 @@ func renderAdvancedBalancerConfirmation(session *wizard) string {
 		mode = "2 IP: sendThrough включён"
 		egress = session.egressIP.String()
 	}
-	return fmt.Sprintf("Подтвердите Advanced Balancer Host\nПанель: %s\nInternal Squad: %s\nТег: %s\nHost/FQDN: %s\nConfig Profile: %s\nNode: %s\nВходной IP (Node, SSH, Cloudflare A): %s\nВыходной IP (интернет): %s\nРежим: %s\n\nБудут созданы отдельные Config Profile, Node, скрытый Host и inbound в Squad.", safeLine(session.panel.Name, 80), safeLine(session.selectedSquad.Name, 80), session.balancerTag, session.hostFQDN, session.hostFQDN, safeLine(session.nodeName, 60), session.vpsIP, egress, mode)
+	profileName, _ := balancerProfileName(session.hostFQDN)
+	return fmt.Sprintf("Подтвердите Advanced Balancer Host\nПанель: %s\nInternal Squad: %s\nТег: %s\nHost/FQDN: %s\nConfig Profile: %s\nNode: %s\nВходной IP (Node, SSH, Cloudflare A): %s\nВыходной IP (интернет): %s\nРежим: %s\n\nБудут созданы отдельные Config Profile, Node, скрытый Host и inbound в Squad.", safeLine(session.panel.Name, 80), safeLine(session.selectedSquad.Name, 80), session.balancerTag, session.hostFQDN, profileName, safeLine(session.nodeName, 60), session.vpsIP, egress, mode)
 }
 
 func validBalancerFQDN(value string) bool {
-	if len(value) < 4 || len(value) > 30 || !strings.Contains(value, ".") {
+	if len(value) < 4 || len(value) > 40 || !strings.Contains(value, ".") {
 		return false
 	}
 	for _, label := range strings.Split(value, ".") {
@@ -294,4 +296,21 @@ func validBalancerFQDN(value string) bool {
 		}
 	}
 	return true
+}
+
+func balancerProfileName(fqdn string) (string, bool) {
+	labels := strings.Split(strings.ToLower(strings.TrimSuffix(strings.TrimSpace(fqdn), ".")), ".")
+	if len(labels) < 2 {
+		return "", false
+	}
+	name := strings.Join(labels[:len(labels)-1], "_")
+	if len(name) < 2 || len(name) > 30 {
+		return "", false
+	}
+	for _, character := range name {
+		if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-') {
+			return "", false
+		}
+	}
+	return name, true
 }

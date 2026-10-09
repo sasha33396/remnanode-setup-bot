@@ -25,6 +25,13 @@ func TestAdvancedBalancerConfigControlsSendThroughByIPMode(t *testing.T) {
 	}
 }
 
+func TestCreateConfigProfileRejectsDotsInName(t *testing.T) {
+	client := &Client{}
+	if _, err := client.CreateConfigProfile(context.Background(), CreateConfigProfileInput{Name: "gmb.wey-land.net", Config: map[string]any{}}); err == nil {
+		t.Fatal("CreateConfigProfile accepted a dotted name")
+	}
+}
+
 func TestAdvancedAPIContractPathsAndPayloads(t *testing.T) {
 	const squadUUID = "77777777-7777-4777-8777-777777777777"
 	const hostUUID = "99999999-9999-4999-8999-999999999999"
