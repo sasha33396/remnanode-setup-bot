@@ -209,7 +209,9 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	fqdn, err := certmanager.NormalizeSNI(input.HostFQDN)
-	if err != nil || len(fqdn) > 40 {
+	// Remnawave Config Profile names are limited to 30 characters. The profile
+	// name is intentionally the exact Host FQDN requested by the operator.
+	if err != nil || len(fqdn) > 30 {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	if input.EgressIP.IsValid() {
@@ -256,6 +258,15 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 	}
 	if !squadFound {
 		return PreparedDeployment{}, safeError("SQUAD_NOT_FOUND", "Selected Internal Squad is unavailable", ErrHostUnavailable)
+	}
+	profiles, err := advanced.GetConfigProfiles(ctx)
+	if err != nil {
+		return PreparedDeployment{}, safeError("PROFILE_LIST_FAILED", "Config Profiles are unavailable", ErrHostUnavailable)
+	}
+	for _, profile := range profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), fqdn) {
+			return PreparedDeployment{}, safeError("PROFILE_NAME_EXISTS", "A Config Profile already uses this Host domain name", ErrHostUnavailable)
+		}
 	}
 	if err := s.checkUnique(ctx, strings.TrimSpace(input.NodeName), input.IngressIP, "", false); err != nil {
 		return PreparedDeployment{}, err
@@ -758,7 +769,8 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 			return err
 		}
 	}
-	profileName := "Balancer-" + strings.ReplaceAll(current.ID[:8], "-", "")
+	profileName := current.SNIDomain
+	inboundTag := "VLESS_TCP_REALITY_" + strings.ToUpper(strings.ReplaceAll(current.ID[:8], "-", ""))
 	profiles, err := advanced.GetConfigProfiles(ctx)
 	if err != nil {
 		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_LIST_FAILED", "Could not inspect Config Profiles", ErrRemnawaveCreationFailed)
@@ -766,7 +778,7 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 	var profile *remnawave.ConfigProfile
 	for index := range profiles {
 		if profiles[index].Name == profileName {
-			if profile != nil || len(profiles[index].Inbounds) != 1 {
+			if profile != nil || len(profiles[index].Inbounds) != 1 || profiles[index].Inbounds[0].Tag != inboundTag {
 				return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_RECOVERY_AMBIGUOUS", "Dedicated Config Profile could not be recovered safely", ErrRemnawaveCreationFailed)
 			}
 			profile = &profiles[index]
@@ -777,7 +789,6 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 		if keyErr != nil {
 			return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "X25519_GENERATION_FAILED", "Could not generate Reality keys", ErrRemnawaveCreationFailed)
 		}
-		inboundTag := "VLESS_TCP_REALITY_" + strings.ToUpper(strings.ReplaceAll(current.ID[:8], "-", ""))
 		var egress *netip.Addr
 		if current.AdvancedEgressIP.IsValid() {
 			value := current.AdvancedEgressIP
@@ -791,7 +802,7 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 		}
 		profile = &created
 	}
-	if len(profile.Inbounds) != 1 {
+	if len(profile.Inbounds) != 1 || profile.Inbounds[0].Tag != inboundTag {
 		return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "PROFILE_INBOUND_INVALID", "Dedicated Config Profile does not contain exactly one inbound", ErrRemnawaveCreationFailed)
 	}
 	advancedRepository, ok := s.repository.(AdvancedDeploymentRepository)

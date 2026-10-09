@@ -841,6 +841,17 @@ func TestPublicIPValidation(t *testing.T) {
 	}
 }
 
+func TestNodeNameValidationAcceptsCountryFlags(t *testing.T) {
+	for _, name := range []string{"🇵🇼", "🇷🇺", "🇵🇼 Palau-01", "🇷🇺 RU-01"} {
+		if !validNodeName(name) {
+			t.Errorf("validNodeName(%q) = false", name)
+		}
+	}
+	if validNodeName("🇷🇺" + strings.Repeat("a", 27)) {
+		t.Fatal("validNodeName accepted more than 30 UTF-16 code units")
+	}
+}
+
 func TestBulkNodeIPMappingParser(t *testing.T) {
 	mappings, err := parseBulkNodeIPMappings("8.8.8.8 -> 1.1.1.1\n9.9.9.9 -> 4.4.4.4")
 	if err != nil || len(mappings) != 2 || mappings[0].OldIP.String() != "8.8.8.8" || mappings[1].NewIP.String() != "4.4.4.4" {

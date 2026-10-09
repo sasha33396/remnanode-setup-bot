@@ -3,8 +3,20 @@ package remnawave
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 )
+
+func TestValidateNodeNameAcceptsCountryFlagsAndMatchesRemnawaveLength(t *testing.T) {
+	for _, name := range []string{"🇵🇼", "🇷🇺", "🇵🇼 Palau-01", "🇷🇺 RU-01"} {
+		if err := ValidateNodeName(name); err != nil {
+			t.Errorf("ValidateNodeName(%q) error = %v", name, err)
+		}
+	}
+	if err := ValidateNodeName("🇷🇺" + strings.Repeat("a", 27)); err == nil {
+		t.Fatal("ValidateNodeName accepted more than 30 UTF-16 code units")
+	}
+}
 
 func TestDeploymentProfileFromHost(t *testing.T) {
 	profileUUID := "a60d725f-17e9-4a50-9242-3dc223d5a0c9"

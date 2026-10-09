@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
-	"unicode/utf8"
+	"unicode/utf16"
 )
 
 var (
@@ -97,7 +97,10 @@ func ValidateNodeName(name string) error {
 }
 
 func validNodeName(name string) bool {
-	length := utf8.RuneCountInString(name)
+	// Remnawave validates JavaScript string length (UTF-16 code units). Country
+	// flags are allowed; counting them this way also mirrors the API's 30-unit
+	// maximum for names containing emoji.
+	length := len(utf16.Encode([]rune(name)))
 	return length >= 3 && length <= 30
 }
 

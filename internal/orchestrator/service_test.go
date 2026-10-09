@@ -866,7 +866,7 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 		t.Fatalf("Deploy() error = %v", err)
 	}
 	stored := fixture.repo.mustGet(prepared.Deployment.ID)
-	if stored.Status != deployment.StatusCompleted || stored.Kind != deployment.KindAdvancedBalancer || stored.AdvancedEgressIP.String() != "1.1.1.1" {
+	if stored.Status != deployment.StatusCompleted || stored.Kind != deployment.KindAdvancedBalancer || stored.AdvancedEgressIP.String() != "1.1.1.1" || stored.AdvancedConfigProfileName != "gmb.example.com" {
 		t.Fatalf("stored deployment = %#v", stored)
 	}
 	if dnsRecords.calls != 1 || dnsRecords.fqdn != "gmb.example.com" || dnsRecords.address.String() != "8.8.8.8" {
@@ -1034,7 +1034,8 @@ func (f *fakeRemnawave) CreateConfigProfile(_ context.Context, input remnawave.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastProfileConfig = input.Config
-	profile := remnawave.ConfigProfile{UUID: testProfileUUID, Name: input.Name, Inbounds: []remnawave.ConfigProfileInbound{{UUID: testInboundUUID, Tag: "VLESS_TCP_REALITY_TEST"}}}
+	inboundTag := input.Config.(map[string]any)["inbounds"].([]any)[0].(map[string]any)["tag"].(string)
+	profile := remnawave.ConfigProfile{UUID: testProfileUUID, Name: input.Name, Inbounds: []remnawave.ConfigProfileInbound{{UUID: testInboundUUID, Tag: inboundTag}}}
 	f.profiles = append(f.profiles, profile)
 	f.events.add("remnawave.profile")
 	return profile, nil

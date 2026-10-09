@@ -4,12 +4,12 @@ import (
 	"net/netip"
 	"strings"
 	"unicode"
-	"unicode/utf8"
+	"unicode/utf16"
 )
 
 func validNodeName(value string) bool {
 	value = strings.TrimSpace(value)
-	length := utf8.RuneCountInString(value)
+	length := len(utf16.Encode([]rune(value)))
 	if length < 3 || length > 30 {
 		return false
 	}
