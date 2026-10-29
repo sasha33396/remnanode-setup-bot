@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const state = { csrf: '', nodes: [], panels: [], filter: 'all', query: '', selected: null, passwordAction: 'ssh', nodeOperation: '', bulkIPPayload: null, socket: null, terminal: null };
+  const state = { csrf: '', nodes: [], panels: [], capabilities: {}, filter: 'all', query: '', selected: null, passwordAction: 'ssh', nodeOperation: '', bulkIPPayload: null, socket: null, terminal: null };
   const $ = (selector) => document.querySelector(selector);
   const nodesEl = $('#nodes');
   const notice = $('#notice');
@@ -171,6 +171,8 @@
     return state.panels;
   }
 
+  async function loadCapabilities() { state.capabilities = await request('/api/options/capabilities'); }
+
   async function loadHosts(panelId) {
     const result = await request(`/api/options/hosts?panel=${encodeURIComponent(panelId)}`);
     $('#node-host').innerHTML = (result.hosts || []).map((host) => option(host.ID, `${host.Remark} — ${host.Address}`)).join('');
@@ -228,7 +230,7 @@
     const response = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
     const result = response.pending ? await waitForJob(response.jobId, title) : response;
     await loadNodes();
-    showNotice(result.message || `${title}: операция успешно завершена`);
+    showNotice(result.warning || result.message || `${title}: операция успешно завершена`);
     return result;
   }
 
@@ -239,8 +241,12 @@
     const fields = $('#node-operation-fields');
     if (kind === 'ip') {
       title.textContent = `Сменить IP: ${node.name}`;
-      description.textContent = `Текущий адрес ${node.address}. Будут обновлены Remnawave, известные DNS-зоны и сохранённая конфигурация. Для собственного Host отсутствие общей DNS-зоны допустимо.`;
-      fields.innerHTML = '<label class="full">Новый публичный IPv4<input id="operation-new-ip" required autocomplete="off"></label>';
+      description.textContent = `Текущий адрес ${node.address}. Обычный режим обновляет Remnawave/DNS. Режим провайдера сначала настраивает IP на самом сервере, затем обновляет ноду.`;
+      const modes = [option('panel', 'Remnawave + DNS')];
+      if (state.capabilities.cherryIp) modes.push(option('cherry', 'Cherry Servers — floating IP'));
+      if (state.capabilities.royalIp) modes.push(option('royal', 'Royal Hosting — основной IP'));
+      fields.innerHTML = `<label>Способ<select id="operation-ip-mode">${modes.join('')}</select></label><label>Новый публичный IPv4<input id="operation-new-ip" required autocomplete="off"></label><label id="operation-ip-password-label" class="full hidden">Root-пароль сервера<input id="operation-ip-password" type="password" maxlength="1024" autocomplete="new-password"></label>`;
+      $('#operation-ip-mode').addEventListener('change', (event) => { const needsPassword = event.target.value !== 'panel'; $('#operation-ip-password-label').classList.toggle('hidden', !needsPassword); $('#operation-ip-password').required = needsPassword; });
       $('#node-operation-submit').textContent = 'Сменить IP';
     } else if (kind === 'move') {
       title.textContent = `Перенести: ${node.name}`;
@@ -359,12 +365,17 @@
   });
   $('#node-operation-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const node = state.selected; if (!node) return;
-    let body = {}; let title = '';
-    if (state.nodeOperation === 'ip') { body = { newIp: $('#operation-new-ip').value.trim() }; title = `Смена IP ${node.name}`; }
+    let body = {}; let title = ''; let operationPath = state.nodeOperation;
+    if (state.nodeOperation === 'ip') {
+      const provider = $('#operation-ip-mode').value;
+      body = { newIp: $('#operation-new-ip').value.trim() };
+      if (provider !== 'panel') { body.provider = provider; body.password = $('#operation-ip-password').value; $('#operation-ip-password').value = ''; operationPath = 'server-ip'; }
+      title = `Смена IP ${node.name}`;
+    }
     else if (state.nodeOperation === 'move') { body = { hostId: $('#operation-host').value, password: $('#operation-password').value }; $('#operation-password').value = ''; title = `Перенос ${node.name}`; }
     else { title = `DNS ${node.name}`; }
     $('#node-operation-dialog').close();
-    try { await runOperation(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/${state.nodeOperation}`, body, title); }
+    try { await runOperation(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/${operationPath}`, body, title); }
     catch (error) { showNotice(error.message); }
   });
   $('#bulk-ip-form').addEventListener('submit', async (event) => {
@@ -398,5 +409,5 @@
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; render(); }));
   $('#logout').addEventListener('click', async () => { try { await request('/logout', { method: 'POST' }); location.href = '/login'; } catch (error) { showNotice(error.message); } });
 
-  (async () => { try { const session = await request('/api/session'); state.csrf = session.csrfToken; $('#operator').textContent = session.user.name || `Telegram ${session.user.id}`; await loadNodes(); } catch (error) { showNotice(error.message); } })();
+  (async () => { try { const session = await request('/api/session'); state.csrf = session.csrfToken; $('#operator').textContent = session.user.name || `Telegram ${session.user.id}`; await Promise.all([loadNodes(), loadCapabilities()]); } catch (error) { showNotice(error.message); } })();
 })();

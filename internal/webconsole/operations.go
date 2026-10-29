@@ -65,6 +65,16 @@ func (s *Server) handlePanels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"panels": panels})
 }
 
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !s.authenticated(w, r) {
+		return
+	}
+	_, cherry := s.nodes.(telegram.CherryIPApplication)
+	_, royal := s.nodes.(telegram.RoyalIPApplication)
+	_, bulk := s.nodes.(telegram.BulkNodeIPApplication)
+	writeJSON(w, http.StatusOK, map[string]bool{"cherryIp": cherry, "royalIp": royal, "bulkIp": bulk})
+}
+
 func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	if !s.authenticated(w, r) {
 		return
@@ -463,6 +473,94 @@ func (s *Server) handleNodeIPChange(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		return map[string]any{"nodeName": target.Name, "newIp": newIP.String(), "message": message}, nil
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется операция"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
+}
+
+func (s *Server) handleNodeServerIPChange(w http.ResponseWriter, r *http.Request) {
+	user, authorized := s.mutationUser(w, r)
+	if !authorized {
+		return
+	}
+	panel, node, ok := splitNodeOperation(r.URL.Path, "server-ip")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	nodeApp, available := s.nodes.(telegram.NodeIPApplication)
+	if !available {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Смена IP ноды недоступна"})
+		return
+	}
+	var body struct {
+		Provider string `json:"provider"`
+		NewIP    string `json:"newIp"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, 4096, &body) {
+		return
+	}
+	newIP, valid := publicIPv4(body.NewIP)
+	provider := strings.ToLower(strings.TrimSpace(body.Provider))
+	if !valid || (provider != "cherry" && provider != "royal") || body.Password == "" || len(body.Password) > 1024 {
+		body.Password = ""
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Проверьте провайдера, новый публичный IPv4 и root-пароль"})
+		return
+	}
+	if provider == "cherry" {
+		if _, ok := s.nodes.(telegram.CherryIPApplication); !ok {
+			body.Password = ""
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Настройка Cherry Servers недоступна"})
+			return
+		}
+	}
+	if provider == "royal" {
+		if _, ok := s.nodes.(telegram.RoyalIPApplication); !ok {
+			body.Password = ""
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Настройка Royal Hosting недоступна"})
+			return
+		}
+	}
+	password := []byte(body.Password)
+	body.Password = ""
+	jobID, err := s.startBackgroundJob(user.UserID, "server-ip:"+panel, node, password, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
+		progress(telegram.NodeActualizeProgress{Step: "prepare", Message: "Проверка текущего адреса ноды", Completed: 0, Total: 3})
+		name, err := s.nodeName(ctx, panel, node)
+		if err != nil {
+			return nil, err
+		}
+		target, err := nodeApp.FindNodeForIPChange(ctx, panel, name)
+		if err != nil || target.UUID != node {
+			return nil, errors.New("node changed while preparing server IP replacement")
+		}
+		progress(telegram.NodeActualizeProgress{Step: "server_ip", Message: "Настройка нового IP на сервере " + strings.ToUpper(provider), Completed: 1, Total: 3})
+		serverDetails := map[string]any{"provider": provider}
+		if provider == "cherry" {
+			result, configureErr := s.nodes.(telegram.CherryIPApplication).ConfigureCherryIP(ctx, telegram.CherryIPInput{ServerIP: target.Address, FloatingIP: newIP, Password: password})
+			if configureErr != nil {
+				return nil, configureErr
+			}
+			serverDetails["interface"], serverDetails["persistent"] = result.Interface, result.Persistent
+		} else {
+			result, configureErr := s.nodes.(telegram.RoyalIPApplication).ConfigureRoyalIP(ctx, telegram.RoyalIPInput{ServerIP: target.Address, NewIP: newIP, Password: password})
+			if configureErr != nil {
+				return nil, configureErr
+			}
+			serverDetails["interface"], serverDetails["gateway"], serverDetails["netplanFile"] = result.Interface, result.Gateway.String(), result.NetplanFile
+		}
+		progress(telegram.NodeActualizeProgress{Step: "replace_ip", Message: "Обновление Remnawave, DNS и учётной записи", Completed: 2, Total: 3})
+		message, replaceErr := nodeApp.ReplaceNodeIP(ctx, telegram.NodeIPChangeInput{PanelID: panel, NodeUUID: node, ExpectedIP: target.Address, NewIP: newIP})
+		serverDetails["nodeName"], serverDetails["newIp"] = target.Name, newIP.String()
+		if replaceErr != nil {
+			serverDetails["warning"] = "IP на сервере настроен, но Remnawave/DNS не обновлены. Запустите обычную смену IP для этой ноды."
+			return serverDetails, nil
+		}
+		serverDetails["message"] = message
+		return serverDetails, nil
 	})
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется операция"})

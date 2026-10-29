@@ -114,6 +114,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
 	mux.HandleFunc("GET /api/jobs/", server.handleJob)
 	mux.HandleFunc("GET /api/options/panels", server.handlePanels)
+	mux.HandleFunc("GET /api/options/capabilities", server.handleCapabilities)
 	mux.HandleFunc("GET /api/options/hosts", server.handleHosts)
 	mux.HandleFunc("GET /api/options/balancer", server.handleBalancerOptions)
 	mux.HandleFunc("GET /api/deployments", server.handleDeployments)
@@ -455,6 +456,10 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(r.URL.Path, "/ip") {
 		s.handleNodeIPChange(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/server-ip") {
+		s.handleNodeServerIPChange(w, r)
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/dns") {
