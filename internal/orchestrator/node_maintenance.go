@@ -109,6 +109,7 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 			Password:       input.Password,
 		}, nil)
 		if err != nil {
+			m.logger.Warn("legacy Node adoption failed", slog.String("panel_id", input.PanelID), slog.String("node_uuid", input.NodeUUID), slog.String("node_name", name), slog.Any("error", err))
 			return telegram.NodeActualizeResult{}, errors.New("legacy node adoption failed")
 		}
 		adopted = true

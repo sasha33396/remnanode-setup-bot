@@ -376,7 +376,9 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		case "move_host":
 			return c.beginNodeHostMove(ctx, callback, action.uuid)
 		case "actualize":
-			return c.beginNodeActualize(ctx, callback, action.uuid)
+			return c.beginNodeActualize(ctx, callback, action.uuid, false)
+		case "promote":
+			return c.beginNodeActualize(ctx, callback, action.uuid, true)
 		case "actualize_all":
 			return c.confirmManagedNodesActualize(ctx, callback)
 		case "actualize_all_confirm":

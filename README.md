@@ -60,16 +60,18 @@ Login Widget settings).
 Only IDs already present in `TELEGRAM_ALLOWED_USERS` may sign in. The inventory
 marks Nodes backed by a deployment row as **Актуальная** and Remnawave-only
 Nodes as **Legacy**. Actual Nodes authenticate with the installed deployment
-key and their pinned SSH host key. A legacy root password is accepted only in
-the one-time terminal request, retained in clearable memory for at most one
-minute, and never persisted. `WEB_MAX_SESSIONS` and `WEB_TERMINAL_TIMEOUT`
-bound concurrent and long-running browser terminals.
+key and their pinned SSH host key. Entering a legacy root password from either
+**Сделать актуальной**, **Синхронизировать**, or browser SSH first runs full
+Node adoption. A browser terminal is opened only after that adoption and uses
+the installed deployment key, not a retained password. The password is never
+persisted. `WEB_MAX_SESSIONS` and `WEB_TERMINAL_TIMEOUT` bound concurrent and
+long-running browser terminals.
 
 Managed Nodes are polled over the deployment key every
 `NODE_NETWORK_POLL_INTERVAL` (5 minutes by default). The inventory reads the
 interface `addresses` from `/etc/netplan/50-cloud-init.yaml`, persists only
 those non-secret IP addresses, and includes them in web and Telegram search.
-The **Актуализировать настройки ноды** action also reconciles and validates the
+The **Синхронизировать настройки** action also reconciles and validates the
 complete firewall stage, including the IPv4/IPv6 TCP/UDP port 25 guard. For a
 Legacy Node the same action asks for a one-time root password and performs a
 full adoption through the standard deployment workflow: preflight and deploy
@@ -80,7 +82,7 @@ Only a fully completed deployment changes the Node to **Актуальная**; 
 failure its provisional managed binding is removed. The password is cleared
 after SSH use and is never stored.
 
-The web toolbar and Telegram Nodes menu also provide **Актуализировать все**.
+The web toolbar and Telegram Nodes menu also provide **Синхронизировать все**.
 After confirmation it processes only managed Nodes, with at most eight SSH
 operations at once, and reports successful Nodes, failures, and how many
 firewalls required changes. A second bulk run is rejected while the first is

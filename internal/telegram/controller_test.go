@@ -148,8 +148,9 @@ func TestNodeSearchFindsByPartialNameAndIP(t *testing.T) {
 
 func TestManagedNodeBulkActualizeCallbacksAndResult(t *testing.T) {
 	for callback, want := range map[string]string{
-		"nodes:actualize-all":         "actualize_all",
-		"nodes:actualize-all-confirm": "actualize_all_confirm",
+		"nodes:actualize-all":                                "actualize_all",
+		"nodes:actualize-all-confirm":                        "actualize_all_confirm",
+		"nodes:promote:11111111-1111-4111-8111-111111111111": "promote",
 	} {
 		parsed, ok := parseNodesCallback(callback)
 		if !ok || parsed.action != want {

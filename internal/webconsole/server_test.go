@@ -70,6 +70,35 @@ func TestActualizeNodeRequiresSessionCSRFAndReturnsInventory(t *testing.T) {
 	}
 }
 
+func TestLegacySSHTicketAdoptsNodeAndUsesManagedCredentials(t *testing.T) {
+	server := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	if err := server.issueSessionCookie(recorder, session{UserID: 42, Name: "Operator"}); err != nil {
+		t.Fatal(err)
+	}
+	cookie := recorder.Result().Cookies()[0]
+	request := httptest.NewRequest(http.MethodPost, "https://nodes.example.com/api/nodes/main/22222222-2222-4222-8222-222222222222/ticket", strings.NewReader(`{"password":"temporary"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", server.csrfToken(cookie.Value))
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Ticket  string `json:"ticket"`
+		Managed bool   `json:"managed"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Ticket == "" || !body.Managed {
+		t.Fatalf("ticket body = %s, error = %v", response.Body.String(), err)
+	}
+	ticket, ok := server.tickets.take(body.Ticket, 42)
+	if !ok || !ticket.Managed || ticket.DeploymentID == "" || len(ticket.Password) != 0 {
+		t.Fatalf("managed ticket = %#v, found = %v", ticket, ok)
+	}
+}
+
 func TestBulkActualizeManagedNodes(t *testing.T) {
 	server := newTestServer(t)
 	recorder := httptest.NewRecorder()
@@ -101,11 +130,11 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := staticNodes{nodes: []telegram.NodeSummary{
+	finder := &staticDeployments{managed: map[string]string{"11111111-1111-4111-8111-111111111111": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}
+	provider := &staticNodes{deployments: finder, nodes: []telegram.NodeSummary{
 		{PanelID: "main", PanelName: "Main", UUID: "11111111-1111-4111-8111-111111111111", Name: "Managed", Address: "192.0.2.10", Connected: true},
 		{PanelID: "main", PanelName: "Main", UUID: "22222222-2222-4222-8222-222222222222", Name: "Legacy", Address: "192.0.2.11"},
 	}}
-	finder := staticDeployments{managedUUID: "11111111-1111-4111-8111-111111111111"}
 	server, err := New(Config{Addr: ":8081", PublicURL: "https://nodes.example.com", BotToken: "token", BotUsername: "node_setup_bot", SessionSecret: strings.Repeat("s", 32), SessionTTL: time.Hour, TerminalTimeout: time.Hour, MaxSessions: 2, AllowedUsers: []int64{42}}, provider, finder, client, client)
 	if err != nil {
 		t.Fatal(err)
@@ -114,23 +143,27 @@ func newTestServer(t *testing.T) *Server {
 	return server
 }
 
-type staticNodes struct{ nodes []telegram.NodeSummary }
-
-func (s staticNodes) ListNodes(context.Context) ([]telegram.NodeSummary, error) { return s.nodes, nil }
-
-func (s staticNodes) ActualizeNode(context.Context, telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
-	return telegram.NodeActualizeResult{NodeName: "Legacy", Addresses: []string{"198.51.100.25"}, FirewallChanged: true}, nil
+type staticNodes struct {
+	nodes       []telegram.NodeSummary
+	deployments *staticDeployments
 }
 
-func (s staticNodes) ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error) {
+func (s *staticNodes) ListNodes(context.Context) ([]telegram.NodeSummary, error) { return s.nodes, nil }
+
+func (s *staticNodes) ActualizeNode(_ context.Context, input telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
+	s.deployments.managed[input.NodeUUID] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	return telegram.NodeActualizeResult{NodeName: "Legacy", Managed: true, Adopted: true, Addresses: []string{"198.51.100.25"}, FirewallChanged: true}, nil
+}
+
+func (s *staticNodes) ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error) {
 	return telegram.ManagedNodesActualizeResult{Total: 1, Updated: 1, FirewallChanged: 1}, nil
 }
 
-type staticDeployments struct{ managedUUID string }
+type staticDeployments struct{ managed map[string]string }
 
-func (s staticDeployments) FindDeploymentByPanelNodeUUID(_ context.Context, _ string, uuid string) (deployment.Deployment, error) {
-	if uuid == s.managedUUID {
-		return deployment.Deployment{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, nil
+func (s *staticDeployments) FindDeploymentByPanelNodeUUID(_ context.Context, _ string, uuid string) (deployment.Deployment, error) {
+	if id := s.managed[uuid]; id != "" {
+		return deployment.Deployment{ID: id}, nil
 	}
 	return deployment.Deployment{}, repository.ErrNotFound
 }

@@ -305,16 +305,34 @@ func (s *Server) handleTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Для legacy-ноды нужен root-пароль"})
 		return
 	}
-	target.UserID = value.UserID
 	if !target.Managed {
-		target.Password = []byte(input.Password)
+		if s.actualizer == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Перевод legacy-ноды под управление недоступен"})
+			return
+		}
+		password := []byte(input.Password)
+		input.Password = ""
+		_, adoptionErr := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{
+			PanelID: parts[0], NodeUUID: parts[1], OperatorUserID: value.UserID, Password: password,
+		})
+		clear(password)
+		// ActualizeNode can finish adoption and then fail while refreshing the
+		// optional network inventory. Re-resolve from durable state before
+		// deciding whether the managed terminal can be opened.
+		target, err = s.resolveTarget(r.Context(), parts[0], parts[1])
+		if err != nil || !target.Managed {
+			s.config.Logger.Warn("legacy Node SSH adoption failed", "panel_id", parts[0], "node_uuid", parts[1], "error", adoptionErr)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось сделать ноду актуальной перед SSH: проверьте пароль и Host-профиль"})
+			return
+		}
 	}
+	target.UserID = value.UserID
 	ticket, err := s.tickets.issue(target)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Не удалось подготовить SSH-сессию"})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"ticket": ticket})
+	writeJSON(w, http.StatusCreated, map[string]any{"ticket": ticket, "managed": target.Managed})
 }
 
 func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
@@ -340,12 +358,12 @@ func (s *Server) handleBulkActualize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.actualizer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Актуализация нод недоступна"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Синхронизация нод недоступна"})
 		return
 	}
 	result, err := s.actualizer.ActualizeManagedNodes(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось запустить массовую актуализацию"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось запустить массовую синхронизацию"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -365,7 +383,7 @@ func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.actualizer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Актуализация нод недоступна"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Синхронизация нод недоступна"})
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/")
@@ -385,7 +403,7 @@ func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
 	defer clear(password)
 	result, err := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{PanelID: parts[0], NodeUUID: parts[1], OperatorUserID: user.UserID, Password: password})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось полностью актуализировать ноду: проверьте SSH, пароль и Host-профиль. При ошибке нода остаётся legacy"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось синхронизировать или сделать ноду актуальной: проверьте SSH, пароль и Host-профиль. При ошибке нода остаётся legacy"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodeName": result.NodeName, "managed": result.Managed, "adopted": result.Adopted, "addresses": result.Addresses, "firewallChanged": result.FirewallChanged})

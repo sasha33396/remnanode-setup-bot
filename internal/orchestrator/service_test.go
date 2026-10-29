@@ -90,6 +90,31 @@ func TestAdoptLegacyNodeRunsStandardWorkflowWithoutCreatingDuplicateNode(t *test
 	}
 }
 
+func TestAdoptLegacyNodePrefersExplicitHostNodeBinding(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.hosts[0].Nodes = []string{testNodeUUID}
+	second := fixture.remnawave.hosts[0]
+	second.UUID = "55555555-5555-4555-8555-555555555555"
+	second.Remark = "Same profile, another Host"
+	second.Address = "other.example.com"
+	second.Nodes = nil
+	fixture.remnawave.hosts = append(fixture.remnawave.hosts, second)
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID: testNodeUUID, Name: "legacy-edge", Address: "8.8.8.8",
+		ActiveConfigProfileUUID: stringPtr(testProfileUUID), ActiveInboundUUIDs: []string{testInboundUUID},
+	}}
+
+	result, err := fixture.service.AdoptLegacyNode(context.Background(), AdoptLegacyNodeInput{
+		OperatorUserID: 42, NodeUUID: testNodeUUID, Password: []byte("temporary-password"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("AdoptLegacyNode() error = %v", err)
+	}
+	if result.SelectedRemnawaveHostUUID != testHostUUID || result.SNIDomain != "edge.example.com" {
+		t.Fatalf("selected Host = %s / %s", result.SelectedRemnawaveHostUUID, result.SNIDomain)
+	}
+}
+
 func TestAdoptLegacyNodeClearsManagedBindingWhenFinalWorkflowFails(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.nodes = []remnawave.Node{{

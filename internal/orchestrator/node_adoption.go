@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"remnanode-setup-bot/internal/deployment"
+	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository"
 )
 
@@ -38,7 +39,7 @@ func (s *DeploymentService) AdoptLegacyNode(ctx context.Context, input AdoptLega
 	if err != nil {
 		return deployment.Deployment{}, safeError("HOSTS_UNAVAILABLE", "Remnawave Hosts are unavailable", ErrHostUnavailable)
 	}
-	matchingHosts := matchingNodeHosts(node, hosts)
+	matchingHosts := adoptionNodeHosts(node, hosts)
 	if len(matchingHosts) != 1 {
 		return deployment.Deployment{}, safeError("NODE_HOST_AMBIGUOUS", "Could not determine the Node Host profile", ErrHostUnavailable)
 	}
@@ -87,6 +88,46 @@ func (s *DeploymentService) AdoptLegacyNode(ctx context.Context, input AdoptLega
 		return deployment.Deployment{}, safeError("ADOPTION_VERIFY_FAILED", "Node adoption could not be verified", ErrPersistenceFailed)
 	}
 	return completed, nil
+}
+
+// adoptionNodeHosts first uses the explicit Host.Nodes binding. Older panels
+// may not populate it, so an exact profile match remains the safe fallback.
+// A Host inbound may also be one of several active Node inbounds.
+func adoptionNodeHosts(node remnawave.Node, hosts []remnawave.Host) []remnawave.Host {
+	profileUUID, inboundUUIDs := nodeProfileFingerprint(node)
+	explicit := make([]remnawave.Host, 0, 1)
+	compatible := make([]remnawave.Host, 0, 1)
+	for _, host := range hosts {
+		if host.IsDisabled {
+			continue
+		}
+		profile, err := remnawave.DeploymentProfileFromHost(host)
+		if err != nil || strings.TrimSpace(profile.ActiveConfigProfileUUID) != strings.TrimSpace(profileUUID) || !containsUUID(inboundUUIDs, profile.ActiveInbounds[0]) {
+			continue
+		}
+		compatible = append(compatible, host)
+		if containsUUID(host.Nodes, node.UUID) {
+			explicit = append(explicit, host)
+		}
+	}
+	if len(explicit) > 0 {
+		return explicit
+	}
+	exact := matchingNodeHosts(node, hosts)
+	if len(exact) == 1 {
+		return exact
+	}
+	return compatible
+}
+
+func containsUUID(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *DeploymentService) preflightLegacyAdoption(ctx context.Context, created deployment.Deployment, address netip.Addr, password []byte) error {

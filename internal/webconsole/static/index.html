@@ -10,11 +10,11 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">R</span><span>Remnanode Console</span></div>
-    <div class="top-actions"><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Актуализировать все</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
+    <div class="top-actions"><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Синхронизировать все</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
   </header>
   <main class="shell">
     <section class="hero">
-      <div><p class="eyebrow">ИНВЕНТАРЬ</p><h1>Ноды</h1><p class="muted">Актуальные ноды используют deploy SSH key. Root-пароль legacy-ноды нужен для разового SSH или полного перевода под управление.</p></div>
+      <div><p class="eyebrow">ИНВЕНТАРЬ</p><h1>Ноды</h1><p class="muted">Актуальные ноды используют deploy SSH key. Любой ввод root-пароля legacy-ноды сначала полностью переводит её под управление.</p></div>
       <div class="stats"><div><span id="total">—</span><small>Всего</small></div><div><span id="managed">—</span><small>Актуальных</small></div><div><span id="legacy">—</span><small>Legacy</small></div></div>
     </section>
     <section class="toolbar">

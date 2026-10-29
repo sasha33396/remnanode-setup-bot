@@ -44,7 +44,7 @@
         <div class="node-address">${escapeHTML(node.address)}</div>
         <div class="node-address">Netplan: ${escapeHTML((node.networkAddresses || []).join(', ') || 'ещё не опрошен')}</div>
         <div class="node-meta"><span class="badge ${node.managed ? 'managed' : 'legacy'}">${node.managed ? 'Актуальная' : 'Legacy'}</span><span class="badge">${node.onlineKnown ? `${node.online} онлайн` : 'онлайн неизвестен'}</span>${node.disabled ? '<span class="badge">выключена</span>' : ''}</div>
-        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Актуализировать</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div>
+        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div>
       </article>`).join('');
   }
 
@@ -60,9 +60,12 @@
   async function createTicket(node, password = '') {
     clearNotice();
     if (typeof Terminal !== 'function') throw new Error('Компонент терминала не загрузился. Обновите страницу.');
+    if (!node.managed) showNotice(`${node.name}: сначала перевожу legacy-ноду под управление, затем открою SSH по deploy-key…`);
     const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/ticket`;
     const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
-    openTerminal(node, result.ticket);
+    await loadNodes();
+    const updated = selectNode(node.panelId, node.uuid) || { ...node, managed: result.managed === true };
+    openTerminal(updated, result.ticket);
   }
 
   async function actualizeNode(node, password = '') {
@@ -76,15 +79,15 @@
 
   async function actualizeManagedNodes() {
     const button = $('#actualize-managed');
-    if (!confirm('Актуализировать netplan и firewall на всех актуальных нодах?')) return;
-    clearNotice(); button.disabled = true; button.textContent = 'Актуализация…';
+    if (!confirm('Синхронизировать netplan и firewall на всех актуальных нодах?')) return;
+    clearNotice(); button.disabled = true; button.textContent = 'Синхронизация…';
     try {
       const result = await request('/api/nodes/actualize-managed', { method: 'POST' });
       await loadNodes();
       const failures = (result.failures || []).slice(0, 5).map((item) => `${item.PanelName}: ${item.NodeName} (${item.Reason})`).join('; ');
-      showNotice(`Массовая актуализация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
+      showNotice(`Массовая синхронизация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
     } catch (error) { showNotice(error.message); }
-    finally { button.disabled = false; button.textContent = 'Актуализировать все'; }
+    finally { button.disabled = false; button.textContent = 'Синхронизировать все'; }
   }
 
   function openTerminal(node, ticket) {
@@ -117,12 +120,19 @@
   }
 
   document.addEventListener('click', async (event) => {
+    const promote = event.target.closest('.promote');
+    if (promote) {
+      const node = selectNode(promote.dataset.panel, promote.dataset.uuid); if (!node) return;
+      state.selected = node; state.passwordAction = 'promote';
+      $('#password-title').textContent = `Сделать актуальной: ${node.name}`; $('#password-description').textContent = 'Будет установлен deploy-key и выполнен полный типовой provisioning. Статус изменится только после всех проверок; пароль не сохраняется.'; $('#password-submit').textContent = 'Сделать актуальной'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50);
+      return;
+    }
     const actualize = event.target.closest('.actualize');
     if (actualize) {
       const node = selectNode(actualize.dataset.panel, actualize.dataset.uuid); if (!node) return;
       state.selected = node; state.passwordAction = 'actualize';
       if (node.managed) { actualize.disabled = true; try { await actualizeNode(node); } catch (error) { showNotice(error.message); } finally { actualize.disabled = false; } }
-      else { $('#password-title').textContent = `Перевод под управление: ${node.name}`; $('#password-description').textContent = 'Будет выполнен полный типовой provisioning. Нода станет актуальной только после всех проверок; пароль не сохраняется.'; $('#password-submit').textContent = 'Перевести и актуализировать'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
+      else { $('#password-title').textContent = `Синхронизация: ${node.name}`; $('#password-description').textContent = 'Так как нода legacy, ввод пароля сначала полностью переведёт её под управление, затем синхронизирует настройки. Пароль не сохраняется.'; $('#password-submit').textContent = 'Сделать актуальной и синхронизировать'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
       return;
     }
     const connect = event.target.closest('.connect');
@@ -130,11 +140,11 @@
       const node = selectNode(connect.dataset.panel, connect.dataset.uuid); if (!node) return;
       state.selected = node; state.passwordAction = 'ssh';
       if (node.managed) { connect.disabled = true; try { await createTicket(node); } catch (error) { showNotice(error.message); } finally { connect.disabled = false; } }
-      else { $('#password-title').textContent = node.name; $('#password-description').textContent = 'Пароль не записывается в базу и удаляется из памяти сервера сразу после попытки подключения.'; $('#password-submit').textContent = 'Подключиться'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
+      else { $('#password-title').textContent = `SSH: ${node.name}`; $('#password-description').textContent = 'Перед подключением нода будет полностью переведена под управление. Затем SSH откроется по deploy-key; пароль не сохраняется.'; $('#password-submit').textContent = 'Сделать актуальной и подключиться'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
     }
     if (event.target.matches('[data-close]')) { $('#password').value = ''; passwordDialog.close(); }
   });
-  $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('#password').value; $('#password').value = ''; passwordDialog.close(); try { if (state.passwordAction === 'actualize') await actualizeNode(state.selected, password); else await createTicket(state.selected, password); } catch (error) { showNotice(error.message); } });
+  $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('#password').value; $('#password').value = ''; passwordDialog.close(); try { if (state.passwordAction === 'actualize' || state.passwordAction === 'promote') await actualizeNode(state.selected, password); else await createTicket(state.selected, password); } catch (error) { showNotice(error.message); } });
   $('#terminal-close').addEventListener('click', closeTerminal);
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
