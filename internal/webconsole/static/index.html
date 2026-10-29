@@ -10,7 +10,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">R</span><span>Remnanode Console</span></div>
-    <div class="top-actions"><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Синхронизировать все</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
+    <div class="top-actions"><button id="add-node" class="button primary">Добавить ноду</button><button id="add-balancer" class="button secondary">Добавить балансировщик</button><button id="bulk-ip" class="button secondary">Массовая смена IP</button><button id="deployments-button" class="button secondary">Развёртывания</button><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Синхронизировать все</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
   </header>
   <main class="shell">
     <section class="hero">
@@ -37,6 +37,70 @@
       <label>Root-пароль<input id="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button id="password-submit" type="submit" class="button primary">Подключиться</button></div>
     </form>
+  </dialog>
+
+  <dialog id="add-node-dialog" class="dialog wide-dialog">
+    <form id="add-node-form" method="dialog">
+      <p class="eyebrow">НОВАЯ НОДА</p><h2>Добавить ноду</h2>
+      <p class="muted">Типовая установка с выбранным Host, deploy-key, firewall и блокировкой порта 25.</p>
+      <div class="form-grid">
+        <label>Панель<select id="node-panel" required></select></label>
+        <label>Host<select id="node-host" required></select></label>
+        <label>Имя ноды<input id="node-name" required maxlength="120" autocomplete="off"></label>
+        <label>Публичный IPv4<input id="node-ip" required inputmode="decimal" autocomplete="off"></label>
+        <label class="full">Временный root-пароль<input id="node-password" type="password" required maxlength="1024" autocomplete="new-password"></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="add-node-dialog">Отмена</button><button type="submit" class="button primary">Начать установку</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="add-balancer-dialog" class="dialog wide-dialog">
+    <form id="add-balancer-form" method="dialog">
+      <p class="eyebrow">СОБСТВЕННЫЙ HOST</p><h2>Добавить балансировщик</h2>
+      <p class="muted">Создаёт отдельный Host, Config Profile и inbound. Такая нода не обязана входить в общую DNS-балансировку.</p>
+      <div class="form-grid">
+        <label>Панель<select id="balancer-panel" required></select></label>
+        <label>Internal Squad<select id="balancer-squad" required></select></label>
+        <label>Тег Host<select id="balancer-tag" required></select></label>
+        <label>FQDN собственного Host<input id="balancer-fqdn" required maxlength="253" autocomplete="off" placeholder="node.example.com"></label>
+        <label>Имя ноды<input id="balancer-name" required maxlength="120" autocomplete="off"></label>
+        <label>Входящий IPv4<input id="balancer-ingress" required autocomplete="off"></label>
+        <label>Исходящий IPv4 (необязательно)<input id="balancer-egress" autocomplete="off"></label>
+        <label>Временный root-пароль<input id="balancer-password" type="password" required maxlength="1024" autocomplete="new-password"></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="add-balancer-dialog">Отмена</button><button type="submit" class="button primary">Создать</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="node-operation-dialog" class="dialog wide-dialog">
+    <form id="node-operation-form" method="dialog">
+      <p class="eyebrow">УПРАВЛЕНИЕ НОДОЙ</p><h2 id="node-operation-title">Операция</h2>
+      <p id="node-operation-description" class="muted"></p>
+      <div id="node-operation-fields" class="form-grid"></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="node-operation-dialog">Отмена</button><button id="node-operation-submit" type="submit" class="button primary">Выполнить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="bulk-ip-dialog" class="dialog wide-dialog">
+    <form id="bulk-ip-form" method="dialog">
+      <p class="eyebrow">МАССОВОЕ УПРАВЛЕНИЕ</p><h2>Смена IP нескольких нод</h2>
+      <p class="muted">По одной паре в строке: <code>старый_IP новый_IP</code>. Перед применением будет показан план, затем сервер повторно проверит его от устаревших данных.</p>
+      <div class="form-grid">
+        <label>Панель<select id="bulk-ip-panel" required></select></label>
+        <label class="checkbox-label"><input id="bulk-ip-enable" type="checkbox"> Включить ноды, которые были disabled</label>
+        <label class="full">Пары адресов<textarea id="bulk-ip-mappings" rows="9" required placeholder="84.32.208.169 203.0.113.10"></textarea></label>
+      </div>
+      <div id="bulk-ip-preview" class="deployment-details hidden"></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="bulk-ip-dialog">Отмена</button><button type="submit" class="button primary">Проверить план</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="deployments-dialog" class="dialog list-dialog">
+    <div class="dialog-panel">
+      <div class="dialog-heading"><div><p class="eyebrow">ИСТОРИЯ И ВОССТАНОВЛЕНИЕ</p><h2>Развёртывания</h2></div><button type="button" class="icon-button" data-close-dialog="deployments-dialog">×</button></div>
+      <div id="deployments-list" class="deployment-list"></div>
+      <div id="deployment-details" class="deployment-details hidden"></div>
+    </div>
   </dialog>
 
   <dialog id="terminal-dialog" class="terminal-dialog">

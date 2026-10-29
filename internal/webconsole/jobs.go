@@ -22,7 +22,7 @@ type nodeJob struct {
 	NodeUUID  string
 	Status    string
 	Progress  telegram.NodeActualizeProgress
-	Result    telegram.NodeActualizeResult
+	Result    any
 	SafeError string
 	ExpiresAt time.Time
 }
@@ -79,15 +79,15 @@ func (s *nodeJobStore) progress(token string, update telegram.NodeActualizeProgr
 	s.values[token] = job
 }
 
-func (s *nodeJobStore) complete(token string, result telegram.NodeActualizeResult) {
+func (s *nodeJobStore) complete(token string, result any) {
 	s.finish(token, jobCompleted, result, "")
 }
 
 func (s *nodeJobStore) fail(token, safeError string) {
-	s.finish(token, jobFailed, telegram.NodeActualizeResult{}, safeError)
+	s.finish(token, jobFailed, nil, safeError)
 }
 
-func (s *nodeJobStore) finish(token, status string, result telegram.NodeActualizeResult, safeError string) {
+func (s *nodeJobStore) finish(token, status string, result any, safeError string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job, ok := s.values[token]

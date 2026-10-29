@@ -113,6 +113,13 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
 	mux.HandleFunc("GET /api/jobs/", server.handleJob)
+	mux.HandleFunc("GET /api/options/panels", server.handlePanels)
+	mux.HandleFunc("GET /api/options/hosts", server.handleHosts)
+	mux.HandleFunc("GET /api/options/balancer", server.handleBalancerOptions)
+	mux.HandleFunc("GET /api/deployments", server.handleDeployments)
+	mux.HandleFunc("GET /api/deployments/", server.handleDeploymentRead)
+	mux.HandleFunc("POST /api/deployments/", server.handleDeploymentAction)
+	mux.HandleFunc("GET /api/nodes/", server.handleNodeOperationPreview)
 	mux.HandleFunc("POST /api/nodes/", server.handleNodeAction)
 	mux.HandleFunc("GET /ws/terminal", server.handleTerminal)
 	mux.HandleFunc("POST /logout", server.handleLogout)
@@ -146,28 +153,31 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) startNodeJob(userID int64, panelID, nodeUUID string, password []byte) (string, error) {
-	token, existing, err := s.jobs.begin(userID, panelID, nodeUUID)
+	return s.startBackgroundJob(userID, panelID, nodeUUID, password, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
+		return s.actualizer.ActualizeNode(ctx, telegram.NodeActualizeInput{
+			PanelID: panelID, NodeUUID: nodeUUID, OperatorUserID: userID, Password: password, Progress: progress,
+		})
+	})
+}
+
+func (s *Server) startBackgroundJob(userID int64, scope, target string, secret []byte, run func(context.Context, func(telegram.NodeActualizeProgress)) (any, error)) (string, error) {
+	token, existing, err := s.jobs.begin(userID, scope, target)
 	if err != nil {
-		clear(password)
+		clear(secret)
 		return "", err
 	}
 	if existing {
-		clear(password)
+		clear(secret)
 		return token, nil
 	}
 	s.workers.Add(1)
 	go func() {
 		defer s.workers.Done()
-		defer clear(password)
-		result, runErr := s.actualizer.ActualizeNode(s.jobContext, telegram.NodeActualizeInput{
-			PanelID: panelID, NodeUUID: nodeUUID, OperatorUserID: userID, Password: password,
-			Progress: func(update telegram.NodeActualizeProgress) {
-				s.jobs.progress(token, update)
-			},
-		})
+		defer clear(secret)
+		result, runErr := run(s.jobContext, func(update telegram.NodeActualizeProgress) { s.jobs.progress(token, update) })
 		if runErr != nil {
-			s.config.Logger.Warn("background Node synchronization failed", "panel_id", panelID, "node_uuid", nodeUUID, "error", runErr)
-			safeMessage := "Не удалось синхронизировать или сделать ноду актуальной"
+			s.config.Logger.Warn("background web console operation failed", "scope", scope, "target", target, "error", runErr)
+			safeMessage := "Не удалось безопасно выполнить операцию"
 			var operatorError interface{ OperatorMessage() string }
 			if errors.As(runErr, &operatorError) && strings.TrimSpace(operatorError.OperatorMessage()) != "" {
 				safeMessage = operatorError.OperatorMessage()
@@ -213,9 +223,14 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if job.Status == jobCompleted {
-		response["result"] = map[string]any{
-			"nodeName": job.Result.NodeName, "managed": job.Result.Managed, "adopted": job.Result.Adopted,
-			"addresses": job.Result.Addresses, "firewallChanged": job.Result.FirewallChanged,
+		switch result := job.Result.(type) {
+		case telegram.NodeActualizeResult:
+			response["result"] = map[string]any{
+				"nodeName": result.NodeName, "managed": result.Managed, "adopted": result.Adopted,
+				"addresses": result.Addresses, "firewallChanged": result.FirewallChanged,
+			}
+		default:
+			response["result"] = result
 		}
 	}
 	if job.Status == jobFailed {
@@ -422,8 +437,28 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 		s.handleBulkActualize(w, r)
 		return
 	}
+	if r.URL.Path == "/api/nodes/ip-bulk/preview" {
+		s.handleBulkIPPreview(w, r)
+		return
+	}
+	if r.URL.Path == "/api/nodes/ip-bulk/apply" {
+		s.handleBulkIPApply(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/actualize") {
 		s.handleActualize(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/move") {
+		s.handleNodeMove(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/ip") {
+		s.handleNodeIPChange(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/dns") {
+		s.handleNodeDNSSync(w, r)
 		return
 	}
 	s.handleTicket(w, r)

@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const state = { csrf: '', nodes: [], filter: 'all', query: '', selected: null, passwordAction: 'ssh', socket: null, terminal: null };
+  const state = { csrf: '', nodes: [], panels: [], filter: 'all', query: '', selected: null, passwordAction: 'ssh', nodeOperation: '', bulkIPPayload: null, socket: null, terminal: null };
   const $ = (selector) => document.querySelector(selector);
   const nodesEl = $('#nodes');
   const notice = $('#notice');
@@ -57,7 +57,7 @@
         <div class="node-address">${escapeHTML(node.address)}</div>
         <div class="node-address">Netplan: ${escapeHTML((node.networkAddresses || []).join(', ') || 'ещё не опрошен')}</div>
         <div class="node-meta"><span class="badge ${node.managed ? 'managed' : 'legacy'}">${node.managed ? 'Актуальная' : 'Legacy'}</span><span class="badge">${node.onlineKnown ? `${node.online} онлайн` : 'онлайн неизвестен'}</span>${node.disabled ? '<span class="badge">выключена</span>' : ''}</div>
-        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div>
+        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<div class="node-actions"><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать</button><button class="button secondary node-ip" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить IP</button><button class="button secondary node-move" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Перенести</button><button class="button secondary node-dns" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">DNS</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div></div>
       </article>`).join('');
   }
 
@@ -159,7 +159,167 @@
     terminalDialog.close(); $('#terminal').textContent = '';
   }
 
+  function option(value, label) { return `<option value="${escapeHTML(value)}">${escapeHTML(label)}</option>`; }
+
+  async function loadPanels() {
+    const result = await request('/api/options/panels');
+    state.panels = result.panels || [];
+    const html = state.panels.map((panel) => option(panel.ID, panel.Name)).join('');
+    $('#node-panel').innerHTML = html;
+    $('#balancer-panel').innerHTML = html;
+    $('#bulk-ip-panel').innerHTML = html;
+    return state.panels;
+  }
+
+  async function loadHosts(panelId) {
+    const result = await request(`/api/options/hosts?panel=${encodeURIComponent(panelId)}`);
+    $('#node-host').innerHTML = (result.hosts || []).map((host) => option(host.ID, `${host.Remark} — ${host.Address}`)).join('');
+  }
+
+  async function loadBalancerOptions(panelId) {
+    const result = await request(`/api/options/balancer?panel=${encodeURIComponent(panelId)}`);
+    $('#balancer-squad').innerHTML = (result.Squads || []).map((squad) => option(squad.ID, squad.Name)).join('');
+    $('#balancer-tag').innerHTML = (result.Tags || []).map((tag) => option(tag, tag)).join('');
+  }
+
+  async function openAddNode() {
+    clearNotice();
+    try {
+      if (!state.panels.length) await loadPanels();
+      if (!state.panels.length) throw new Error('Нет доступных панелей');
+      await loadHosts($('#node-panel').value);
+      $('#add-node-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  }
+
+  async function openAddBalancer() {
+    clearNotice();
+    try {
+      if (!state.panels.length) await loadPanels();
+      if (!state.panels.length) throw new Error('Нет доступных панелей');
+      await loadBalancerOptions($('#balancer-panel').value);
+      $('#add-balancer-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  }
+
+  async function openBulkIP() {
+    clearNotice();
+    try {
+      if (!state.panels.length) await loadPanels();
+      if (!state.panels.length) throw new Error('Нет доступных панелей');
+      state.bulkIPPayload = null;
+      $('#bulk-ip-preview').classList.add('hidden');
+      $('#bulk-ip-form button[type="submit"]').textContent = 'Проверить план';
+      $('#bulk-ip-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  }
+
+  function bulkIPPayload() {
+    const mappings = $('#bulk-ip-mappings').value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+      const parts = line.split(/[\s,;=]+/).filter(Boolean);
+      if (parts.length !== 2) throw new Error(`Некорректная строка: ${line}`);
+      return { oldIp: parts[0], newIp: parts[1] };
+    });
+    if (!mappings.length || mappings.length > 50) throw new Error('Нужно указать от 1 до 50 пар IP');
+    return { panelId: $('#bulk-ip-panel').value, enableDisabled: $('#bulk-ip-enable').checked, mappings };
+  }
+
+  async function runOperation(path, body, title) {
+    const response = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const result = response.pending ? await waitForJob(response.jobId, title) : response;
+    await loadNodes();
+    showNotice(result.message || `${title}: операция успешно завершена`);
+    return result;
+  }
+
+  async function openNodeOperation(kind, node) {
+    state.selected = node; state.nodeOperation = kind; clearNotice();
+    const title = $('#node-operation-title');
+    const description = $('#node-operation-description');
+    const fields = $('#node-operation-fields');
+    if (kind === 'ip') {
+      title.textContent = `Сменить IP: ${node.name}`;
+      description.textContent = `Текущий адрес ${node.address}. Будут обновлены Remnawave, известные DNS-зоны и сохранённая конфигурация. Для собственного Host отсутствие общей DNS-зоны допустимо.`;
+      fields.innerHTML = '<label class="full">Новый публичный IPv4<input id="operation-new-ip" required autocomplete="off"></label>';
+      $('#node-operation-submit').textContent = 'Сменить IP';
+    } else if (kind === 'move') {
+      title.textContent = `Перенести: ${node.name}`;
+      description.textContent = 'Загружаю доступные Host…'; fields.innerHTML = '';
+      const preview = await request(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/move`);
+      const current = preview.target.currentHostKnown ? `${preview.target.currentHostRemark} (${preview.target.currentHostAddress})` : 'не определён';
+      description.textContent = `Текущий Host: ${current}. На сервере будут переключены SNI и сертификат, затем профиль и inbound в Remnawave. IP ноды не изменится.`;
+      fields.innerHTML = `<label>Новый Host<select id="operation-host" required>${(preview.hosts || []).map((host) => option(host.ID, `${host.Remark} — ${host.Address}`)).join('')}</select></label><label>Root-пароль ноды<input id="operation-password" type="password" required maxlength="1024" autocomplete="new-password"></label>`;
+      $('#node-operation-submit').textContent = 'Перенести';
+    } else {
+      title.textContent = `Синхронизировать DNS: ${node.name}`;
+      description.textContent = 'Проверяю DNS-зону…'; fields.innerHTML = '';
+      const preview = await request(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/dns`);
+      description.textContent = `${preview.note || 'DNS будет приведён к адресу из Remnawave.'} Зона: ${preview.dnsZone || 'не определена'}, адрес: ${preview.address}.`;
+      if (!preview.canSync) throw new Error('DNS нельзя синхронизировать безопасно: целевая запись не определена');
+      $('#node-operation-submit').textContent = 'Синхронизировать DNS';
+    }
+    $('#node-operation-dialog').showModal();
+  }
+
+  async function loadDeployments() {
+    const result = await request('/api/deployments');
+    const items = result.deployments || [];
+    $('#deployment-details').classList.add('hidden');
+    $('#deployments-list').innerHTML = items.length ? items.map((item) => `<button type="button" class="deployment-item" data-deployment="${escapeHTML(item.ID)}"><strong>${escapeHTML(item.NodeName || item.ID)}</strong><span>${escapeHTML(item.PanelName)} · ${escapeHTML(item.CurrentStep || item.Kind)}</span><span class="${item.Status === 'COMPLETED' ? 'success-text' : item.Status === 'FAILED' ? 'danger-text' : ''}">${escapeHTML(item.Status)}</span></button>`).join('') : '<div class="empty">Развёртываний пока нет</div>';
+  }
+
+  async function openDeployments() {
+    clearNotice();
+    try { await loadDeployments(); $('#deployments-dialog').showModal(); }
+    catch (error) { showNotice(error.message); }
+  }
+
+  async function showDeployment(id) {
+    const item = await request(`/api/deployments/${encodeURIComponent(id)}`);
+    const actions = [];
+    if (item.CanRepairCert) actions.push(['repair-certificate', 'Исправить сертификат и продолжить']);
+    if (item.CanRetryDNS) actions.push(['dns', 'Повторить DNS']);
+    if (item.CanRetryStep && !item.CanRepairCert) actions.push(['retry', 'Повторить шаг']);
+    if (item.CanRecheck) actions.push(['recheck', 'Перепроверить ноду']);
+    if (item.CanCancel) actions.push(['cancel', 'Отменить']);
+    const details = $('#deployment-details');
+    details.innerHTML = `<h3>${escapeHTML(item.NodeName || item.ID)}</h3><p class="muted">${escapeHTML(item.PanelName)} · ${escapeHTML(item.Kind)} · ${escapeHTML(item.Status)}</p><p>Текущий шаг: <strong>${escapeHTML(item.CurrentStep || '—')}</strong></p>${item.SafeError ? `<p class="danger-text">${escapeHTML(item.SafeError)}</p>` : ''}<div class="deployment-actions"><button type="button" class="button secondary deployment-logs" data-id="${escapeHTML(id)}">Журнал</button>${actions.map(([action,label]) => `<button type="button" class="button ${action === 'cancel' ? 'ghost' : 'secondary'} deployment-action" data-id="${escapeHTML(id)}" data-action="${action}">${escapeHTML(label)}</button>`).join('')}</div><div id="deployment-logs"></div>`;
+    details.classList.remove('hidden');
+  }
+
+  async function showDeploymentLogs(id) {
+    const result = await request(`/api/deployments/${encodeURIComponent(id)}/logs`);
+    $('#deployment-logs').innerHTML = (result.logs || []).map((entry) => `<div class="deployment-log"><strong>${escapeHTML(entry.Step)}</strong> · ${escapeHTML(entry.Status)}<br><span class="muted">${escapeHTML(entry.Summary || entry.Code)}</span></div>`).join('') || '<p class="muted">Журнал пуст</p>';
+  }
+
   document.addEventListener('click', async (event) => {
+    const nodeIP = event.target.closest('.node-ip');
+    const nodeMove = event.target.closest('.node-move');
+    const nodeDNS = event.target.closest('.node-dns');
+    if (nodeIP || nodeMove || nodeDNS) {
+      const button = nodeIP || nodeMove || nodeDNS;
+      const node = selectNode(button.dataset.panel, button.dataset.uuid); if (!node) return;
+      button.disabled = true;
+      try { await openNodeOperation(nodeIP ? 'ip' : nodeMove ? 'move' : 'dns', node); }
+      catch (error) { showNotice(error.message); }
+      finally { button.disabled = false; }
+      return;
+    }
+    const deployment = event.target.closest('[data-deployment]');
+    if (deployment) { try { await showDeployment(deployment.dataset.deployment); } catch (error) { showNotice(error.message); } return; }
+    const deploymentLogs = event.target.closest('.deployment-logs');
+    if (deploymentLogs) { try { await showDeploymentLogs(deploymentLogs.dataset.id); } catch (error) { showNotice(error.message); } return; }
+    const deploymentAction = event.target.closest('.deployment-action');
+    if (deploymentAction) {
+      if (deploymentAction.dataset.action === 'cancel' && !confirm('Отменить это развёртывание?')) return;
+      deploymentAction.disabled = true;
+      try { await runOperation(`/api/deployments/${encodeURIComponent(deploymentAction.dataset.id)}/${encodeURIComponent(deploymentAction.dataset.action)}`, {}, 'Действие с развёртыванием'); await loadDeployments(); }
+      catch (error) { showNotice(error.message); }
+      finally { deploymentAction.disabled = false; }
+      return;
+    }
+    const closeDialog = event.target.closest('[data-close-dialog]');
+    if (closeDialog) { document.getElementById(closeDialog.dataset.closeDialog).close(); return; }
     const promote = event.target.closest('.promote');
     if (promote) {
       const node = selectNode(promote.dataset.panel, promote.dataset.uuid); if (!node) return;
@@ -185,10 +345,55 @@
     if (event.target.matches('[data-close]')) { $('#password').value = ''; passwordDialog.close(); }
   });
   $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('#password').value; $('#password').value = ''; passwordDialog.close(); try { if (state.passwordAction === 'actualize' || state.passwordAction === 'promote') await actualizeNode(state.selected, password); else await createTicket(state.selected, password); } catch (error) { showNotice(error.message); } });
+  $('#add-node-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const dialog = $('#add-node-dialog');
+    const password = $('#node-password').value; $('#node-password').value = ''; dialog.close();
+    try { await runOperation('/api/deployments/standard', { panelId: $('#node-panel').value, hostId: $('#node-host').value, nodeName: $('#node-name').value.trim(), vpsIp: $('#node-ip').value.trim(), password }, `Установка ${$('#node-name').value.trim()}`); }
+    catch (error) { showNotice(error.message); }
+  });
+  $('#add-balancer-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const dialog = $('#add-balancer-dialog');
+    const password = $('#balancer-password').value; $('#balancer-password').value = ''; dialog.close();
+    try { await runOperation('/api/deployments/balancer', { panelId: $('#balancer-panel').value, internalSquadId: $('#balancer-squad').value, balancerTag: $('#balancer-tag').value, hostFqdn: $('#balancer-fqdn').value.trim(), nodeName: $('#balancer-name').value.trim(), ingressIp: $('#balancer-ingress').value.trim(), egressIp: $('#balancer-egress').value.trim(), password }, `Создание балансировщика ${$('#balancer-name').value.trim()}`); }
+    catch (error) { showNotice(error.message); }
+  });
+  $('#node-operation-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const node = state.selected; if (!node) return;
+    let body = {}; let title = '';
+    if (state.nodeOperation === 'ip') { body = { newIp: $('#operation-new-ip').value.trim() }; title = `Смена IP ${node.name}`; }
+    else if (state.nodeOperation === 'move') { body = { hostId: $('#operation-host').value, password: $('#operation-password').value }; $('#operation-password').value = ''; title = `Перенос ${node.name}`; }
+    else { title = `DNS ${node.name}`; }
+    $('#node-operation-dialog').close();
+    try { await runOperation(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/${state.nodeOperation}`, body, title); }
+    catch (error) { showNotice(error.message); }
+  });
+  $('#bulk-ip-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const payload = bulkIPPayload();
+      if (!state.bulkIPPayload || JSON.stringify(state.bulkIPPayload) !== JSON.stringify(payload)) {
+        const plan = await request('/api/nodes/ip-bulk/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        state.bulkIPPayload = payload;
+        $('#bulk-ip-preview').innerHTML = `<strong>План: ${plan.items.length} нод</strong><p class="muted">Disabled: ${plan.disabledCount}, без общей DNS-зоны: ${plan.withoutDns}</p>${plan.items.map((item) => `<div class="deployment-log"><strong>${escapeHTML(item.nodeName)}</strong>: ${escapeHTML(item.oldIp)} → ${escapeHTML(item.newIp)}${item.wasDisabled ? ' · disabled' : ''}${(item.dnsZones || []).length ? ` · DNS: ${escapeHTML(item.dnsZones.join(', '))}` : ' · собственный Host/без DNS'}</div>`).join('')}`;
+        $('#bulk-ip-preview').classList.remove('hidden');
+        $('#bulk-ip-form button[type="submit"]').textContent = 'Применить план';
+        return;
+      }
+      $('#bulk-ip-dialog').close();
+      await runOperation('/api/nodes/ip-bulk/apply', payload, 'Массовая смена IP');
+      state.bulkIPPayload = null;
+    } catch (error) { showNotice(error.message); }
+  });
   $('#terminal-close').addEventListener('click', closeTerminal);
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
   $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
+  $('#add-node').addEventListener('click', openAddNode);
+  $('#add-balancer').addEventListener('click', openAddBalancer);
+  $('#bulk-ip').addEventListener('click', openBulkIP);
+  $('#deployments-button').addEventListener('click', openDeployments);
+  $('#node-panel').addEventListener('change', (event) => loadHosts(event.target.value).catch((error) => showNotice(error.message)));
+  $('#balancer-panel').addEventListener('change', (event) => loadBalancerOptions(event.target.value).catch((error) => showNotice(error.message)));
   $('#search').addEventListener('input', (event) => { state.query = event.target.value; render(); });
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; render(); }));
   $('#logout').addEventListener('click', async () => { try { await request('/logout', { method: 'POST' }); location.href = '/login'; } catch (error) { showNotice(error.message); } });

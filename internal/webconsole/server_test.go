@@ -75,7 +75,8 @@ func TestActualizeNodeRequiresSessionCSRFAndReturnsInventory(t *testing.T) {
 		t.Fatalf("job body = %s, error = %v", response.Body.String(), err)
 	}
 	job := waitTestJob(t, server, body.JobID, 42)
-	if job.Status != jobCompleted || len(job.Result.Addresses) != 1 || job.Result.Addresses[0] != "198.51.100.25" {
+	result, resultOK := job.Result.(telegram.NodeActualizeResult)
+	if job.Status != jobCompleted || !resultOK || len(result.Addresses) != 1 || result.Addresses[0] != "198.51.100.25" {
 		t.Fatalf("completed job = %#v", job)
 	}
 	jobRequest := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/api/jobs/"+body.JobID, nil)
