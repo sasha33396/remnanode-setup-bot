@@ -118,7 +118,7 @@ func TestAdoptLegacyNodePrefersExplicitHostNodeBinding(t *testing.T) {
 	}
 }
 
-func TestAdoptLegacyNodeClearsManagedBindingWhenFinalWorkflowFails(t *testing.T) {
+func TestAdoptLegacyNodePreservesExistingDNSWhenBalancerIsUnavailable(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.nodes = []remnawave.Node{{
 		UUID: testNodeUUID, Name: "legacy-edge", Address: "8.8.8.8",
@@ -126,14 +126,18 @@ func TestAdoptLegacyNodeClearsManagedBindingWhenFinalWorkflowFails(t *testing.T)
 	}}
 	fixture.dns.addErr = errors.New("DNS unavailable")
 
-	_, err := fixture.service.AdoptLegacyNode(context.Background(), AdoptLegacyNodeInput{
+	result, err := fixture.service.AdoptLegacyNode(context.Background(), AdoptLegacyNodeInput{
 		OperatorUserID: 42, NodeUUID: testNodeUUID, Password: []byte("temporary-password"),
 	}, nil)
-	if err == nil {
-		t.Fatal("AdoptLegacyNode() error = nil, want failure")
+	if err != nil || result.Status != deployment.StatusCompleted {
+		t.Fatalf("AdoptLegacyNode() result = %#v, error = %v", result, err)
 	}
-	if _, findErr := fixture.repo.FindDeploymentByPanelNodeUUID(context.Background(), "default", testNodeUUID); !errors.Is(findErr, repository.ErrNotFound) {
-		t.Fatalf("legacy Node remained managed after failure: %v", findErr)
+	if fixture.dns.addCalls != 0 {
+		t.Fatalf("DNS add calls = %d, want existing DNS preserved", fixture.dns.addCalls)
+	}
+	step := fixture.repo.steps[result.ID][stepAddDNS]
+	if step.Status != deployment.StepStatusSkipped || step.SafeSummary == nil || *step.SafeSummary != "Existing Node DNS membership was preserved during adoption" {
+		t.Fatalf("DNS step = %#v", step)
 	}
 }
 
@@ -1443,6 +1447,11 @@ func (f *fakeCertificateProvider) Prepare(context.Context, string) (certificates
 
 func (f *fakeCertificateProvider) PrepareForNewTarget(context.Context, string) (certificates.Material, error) {
 	f.events.add("certificate.prepare-new")
+	return f.material.Clone(), f.err
+}
+
+func (f *fakeCertificateProvider) PrepareForExistingTarget(context.Context, string) (certificates.Material, error) {
+	f.events.add("certificate.prepare-existing")
 	return f.material.Clone(), f.err
 }
 

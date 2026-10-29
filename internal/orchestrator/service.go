@@ -443,7 +443,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	}
 
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(runCtx, &current, progress); err != nil {
+		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != ""); err != nil {
 			return err
 		}
 		current, err = s.repository.GetDeployment(runCtx, current.ID)
@@ -481,12 +481,12 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 		}
 	}
 	if current.Status == deployment.StatusAddingToDNS || current.Status == deployment.StatusWaitingRemnawave {
-		return s.addDNS(runCtx, &current, progress)
+		return s.addDNS(runCtx, &current, progress, existingNodeUUID != "")
 	}
 	return ErrDeploymentNotRunnable
 }
 
-func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink, existingTarget bool) error {
 	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Preparing certificate", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusPreparingCertificate, stepPrepareCertificate); err != nil {
@@ -495,7 +495,13 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 	}
 	var material certificates.Material
 	var err error
-	if current.Kind == deployment.KindAdvancedBalancer {
+	if existingTarget {
+		provider, ok := s.certificates.(ExistingTargetCertificateProvider)
+		if !ok {
+			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "EXISTING_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for an existing Node is unavailable", ErrCertificateUnavailable)
+		}
+		material, err = provider.PrepareForExistingTarget(ctx, current.SNIDomain)
+	} else if current.Kind == deployment.KindAdvancedBalancer {
 		provider, ok := s.certificates.(NewTargetCertificateProvider)
 		if !ok {
 			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "NEW_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for a new DNS target is unavailable", ErrCertificateUnavailable)
@@ -656,7 +662,7 @@ func (s *DeploymentService) waitForHealthyNode(ctx context.Context, current *dep
 	return s.beginStage(ctx, current.ID, deployment.StatusAddingToDNS, stepAddDNS)
 }
 
-func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {
+func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Deployment, progress ProgressSink, preserveExistingDNS bool) error {
 	total, completed, message := workflowStepCount, 5, "Updating DNS balancing"
 	if current.Kind == deployment.KindAdvancedBalancer {
 		total, completed, message = advancedWorkflowSteps, 6, "Creating direct Cloudflare A record"
@@ -669,6 +675,17 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 		if err := s.beginStage(ctx, current.ID, deployment.StatusAddingToDNS, stepAddDNS); err != nil {
 			return err
 		}
+	}
+	if current.Kind != deployment.KindAdvancedBalancer && preserveExistingDNS {
+		summary := "Existing Node DNS membership was preserved during adoption"
+		if _, err := s.repository.RecordDeploymentStep(ctx, repository.RecordStepParams{DeploymentID: current.ID, Name: stepAddDNS, Status: deployment.StepStatusSkipped, SafeSummary: &summary}); err != nil {
+			return safeError("DNS_PRESERVE_PERSIST_FAILED", "Could not persist preserved DNS step", ErrPersistenceFailed)
+		}
+		if err := s.setState(ctx, current.ID, deployment.StatusCompleted, "completed", "", ""); err != nil {
+			return err
+		}
+		emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "Существующие DNS-настройки ноды сохранены", Status: deployment.StepStatusSkipped, Code: "W-DNS-PRESERVED"})
+		return nil
 	}
 	if current.Kind != deployment.KindAdvancedBalancer && s.config.DNSDisabled {
 		summary := "DNS balancing is disabled for this panel"
@@ -728,7 +745,7 @@ func (s *DeploymentService) deployAdvanced(ctx context.Context, current *deploym
 	}
 	var err error
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(ctx, current, progress); err != nil {
+		if err := s.prepareAndProvision(ctx, current, progress, false); err != nil {
 			return err
 		}
 		*current, err = s.repository.GetDeployment(ctx, current.ID)
@@ -764,7 +781,7 @@ func (s *DeploymentService) deployAdvanced(ctx context.Context, current *deploym
 		}
 	}
 	if current.Status == deployment.StatusAddingToDNS || current.Status == deployment.StatusWaitingRemnawave {
-		if err := s.addDNS(ctx, current, progress); err != nil {
+		if err := s.addDNS(ctx, current, progress, false); err != nil {
 			return err
 		}
 		*current, err = s.repository.GetDeployment(ctx, current.ID)
@@ -942,7 +959,7 @@ func (s *DeploymentService) RetryDNS(ctx context.Context, deploymentID string, p
 		return err
 	}
 	current.Status = deployment.StatusAddingToDNS
-	if err := s.addDNS(runCtx, &current, progress); err != nil {
+	if err := s.addDNS(runCtx, &current, progress, false); err != nil {
 		return err
 	}
 	if current.Kind != deployment.KindAdvancedBalancer {

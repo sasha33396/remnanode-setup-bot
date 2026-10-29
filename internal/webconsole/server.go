@@ -167,7 +167,12 @@ func (s *Server) startNodeJob(userID int64, panelID, nodeUUID string, password [
 		})
 		if runErr != nil {
 			s.config.Logger.Warn("background Node synchronization failed", "panel_id", panelID, "node_uuid", nodeUUID, "error", runErr)
-			s.jobs.fail(token, "Не удалось синхронизировать или сделать ноду актуальной")
+			safeMessage := "Не удалось синхронизировать или сделать ноду актуальной"
+			var operatorError interface{ OperatorMessage() string }
+			if errors.As(runErr, &operatorError) && strings.TrimSpace(operatorError.OperatorMessage()) != "" {
+				safeMessage = operatorError.OperatorMessage()
+			}
+			s.jobs.fail(token, safeMessage)
 			return
 		}
 		s.jobs.complete(token, result)

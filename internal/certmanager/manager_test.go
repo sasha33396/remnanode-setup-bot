@@ -217,6 +217,29 @@ func TestManagerDistributionPartialFailureKeepsCentralActiveVersion(t *testing.T
 	}
 }
 
+func TestManagerExistingTargetReusesCertificateFromFailedDistribution(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	fixture.resolver.err = safe("DNS-balancer certificate zone is unavailable", ErrDistributionFailed)
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("initial Prepare() error = %v, want ErrDistributionFailed", err)
+	}
+
+	material, err = fixture.manager.PrepareForExistingTarget(context.Background(), testSNI)
+	if err != nil {
+		t.Fatalf("PrepareForExistingTarget() error = %v", err)
+	}
+	defer material.Destroy()
+	if fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("issuer calls = %d, want staged certificate reuse", fixture.issuer.calls.Load())
+	}
+	active, activeErr := fixture.repository.GetActive(context.Background(), testSNI)
+	if activeErr != nil || active.ActiveVersion == "" || active.Status != StatusActive {
+		t.Fatalf("active certificate = %#v, %v", active, activeErr)
+	}
+}
+
 func TestManagerRollbackBehavior(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{
 		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),

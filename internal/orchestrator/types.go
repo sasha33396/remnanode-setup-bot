@@ -59,6 +59,10 @@ type NewTargetCertificateProvider interface {
 	PrepareForNewTarget(context.Context, string) (certificates.Material, error)
 }
 
+type ExistingTargetCertificateProvider interface {
+	PrepareForExistingTarget(context.Context, string) (certificates.Material, error)
+}
+
 // VPSOperator hides SSH connectivity and provisioner construction from the
 // workflow. Implementations must not retain password, SECRET_KEY, or
 // certificate material after the method returns.

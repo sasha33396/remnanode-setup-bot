@@ -122,6 +122,18 @@ func (m *Manager) Prepare(ctx context.Context, sni string) (certificates.Materia
 // name without resolving or distributing to pre-existing DNS-balancer targets.
 // The caller installs the returned material on the new VPS in the same run.
 func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certificates.Material, error) {
+	return m.prepareWithoutDistribution(ctx, sni)
+}
+
+// PrepareForExistingTarget prepares material for a legacy Node that will
+// receive the certificate during its own provisioning. It intentionally does
+// not make that one-Node adoption depend on DNS-balancer availability or a
+// fleet-wide certificate rollout.
+func (m *Manager) PrepareForExistingTarget(ctx context.Context, sni string) (certificates.Material, error) {
+	return m.prepareWithoutDistribution(ctx, sni)
+}
+
+func (m *Manager) prepareWithoutDistribution(ctx context.Context, sni string) (certificates.Material, error) {
 	domain, err := canonicalSNI(sni)
 	if err != nil {
 		return certificates.Material{}, err
@@ -140,6 +152,11 @@ func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certific
 		return active, nil
 	} else if !errors.Is(loadErr, ErrNotFound) && !errors.Is(loadErr, certificates.ErrInvalidMaterial) {
 		return certificates.Material{}, loadErr
+	}
+	if staged, found, stagedErr := m.activateStagedWithoutDistribution(prepareCtx, domain); stagedErr != nil {
+		return certificates.Material{}, stagedErr
+	} else if found {
+		return staged, nil
 	}
 	material, err := m.issuer.Issue(prepareCtx, domain)
 	if err != nil {
@@ -175,6 +192,38 @@ func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certific
 	m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
 	valid = true
 	return material, nil
+}
+
+func (m *Manager) activateStagedWithoutDistribution(ctx context.Context, domain string) (certificates.Material, bool, error) {
+	versions, err := m.repository.ListVersions(ctx, domain)
+	if err != nil {
+		return certificates.Material{}, false, safe("Certificate versions could not be loaded", ErrPersistenceFailed)
+	}
+	for _, version := range versions {
+		if version.Status != VersionDistribution && version.Status != VersionPending {
+			continue
+		}
+		material, loadErr := m.store.Load(ctx, domain, version.Version)
+		if loadErr != nil {
+			continue
+		}
+		info, validationErr := certificates.Validate(material, domain, m.now())
+		if validationErr != nil || info.Fingerprint != version.Fingerprint {
+			material.Destroy()
+			continue
+		}
+		if err := m.store.Activate(ctx, domain, version.Version); err != nil {
+			material.Destroy()
+			return certificates.Material{}, false, err
+		}
+		if err := m.repository.ActivateVersion(ctx, domain, version.Version, false); err != nil {
+			material.Destroy()
+			return certificates.Material{}, false, safe("Certificate metadata could not be activated", ErrPersistenceFailed)
+		}
+		m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
+		return material, true, nil
+	}
+	return certificates.Material{}, false, nil
 }
 
 // Renew forces a new ACME order even when the active certificate is not near

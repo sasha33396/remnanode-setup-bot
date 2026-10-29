@@ -82,6 +82,13 @@ Only a fully completed deployment changes the Node to **Актуальная**; 
 failure its provisional managed binding is removed. The password is cleared
 after SSH use and is never stored.
 
+Adopting an existing Node preserves its current DNS membership. It does not
+require that Node to exist in a DNS-balancer zone: Nodes created with their own
+Host/direct record are supported as well. Certificate material is installed on
+the adopted Node during provisioning without triggering a fleet-wide rollout;
+a valid staged certificate from an earlier failed rollout is reused instead of
+placing another ACME order.
+
 Single-Node adoption and synchronization run as server-side background jobs,
 so an HTTP or reverse-proxy timeout does not cancel SSH provisioning. The web
 console polls the job and shows a progress bar with the current deployment
