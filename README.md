@@ -82,6 +82,12 @@ Only a fully completed deployment changes the Node to **Актуальная**; 
 failure its provisional managed binding is removed. The password is cleared
 after SSH use and is never stored.
 
+Single-Node adoption and synchronization run as server-side background jobs,
+so an HTTP or reverse-proxy timeout does not cancel SSH provisioning. The web
+console polls the job and shows a progress bar with the current deployment
+stage and its operator-safe description. Repeating the action for the same
+Node attaches to the already running job instead of starting a second deploy.
+
 The web toolbar and Telegram Nodes menu also provide **Синхронизировать все**.
 After confirmation it processes only managed Nodes, with at most eight SSH
 operations at once, and reports successful Nodes, failures, and how many

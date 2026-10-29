@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"remnanode-setup-bot/internal/deployment"
@@ -66,6 +67,10 @@ type Server struct {
 	publicURL    *url.URL
 	login        *template.Template
 	tickets      *ticketStore
+	jobs         *nodeJobStore
+	jobContext   context.Context
+	cancelJobs   context.CancelFunc
+	workers      sync.WaitGroup
 	slots        chan struct{}
 	now          func() time.Time
 	http         *http.Server
@@ -99,12 +104,15 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 		}
 	}
 	server.tickets = newTicketStore(func() time.Time { return server.now() })
+	server.jobs = newNodeJobStore(func() time.Time { return server.now() })
+	server.jobContext, server.cancelJobs = context.WithCancel(context.Background())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.handleIndex)
 	mux.HandleFunc("GET /login", server.handleLogin)
 	mux.HandleFunc("GET /auth/telegram", server.handleTelegramAuth)
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
+	mux.HandleFunc("GET /api/jobs/", server.handleJob)
 	mux.HandleFunc("POST /api/nodes/", server.handleNodeAction)
 	mux.HandleFunc("GET /ws/terminal", server.handleTerminal)
 	mux.HandleFunc("POST /logout", server.handleLogout)
@@ -122,6 +130,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
+			s.cancelJobs()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_ = s.http.Shutdown(shutdownCtx)
@@ -134,6 +143,80 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) startNodeJob(userID int64, panelID, nodeUUID string, password []byte) (string, error) {
+	token, existing, err := s.jobs.begin(userID, panelID, nodeUUID)
+	if err != nil {
+		clear(password)
+		return "", err
+	}
+	if existing {
+		clear(password)
+		return token, nil
+	}
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		defer clear(password)
+		result, runErr := s.actualizer.ActualizeNode(s.jobContext, telegram.NodeActualizeInput{
+			PanelID: panelID, NodeUUID: nodeUUID, OperatorUserID: userID, Password: password,
+			Progress: func(update telegram.NodeActualizeProgress) {
+				s.jobs.progress(token, update)
+			},
+		})
+		if runErr != nil {
+			s.config.Logger.Warn("background Node synchronization failed", "panel_id", panelID, "node_uuid", nodeUUID, "error", runErr)
+			s.jobs.fail(token, "Не удалось синхронизировать или сделать ноду актуальной")
+			return
+		}
+		s.jobs.complete(token, result)
+	}()
+	return token, nil
+}
+
+func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
+	user, _, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/jobs/"))
+	job, ok := s.jobs.get(token, user.UserID)
+	if !ok || token == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Операция не найдена"})
+		return
+	}
+	percent := 0
+	if job.Progress.Total > 0 {
+		percent = job.Progress.Completed * 100 / job.Progress.Total
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if job.Status == jobRunning && percent >= 100 {
+		percent = 99
+	}
+	if job.Status == jobCompleted {
+		percent = 100
+	}
+	response := map[string]any{
+		"status": job.Status,
+		"progress": map[string]any{
+			"step": job.Progress.Step, "message": job.Progress.Message,
+			"completed": job.Progress.Completed, "total": job.Progress.Total, "percent": percent,
+		},
+	}
+	if job.Status == jobCompleted {
+		response["result"] = map[string]any{
+			"nodeName": job.Result.NodeName, "managed": job.Result.Managed, "adopted": job.Result.Adopted,
+			"addresses": job.Result.Addresses, "firewallChanged": job.Result.FirewallChanged,
+		}
+	}
+	if job.Status == jobFailed {
+		response["error"] = job.SafeError
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
@@ -312,19 +395,13 @@ func (s *Server) handleTicket(w http.ResponseWriter, r *http.Request) {
 		}
 		password := []byte(input.Password)
 		input.Password = ""
-		_, adoptionErr := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{
-			PanelID: parts[0], NodeUUID: parts[1], OperatorUserID: value.UserID, Password: password,
-		})
-		clear(password)
-		// ActualizeNode can finish adoption and then fail while refreshing the
-		// optional network inventory. Re-resolve from durable state before
-		// deciding whether the managed terminal can be opened.
-		target, err = s.resolveTarget(r.Context(), parts[0], parts[1])
-		if err != nil || !target.Managed {
-			s.config.Logger.Warn("legacy Node SSH adoption failed", "panel_id", parts[0], "node_uuid", parts[1], "error", adoptionErr)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось сделать ноду актуальной перед SSH: проверьте пароль и Host-профиль"})
+		jobID, jobErr := s.startNodeJob(value.UserID, parts[0], parts[1], password)
+		if jobErr != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется другая операция"})
 			return
 		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
+		return
 	}
 	target.UserID = value.UserID
 	ticket, err := s.tickets.issue(target)
@@ -400,13 +477,23 @@ func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	password := []byte(body.Password)
-	defer clear(password)
-	result, err := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{PanelID: parts[0], NodeUUID: parts[1], OperatorUserID: user.UserID, Password: password})
+	body.Password = ""
+	target, err := s.resolveTarget(r.Context(), parts[0], parts[1])
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось синхронизировать или сделать ноду актуальной: проверьте SSH, пароль и Host-профиль. При ошибке нода остаётся legacy"})
+		clear(password)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Нода не найдена"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodeName": result.NodeName, "managed": result.Managed, "adopted": result.Adopted, "addresses": result.Addresses, "firewallChanged": result.FirewallChanged})
+	if !target.Managed && len(password) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Для legacy-ноды нужен root-пароль"})
+		return
+	}
+	jobID, jobErr := s.startNodeJob(user.UserID, parts[0], parts[1], password)
+	if jobErr != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется другая операция"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
 }
 
 func (s *Server) resolveTarget(ctx context.Context, panelID, nodeUUID string) (terminalTicket, error) {

@@ -22,6 +22,11 @@
       <div class="filters" role="group"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="managed">Актуальные</button><button class="filter" data-filter="legacy">Legacy</button></div>
     </section>
     <div id="notice" class="notice hidden"></div>
+    <section id="job-progress" class="job-progress hidden" aria-live="polite">
+      <div class="job-progress-head"><strong id="job-progress-title">Настройка ноды</strong><span id="job-progress-percent">0%</span></div>
+      <div class="job-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="job-progress-bar"></div></div>
+      <p id="job-progress-step" class="muted">Операция поставлена в очередь</p>
+    </section>
     <section id="nodes" class="node-grid" aria-live="polite"></section>
   </main>
 

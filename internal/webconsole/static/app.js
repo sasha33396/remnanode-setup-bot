@@ -4,6 +4,7 @@
   const $ = (selector) => document.querySelector(selector);
   const nodesEl = $('#nodes');
   const notice = $('#notice');
+  const jobProgress = $('#job-progress');
   const passwordDialog = $('#password-dialog');
   const terminalDialog = $('#terminal-dialog');
 
@@ -26,6 +27,18 @@
 
   function showNotice(message) { notice.textContent = message; notice.classList.remove('hidden'); }
   function clearNotice() { notice.classList.add('hidden'); notice.textContent = ''; }
+
+  function showJobProgress(title, progress = {}) {
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    $('#job-progress-title').textContent = title || 'Настройка ноды';
+    $('#job-progress-percent').textContent = `${percent}%`;
+    $('#job-progress-step').textContent = progress.message || 'Операция поставлена в очередь';
+    $('#job-progress-bar').style.width = `${percent}%`;
+    const track = jobProgress.querySelector('.job-progress-track');
+    track.setAttribute('aria-valuenow', String(percent));
+    jobProgress.classList.toggle('failed', progress.failed === true);
+    jobProgress.classList.remove('hidden');
+  }
 
   function render() {
     const query = state.query.toLowerCase();
@@ -57,12 +70,38 @@
 
   function selectNode(panel, uuid) { return state.nodes.find((node) => node.panelId === panel && node.uuid === uuid); }
 
+  const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  async function waitForJob(jobId, message) {
+    clearNotice();
+    showJobProgress(message, { percent: 0, message: 'Получение состояния операции…' });
+    for (;;) {
+      const job = await request(`/api/jobs/${encodeURIComponent(jobId)}`);
+      showJobProgress(message, job.progress || {});
+      if (job.status === 'completed') return job.result || {};
+      if (job.status === 'failed') {
+        const error = job.error || 'Операция завершилась с ошибкой';
+        const stage = job.progress && job.progress.message ? job.progress.message : '';
+        showJobProgress(message, { ...(job.progress || {}), failed: true, message: stage ? `${error}. Последний этап: ${stage}` : error });
+        throw new Error(error);
+      }
+      await delay(2000);
+    }
+  }
+
   async function createTicket(node, password = '') {
     clearNotice();
     if (typeof Terminal !== 'function') throw new Error('Компонент терминала не загрузился. Обновите страницу.');
     if (!node.managed) showNotice(`${node.name}: сначала перевожу legacy-ноду под управление, затем открою SSH по deploy-key…`);
     const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/ticket`;
     const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    if (result.pending) {
+      await waitForJob(result.jobId, `${node.name}: полный перевод выполняется в фоне. Не закрывайте страницу — SSH откроется автоматически…`);
+      await loadNodes();
+      const managed = selectNode(node.panelId, node.uuid);
+      if (!managed || !managed.managed) throw new Error('Перевод завершён, но managed deployment не найден');
+      return createTicket(managed);
+    }
     await loadNodes();
     const updated = selectNode(node.panelId, node.uuid) || { ...node, managed: result.managed === true };
     openTerminal(updated, result.ticket);
@@ -71,7 +110,8 @@
   async function actualizeNode(node, password = '') {
     clearNotice();
     const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/actualize`;
-    const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    let result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    if (result.pending) result = await waitForJob(result.jobId, `${node.name}: операция выполняется в фоне, повторно нажимать кнопку не нужно…`);
     await loadNodes();
     const action = result.adopted ? 'легаси-нода полностью переведена под управление и актуализирована' : 'настройки актуализированы';
     showNotice(`${result.nodeName}: ${action}, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'проверен и актуален'}`);

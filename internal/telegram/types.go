@@ -131,6 +131,14 @@ type NodeActualizeInput struct {
 	NodeUUID       string
 	OperatorUserID int64
 	Password       []byte
+	Progress       func(NodeActualizeProgress)
+}
+
+type NodeActualizeProgress struct {
+	Step      string
+	Message   string
+	Completed int
+	Total     int
 }
 
 type NodeActualizeResult struct {

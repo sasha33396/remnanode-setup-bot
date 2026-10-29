@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/provisioner"
 	"remnanode-setup-bot/internal/repository"
 	sshclient "remnanode-setup-bot/internal/ssh"
@@ -76,6 +77,7 @@ func (a *TelegramApplication) ActualizeManagedNodes(ctx context.Context) (telegr
 
 func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
 	defer clear(input.Password)
+	emitNodeActualizeProgress(input.Progress, "inventory", "Получение данных ноды из Remnawave", 0, 4)
 	panel, err := m.app.panel(input.PanelID)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, err
@@ -107,7 +109,9 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 			OperatorUserID: input.OperatorUserID,
 			NodeUUID:       input.NodeUUID,
 			Password:       input.Password,
-		}, nil)
+		}, func(progress Progress) {
+			emitNodeActualizeProgress(input.Progress, progress.Step, nodeActualizeProgressMessage(progress.Step, progress.SafeMessage), nodeAdoptionProgressCompleted(progress), 21)
+		})
 		if err != nil {
 			m.logger.Warn("legacy Node adoption failed", slog.String("panel_id", input.PanelID), slog.String("node_uuid", input.NodeUUID), slog.String("node_name", name), slog.Any("error", err))
 			return telegram.NodeActualizeResult{}, errors.New("legacy node adoption failed")
@@ -116,11 +120,18 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	} else if managedErr != nil {
 		return telegram.NodeActualizeResult{}, errors.New("classify node failed")
 	}
+	base := 0
+	total := 4
+	if adopted {
+		base, total = 17, 21
+	}
+	emitNodeActualizeProgress(input.Progress, "ssh", "Подключение по установленному deploy-key", base, total)
 	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, managedDeployment.ID, address.Unmap(), "root")
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("SSH connection failed")
 	}
 	defer connection.Close()
+	emitNodeActualizeProgress(input.Progress, "netplan", "Чтение IP-адресов из netplan", base+1, total)
 	addresses, err := readNetplanAddresses(ctx, connection, m.timeout)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, err
@@ -129,14 +140,104 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if !ok {
 		return telegram.NodeActualizeResult{}, errors.New("panel firewall configuration is unavailable")
 	}
+	emitNodeActualizeProgress(input.Progress, "firewall", "Проверка и применение полного firewall, включая блокировку порта 25", base+2, total)
 	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("firewall reconciliation failed")
 	}
+	emitNodeActualizeProgress(input.Progress, "inventory_save", "Сохранение списка IP-адресов для поиска ноды", base+3, total)
 	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: input.PanelID, NodeUUID: input.NodeUUID, Addresses: addresses}); err != nil {
 		return telegram.NodeActualizeResult{}, err
 	}
+	emitNodeActualizeProgress(input.Progress, "completed", "Настройки ноды проверены и сохранены", total, total)
 	return telegram.NodeActualizeResult{NodeName: name, Managed: true, Adopted: adopted, Addresses: addresses, FirewallChanged: changed}, nil
+}
+
+func nodeAdoptionProgressCompleted(progress Progress) int {
+	completed := progress.Status == deployment.StepStatusCompleted || progress.Status == deployment.StepStatusSkipped
+	switch progress.Step {
+	case "preflight":
+		if completed {
+			return 1
+		}
+		return 0
+	case "prepare_certificate":
+		if completed {
+			return 2
+		}
+		return 1
+	case "provisioning":
+		if completed {
+			return 14
+		}
+		return 2
+	case "create_remnawave_node":
+		if completed {
+			return 15
+		}
+		return 14
+	case "wait_remnawave":
+		if completed {
+			return 16
+		}
+		return 15
+	case "add_dns":
+		if completed {
+			return 17
+		}
+		return 16
+	}
+	stages := []string{
+		"provisioning/system", "provisioning/docker", "provisioning/sysctl", "provisioning/limits",
+		"provisioning/firewall", "provisioning/fail2ban", "provisioning/remnanode", "provisioning/node_exporter",
+		"provisioning/speedtest_exporter", "provisioning/logrotate", "provisioning/xray_sni", "provisioning/healthcheck",
+	}
+	for index, step := range stages {
+		if progress.Step == step {
+			value := 2 + index
+			if completed {
+				value++
+			}
+			return value
+		}
+	}
+	return 2
+}
+
+func emitNodeActualizeProgress(sink func(telegram.NodeActualizeProgress), step, message string, completed, total int) {
+	if sink != nil {
+		sink(telegram.NodeActualizeProgress{Step: step, Message: message, Completed: completed, Total: total})
+	}
+}
+
+func nodeActualizeProgressMessage(step, fallback string) string {
+	labels := map[string]string{
+		"preflight":                       "Проверка SSH, системы и существующих компонентов",
+		"prepare_certificate":             "Подготовка TLS-сертификата",
+		"provisioning":                    "Типовая настройка сервера",
+		"provisioning/system":             "Подготовка пакетов и системы",
+		"provisioning/docker":             "Проверка и настройка Docker",
+		"provisioning/sysctl":             "Настройка параметров ядра",
+		"provisioning/limits":             "Настройка системных лимитов",
+		"provisioning/firewall":           "Применение firewall и блокировки порта 25",
+		"provisioning/fail2ban":           "Настройка Fail2ban",
+		"provisioning/remnanode":          "Обновление Remnanode",
+		"provisioning/node_exporter":      "Настройка node_exporter",
+		"provisioning/speedtest_exporter": "Настройка speedtest-exporter",
+		"provisioning/logrotate":          "Настройка ротации логов",
+		"provisioning/xray_sni":           "Настройка Xray SNI и сертификата",
+		"provisioning/healthcheck":        "Проверка всех сервисов ноды",
+		"create_remnawave_node":           "Привязка существующей ноды к managed deployment",
+		"wait_remnawave":                  "Ожидание подключения ноды к Remnawave",
+		"add_dns":                         "Проверка и обновление DNS",
+	}
+	if label := labels[step]; label != "" {
+		return label
+	}
+	if strings.TrimSpace(fallback) != "" {
+		return fallback
+	}
+	return "Выполнение настройки ноды"
 }
 
 type managedActualizeTarget struct {

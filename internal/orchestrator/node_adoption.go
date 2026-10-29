@@ -64,6 +64,7 @@ func (s *DeploymentService) AdoptLegacyNode(ctx context.Context, input AdoptLega
 		s.config.Observer.DeploymentCreated()
 	}
 
+	emit(progress, Progress{Step: stepPreflight, Completed: 0, Total: workflowStepCount, SafeMessage: "Checking SSH and existing Node", Status: deployment.StepStatusRunning})
 	preflightErr := s.preflightLegacyAdoption(ctx, created, address.Unmap(), input.Password)
 	// The standard workflow uses only the installed deployment key from here.
 	// Clear the caller-owned password buffer immediately after initial SSH use.
@@ -71,6 +72,7 @@ func (s *DeploymentService) AdoptLegacyNode(ctx context.Context, input AdoptLega
 	if preflightErr != nil {
 		return deployment.Deployment{}, preflightErr
 	}
+	emit(progress, Progress{Step: stepPreflight, Completed: 1, Total: workflowStepCount, SafeMessage: "SSH preflight passed and deployment key installed", Status: deployment.StepStatusCompleted})
 	start := StartInput{
 		DeploymentID:   created.ID,
 		OperatorUserID: input.OperatorUserID,
