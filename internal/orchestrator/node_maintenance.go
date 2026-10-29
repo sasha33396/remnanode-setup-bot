@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -19,6 +21,8 @@ import (
 )
 
 const netplanPath = "/etc/netplan/50-cloud-init.yaml"
+
+const nodeNetworkPollConcurrency = 8
 
 type NodeFirewallConfig struct {
 	PanelIP   netip.Addr
@@ -139,6 +143,11 @@ func (m *NodeMaintenance) Run(ctx context.Context, interval time.Duration) error
 }
 
 func (m *NodeMaintenance) refreshManaged(ctx context.Context) {
+	started := time.Now()
+	var managed, updated, failed atomic.Int64
+	var workers sync.WaitGroup
+	semaphore := make(chan struct{}, nodeNetworkPollConcurrency)
+
 	for _, panelID := range m.app.order {
 		panel := m.app.panels[panelID]
 		nodes, err := panel.Service.remnawave.GetNodes(ctx)
@@ -151,21 +160,63 @@ func (m *NodeMaintenance) refreshManaged(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			managed.Add(1)
 			address, err := netip.ParseAddr(strings.TrimSpace(node.Address))
 			if err != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+				failed.Add(1)
+				m.logNodePollFailure(panelID, node.Name, "invalid_address")
 				continue
 			}
-			connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, item.ID, address.Unmap(), "root")
-			if err != nil {
-				continue
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				workers.Wait()
+				return
 			}
-			addresses, readErr := readNetplanAddresses(ctx, connection, m.timeout)
-			_ = connection.Close()
-			if readErr == nil {
-				_ = m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: panelID, NodeUUID: node.UUID, Addresses: addresses})
-			}
+			workers.Add(1)
+			go func(panelID, nodeUUID, nodeName, deploymentID string, address netip.Addr) {
+				defer workers.Done()
+				defer func() { <-semaphore }()
+				if reason := m.pollManagedNode(ctx, panelID, nodeUUID, deploymentID, address); reason != "" {
+					failed.Add(1)
+					m.logNodePollFailure(panelID, nodeName, reason)
+					return
+				}
+				updated.Add(1)
+			}(panelID, node.UUID, node.Name, item.ID, address.Unmap())
 		}
 	}
+	workers.Wait()
+	m.logger.Info("node network poll completed",
+		slog.Int64("managed", managed.Load()),
+		slog.Int64("updated", updated.Load()),
+		slog.Int64("failed", failed.Load()),
+		slog.Int64("duration_ms", time.Since(started).Milliseconds()),
+	)
+}
+
+func (m *NodeMaintenance) pollManagedNode(ctx context.Context, panelID, nodeUUID, deploymentID string, address netip.Addr) string {
+	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, deploymentID, address, "root")
+	if err != nil {
+		return "ssh_connect"
+	}
+	addresses, readErr := readNetplanAddresses(ctx, connection, m.timeout)
+	_ = connection.Close()
+	if readErr != nil {
+		return "netplan_read"
+	}
+	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: panelID, NodeUUID: nodeUUID, Addresses: addresses}); err != nil {
+		return "inventory_save"
+	}
+	return ""
+}
+
+func (m *NodeMaintenance) logNodePollFailure(panelID, nodeName, reason string) {
+	m.logger.Warn("node network poll skipped node",
+		slog.String("panel_id", panelID),
+		slog.String("node_name", nodeName),
+		slog.String("reason", reason),
+	)
 }
 
 func readNetplanAddresses(ctx context.Context, runner sshclient.CommandRunner, timeout time.Duration) ([]string, error) {
