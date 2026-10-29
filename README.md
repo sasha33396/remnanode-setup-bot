@@ -348,6 +348,12 @@ immutable versions, and distributes renewed material to DNS-configured Nodes.
 Node activation follows the pinned xray-sni external contract and rolls back on
 reload or TLS health failure.
 
+Interactive deployments use any valid active certificate immediately, including
+one already inside its renewal window. Renewal runs only in the background and
+does not block Node adoption. A cold ACME issuance is bounded end-to-end,
+including certificate-lock acquisition and distribution; the default ceiling is
+two minutes, with 90 seconds allowed for DNS propagation.
+
 ## Database migrations
 
 Apply the migrations before using deployment persistence. With `psql` available:

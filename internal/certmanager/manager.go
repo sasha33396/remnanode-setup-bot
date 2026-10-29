@@ -32,7 +32,7 @@ func New(repository Repository, store Store, issuer Issuer, locker Locker, resol
 		config.RenewBefore = 30 * 24 * time.Hour
 	}
 	if config.IssueTimeout <= 0 {
-		config.IssueTimeout = 10 * time.Minute
+		config.IssueTimeout = 2 * time.Minute
 	}
 	if config.RenewInterval <= 0 {
 		config.RenewInterval = 12 * time.Hour
@@ -69,16 +69,31 @@ func (m *Manager) Readiness(ctx context.Context, sni string) (certificates.Readi
 	return certificates.ReadinessReady, nil
 }
 
-// Prepare returns a validated in-memory copy. A missing certificate is issued;
-// a valid certificate nearing expiration is renewed opportunistically. If an
-// attempted renewal fails, the still-valid active version remains usable.
+// Prepare returns any valid active certificate immediately. Renewal is owned
+// by the background RenewDue loop and must never delay an interactive deploy.
+// A missing or invalid active certificate is issued under one end-to-end
+// deadline that also bounds advisory-lock acquisition and distribution.
 func (m *Manager) Prepare(ctx context.Context, sni string) (certificates.Material, error) {
 	domain, err := canonicalSNI(sni)
 	if err != nil {
 		return certificates.Material{}, err
 	}
-	unlock, err := m.locker.Lock(ctx, domain)
+	prepareCtx, cancel := context.WithTimeout(ctx, m.config.IssueTimeout)
+	defer cancel()
+
+	// The fast path deliberately avoids the issuance lock. Certificate versions
+	// are immutable, so a concurrent background renewal cannot invalidate this
+	// already validated copy.
+	if record, active, activeErr := m.loadActive(prepareCtx, domain, false); activeErr == nil {
+		m.observeExpiry(record)
+		return active, nil
+	}
+
+	unlock, err := m.locker.Lock(prepareCtx, domain)
 	if err != nil {
+		if errors.Is(prepareCtx.Err(), context.DeadlineExceeded) {
+			return certificates.Material{}, safe("Certificate preparation timed out while waiting for its lock", ErrIssuanceFailed)
+		}
 		if ctx.Err() != nil {
 			return certificates.Material{}, ctx.Err()
 		}
@@ -86,28 +101,21 @@ func (m *Manager) Prepare(ctx context.Context, sni string) (certificates.Materia
 	}
 	defer unlock()
 
-	record, active, activeErr := m.loadActive(ctx, domain, true)
+	// Another worker may have issued the certificate before this lock was
+	// acquired. Recheck under the lock and repair an inconsistent active marker.
+	record, active, activeErr := m.loadActive(prepareCtx, domain, true)
 	if activeErr == nil {
 		m.observeExpiry(record)
-		if record.ExpiresAt.Sub(m.now()) > m.config.RenewBefore {
-			return active, nil
-		}
-		if renewed, err := m.issueAndActivate(ctx, domain, &record); err == nil {
-			active.Destroy()
-			return renewed, nil
-		} else {
-			m.renewalFailed(domain)
-			if m.now().Before(record.ExpiresAt) {
-				return active, nil
-			}
-			active.Destroy()
-			return certificates.Material{}, err
-		}
+		return active, nil
 	}
 	if !errors.Is(activeErr, ErrNotFound) && !errors.Is(activeErr, certificates.ErrInvalidMaterial) {
 		return certificates.Material{}, activeErr
 	}
-	return m.issueAndActivate(ctx, domain, nil)
+	material, err := m.issueAndActivate(prepareCtx, domain, nil)
+	if err != nil && errors.Is(prepareCtx.Err(), context.DeadlineExceeded) {
+		return certificates.Material{}, safe("Certificate preparation exceeded its time limit", ErrIssuanceFailed)
+	}
+	return material, err
 }
 
 // PrepareForNewTarget returns a certificate for a brand-new, dedicated DNS
@@ -118,20 +126,26 @@ func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certific
 	if err != nil {
 		return certificates.Material{}, err
 	}
-	unlock, err := m.locker.Lock(ctx, domain)
+	prepareCtx, cancel := context.WithTimeout(ctx, m.config.IssueTimeout)
+	defer cancel()
+	unlock, err := m.locker.Lock(prepareCtx, domain)
 	if err != nil {
+		if errors.Is(prepareCtx.Err(), context.DeadlineExceeded) {
+			return certificates.Material{}, safe("Certificate preparation timed out while waiting for its lock", ErrIssuanceFailed)
+		}
 		return certificates.Material{}, safe("Certificate preparation lock is unavailable", ErrPersistenceFailed)
 	}
 	defer unlock()
-	if _, active, loadErr := m.loadActive(ctx, domain, true); loadErr == nil {
+	if _, active, loadErr := m.loadActive(prepareCtx, domain, true); loadErr == nil {
 		return active, nil
 	} else if !errors.Is(loadErr, ErrNotFound) && !errors.Is(loadErr, certificates.ErrInvalidMaterial) {
 		return certificates.Material{}, loadErr
 	}
-	issueCtx, cancel := context.WithTimeout(ctx, m.config.IssueTimeout)
-	defer cancel()
-	material, err := m.issuer.Issue(issueCtx, domain)
+	material, err := m.issuer.Issue(prepareCtx, domain)
 	if err != nil {
+		if errors.Is(prepareCtx.Err(), context.DeadlineExceeded) {
+			return certificates.Material{}, safe("Certificate preparation exceeded its time limit", ErrIssuanceFailed)
+		}
 		return certificates.Material{}, safe(SafeMessage(err, "Certificate issuance failed"), ErrIssuanceFailed)
 	}
 	valid := false
@@ -144,18 +158,18 @@ func (m *Manager) PrepareForNewTarget(ctx context.Context, sni string) (certific
 	if err != nil {
 		return certificates.Material{}, safe("Issued certificate is invalid", certificates.ErrInvalidMaterial)
 	}
-	version, err := m.store.Stage(ctx, domain, material)
+	version, err := m.store.Stage(prepareCtx, domain, material)
 	if err != nil {
 		return certificates.Material{}, err
 	}
 	metadata := Version{SNI: domain, Version: version, Fingerprint: info.Fingerprint, Serial: info.Serial, IssuedAt: info.IssuedAt, ExpiresAt: info.ExpiresAt, Status: VersionPending, CreatedAt: m.now().UTC()}
-	if err := m.repository.SaveVersion(ctx, metadata); err != nil {
+	if err := m.repository.SaveVersion(prepareCtx, metadata); err != nil {
 		return certificates.Material{}, safe("Certificate metadata could not be saved", ErrPersistenceFailed)
 	}
-	if err := m.store.Activate(ctx, domain, version); err != nil {
+	if err := m.store.Activate(prepareCtx, domain, version); err != nil {
 		return certificates.Material{}, err
 	}
-	if err := m.repository.ActivateVersion(ctx, domain, version, false); err != nil {
+	if err := m.repository.ActivateVersion(prepareCtx, domain, version, false); err != nil {
 		return certificates.Material{}, safe("Certificate metadata could not be activated", ErrPersistenceFailed)
 	}
 	m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
@@ -170,8 +184,13 @@ func (m *Manager) Renew(ctx context.Context, sni string) error {
 	if err != nil {
 		return err
 	}
-	unlock, err := m.locker.Lock(ctx, domain)
+	renewCtx, cancel := context.WithTimeout(ctx, m.config.IssueTimeout)
+	defer cancel()
+	unlock, err := m.locker.Lock(renewCtx, domain)
 	if err != nil {
+		if errors.Is(renewCtx.Err(), context.DeadlineExceeded) {
+			return safe("Certificate renewal timed out while waiting for its lock", ErrIssuanceFailed)
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -179,14 +198,17 @@ func (m *Manager) Renew(ctx context.Context, sni string) error {
 	}
 	defer unlock()
 	var previous *Record
-	if record, material, loadErr := m.loadActive(ctx, domain, true); loadErr == nil {
+	if record, material, loadErr := m.loadActive(renewCtx, domain, true); loadErr == nil {
 		material.Destroy()
 		previous = &record
 	} else if !errors.Is(loadErr, ErrNotFound) && !errors.Is(loadErr, certificates.ErrInvalidMaterial) {
 		return loadErr
 	}
-	material, err := m.issueAndActivate(ctx, domain, previous)
+	material, err := m.issueAndActivate(renewCtx, domain, previous)
 	material.Destroy()
+	if err != nil && errors.Is(renewCtx.Err(), context.DeadlineExceeded) {
+		err = safe("Certificate renewal exceeded its time limit", ErrIssuanceFailed)
+	}
 	if err != nil {
 		m.renewalFailed(domain)
 	}

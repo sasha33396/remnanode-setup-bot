@@ -96,7 +96,7 @@ func TestManagerConcurrentIssuanceRequest(t *testing.T) {
 	}
 }
 
-func TestManagerRenewal(t *testing.T) {
+func TestManagerPrepareUsesExpiringCertificateWithoutSynchronousRenewal(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{
 		testMaterial(t, testSNI, time.Now().Add(2*time.Hour), nil),
 		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),
@@ -113,8 +113,51 @@ func TestManagerRenewal(t *testing.T) {
 	}
 	second.Destroy()
 	after, _ := fixture.repository.GetActive(context.Background(), testSNI)
-	if before.ActiveVersion == after.ActiveVersion || after.LastRenewedAt == nil || fixture.issuer.calls.Load() != 2 {
-		t.Fatalf("renewal before=%#v after=%#v calls=%d", before, after, fixture.issuer.calls.Load())
+	if before.ActiveVersion != after.ActiveVersion || fixture.issuer.calls.Load() != 1 {
+		t.Fatalf("Prepare renewed synchronously: before=%#v after=%#v calls=%d", before, after, fixture.issuer.calls.Load())
+	}
+	if err := fixture.manager.Renew(context.Background(), testSNI); err != nil {
+		t.Fatalf("background Renew() error = %v", err)
+	}
+	renewed, _ := fixture.repository.GetActive(context.Background(), testSNI)
+	if renewed.ActiveVersion == before.ActiveVersion || renewed.LastRenewedAt == nil || fixture.issuer.calls.Load() != 2 {
+		t.Fatalf("renewal before=%#v after=%#v calls=%d", before, renewed, fixture.issuer.calls.Load())
+	}
+}
+
+func TestManagerPrepareValidCertificateDoesNotWaitForIssuanceLock(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material.Destroy()
+	fixture.manager.locker = blockingLocker{}
+	fixture.manager.config.IssueTimeout = 20 * time.Millisecond
+
+	started := time.Now()
+	material, err = fixture.manager.Prepare(context.Background(), testSNI)
+	if err != nil {
+		t.Fatalf("Prepare() with valid active certificate = %v", err)
+	}
+	material.Destroy()
+	if elapsed := time.Since(started); elapsed >= fixture.manager.config.IssueTimeout {
+		t.Fatalf("Prepare() waited for lock for %s", elapsed)
+	}
+}
+
+func TestManagerPrepareBoundsIssuanceLockWait(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	fixture.manager.locker = blockingLocker{}
+	fixture.manager.config.IssueTimeout = 20 * time.Millisecond
+
+	started := time.Now()
+	_, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if !errors.Is(err, ErrIssuanceFailed) {
+		t.Fatalf("Prepare() error = %v, want ErrIssuanceFailed", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Prepare() lock deadline took %s", elapsed)
 	}
 }
 
@@ -232,6 +275,13 @@ type fakeIssuer struct {
 	started   chan struct{}
 	release   chan struct{}
 	issueErr  error
+}
+
+type blockingLocker struct{}
+
+func (blockingLocker) Lock(ctx context.Context, _ string) (func(), error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (i *fakeIssuer) Issue(ctx context.Context, _ string) (certificates.Material, error) {
