@@ -107,8 +107,10 @@ func run() int {
 
 	certificateManagers := make([]*certmanager.Manager, 0, len(cfg.Panels))
 	panelApplications := make([]orchestrator.PanelApplicationConfig, 0, len(cfg.Panels))
+	nodeFirewallConfigs := make(map[string]orchestrator.NodeFirewallConfig, len(cfg.Panels))
 	recoveredJobs := 0
 	for _, panel := range cfg.Panels {
+		nodeFirewallConfigs[panel.ID] = orchestrator.NodeFirewallConfig{PanelIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP}
 		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout})
 		if provisionerErr != nil {
 			logger.Error("VPS provisioner initialization failed", slog.String("panel_id", panel.ID))
@@ -230,6 +232,15 @@ func run() int {
 		logger.Error("Royal IP application initialization failed")
 		return 1
 	}
+	nodeMaintenance, err := orchestrator.NewNodeMaintenance(application, repository, ssh, serverIPSSH, nodeFirewallConfigs, cfg.SSHCommandTimeout, logger)
+	if err != nil {
+		logger.Error("node maintenance initialization failed")
+		return 1
+	}
+	if err := application.SetNodeMaintenance(nodeMaintenance); err != nil {
+		logger.Error("node maintenance application initialization failed")
+		return 1
+	}
 	bot, err := telegram.NewBotAPI(cfg.TelegramBotToken, cfg.TelegramPollTimeout)
 	if err != nil {
 		logger.Error("Telegram transport initialization failed")
@@ -274,6 +285,7 @@ func run() int {
 	group.Go(func() error { return healthServer.Run(runCtx) })
 	group.Go(func() error { return bot.Run(runCtx, controller) })
 	group.Go(func() error { return nodeMonitor.Run(runCtx) })
+	group.Go(func() error { return nodeMaintenance.Run(runCtx, cfg.NodeNetworkPollInterval) })
 	if webServer != nil {
 		group.Go(func() error { return webServer.Run(runCtx) })
 	}

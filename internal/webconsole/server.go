@@ -32,6 +32,10 @@ type NodeProvider interface {
 	ListNodes(context.Context) ([]telegram.NodeSummary, error)
 }
 
+type NodeActualizer interface {
+	ActualizeNode(context.Context, telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error)
+}
+
 type DeploymentFinder interface {
 	FindDeploymentByPanelNodeUUID(context.Context, string, string) (deployment.Deployment, error)
 }
@@ -52,6 +56,7 @@ type Config struct {
 type Server struct {
 	config       Config
 	nodes        NodeProvider
+	actualizer   NodeActualizer
 	deployments  DeploymentFinder
 	managedSSH   *sshclient.Client
 	legacySSH    *sshclient.Client
@@ -66,6 +71,7 @@ type Server struct {
 }
 
 func New(config Config, nodes NodeProvider, deployments DeploymentFinder, managedSSH, legacySSH *sshclient.Client) (*Server, error) {
+	actualizer, _ := nodes.(NodeActualizer)
 	if config.Addr == "" || config.PublicURL == "" || config.BotToken == "" || config.BotUsername == "" || len(config.SessionSecret) < 32 || config.SessionTTL <= 0 || config.TerminalTimeout <= 0 || config.MaxSessions <= 0 || len(config.AllowedUsers) == 0 || nodes == nil || deployments == nil || managedSSH == nil || legacySSH == nil {
 		return nil, errors.New("invalid web console configuration")
 	}
@@ -79,7 +85,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	}
 	key := sha256.Sum256([]byte(config.SessionSecret))
 	server := &Server{
-		config: config, nodes: nodes, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
+		config: config, nodes: nodes, actualizer: actualizer, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
 		allowedUsers: make(map[int64]struct{}, len(config.AllowedUsers)), sessionKey: key[:], publicURL: publicURL,
 		login: login, slots: make(chan struct{}, config.MaxSessions), now: time.Now,
 	}
@@ -98,7 +104,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /auth/telegram", server.handleTelegramAuth)
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
-	mux.HandleFunc("POST /api/nodes/", server.handleTicket)
+	mux.HandleFunc("POST /api/nodes/", server.handleNodeAction)
 	mux.HandleFunc("GET /ws/terminal", server.handleTerminal)
 	mux.HandleFunc("POST /logout", server.handleLogout)
 	staticFS, err := fs.Sub(assets, "static")
@@ -204,19 +210,21 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 type nodeResponse struct {
-	PanelID     string     `json:"panelId"`
-	PanelName   string     `json:"panelName"`
-	UUID        string     `json:"uuid"`
-	Name        string     `json:"name"`
-	Address     string     `json:"address"`
-	Connected   bool       `json:"connected"`
-	Connecting  bool       `json:"connecting"`
-	Disabled    bool       `json:"disabled"`
-	Online      int        `json:"online"`
-	OnlineKnown bool       `json:"onlineKnown"`
-	Managed     bool       `json:"managed"`
-	Status      string     `json:"status"`
-	LastChange  *time.Time `json:"lastStatusChange,omitempty"`
+	PanelID          string     `json:"panelId"`
+	PanelName        string     `json:"panelName"`
+	UUID             string     `json:"uuid"`
+	Name             string     `json:"name"`
+	Address          string     `json:"address"`
+	Connected        bool       `json:"connected"`
+	Connecting       bool       `json:"connecting"`
+	Disabled         bool       `json:"disabled"`
+	Online           int        `json:"online"`
+	OnlineKnown      bool       `json:"onlineKnown"`
+	Managed          bool       `json:"managed"`
+	Status           string     `json:"status"`
+	LastChange       *time.Time `json:"lastStatusChange,omitempty"`
+	NetworkAddresses []string   `json:"networkAddresses"`
+	NetworkUpdatedAt *time.Time `json:"networkUpdatedAt,omitempty"`
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
@@ -231,11 +239,14 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]nodeResponse, 0, len(nodes))
 	for _, node := range nodes {
-		_, err := s.deployments.FindDeploymentByPanelNodeUUID(r.Context(), node.PanelID, node.UUID)
-		managed := err == nil
-		if err != nil && !errors.Is(err, repository.ErrNotFound) {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось определить тип ноды"})
-			return
+		managed := node.Managed
+		if !managed {
+			_, err := s.deployments.FindDeploymentByPanelNodeUUID(r.Context(), node.PanelID, node.UUID)
+			managed = err == nil
+			if err != nil && !errors.Is(err, repository.ErrNotFound) {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось определить тип ноды"})
+				return
+			}
 		}
 		status := "offline"
 		if node.Disabled {
@@ -245,7 +256,7 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		} else if node.Connecting {
 			status = "connecting"
 		}
-		result = append(result, nodeResponse{PanelID: node.PanelID, PanelName: node.PanelName, UUID: node.UUID, Name: node.Name, Address: node.Address, Connected: node.Connected, Connecting: node.Connecting, Disabled: node.Disabled, Online: node.Online, OnlineKnown: node.OnlineKnown, Managed: managed, Status: status, LastChange: node.LastStatusChange})
+		result = append(result, nodeResponse{PanelID: node.PanelID, PanelName: node.PanelName, UUID: node.UUID, Name: node.Name, Address: node.Address, Connected: node.Connected, Connecting: node.Connecting, Disabled: node.Disabled, Online: node.Online, OnlineKnown: node.OnlineKnown, Managed: managed, Status: status, LastChange: node.LastStatusChange, NetworkAddresses: node.NetworkAddresses, NetworkUpdatedAt: node.NetworkUpdatedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": result})
 }
@@ -303,6 +314,51 @@ func (s *Server) handleTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"ticket": ticket})
+}
+
+func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/actualize") {
+		s.handleActualize(w, r)
+		return
+	}
+	s.handleTicket(w, r)
+}
+
+func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
+	_, cookie, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.validCSRF(r, cookie) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if s.actualizer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Актуализация нод недоступна"})
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "actualize" {
+		http.NotFound(w, r)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Password) > 1024 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Некорректный запрос"})
+		return
+	}
+	password := []byte(body.Password)
+	defer clear(password)
+	result, err := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{PanelID: parts[0], NodeUUID: parts[1], Password: password})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось актуализировать ноду: проверьте SSH и пароль"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodeName": result.NodeName, "managed": result.Managed, "addresses": result.Addresses, "firewallChanged": result.FirewallChanged})
 }
 
 func (s *Server) resolveTarget(ctx context.Context, panelID, nodeUUID string) (terminalTicket, error) {

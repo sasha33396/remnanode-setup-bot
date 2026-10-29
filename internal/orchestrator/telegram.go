@@ -6,12 +6,14 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/cherryip"
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
+	"remnanode-setup-bot/internal/repository"
 	"remnanode-setup-bot/internal/royalip"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -19,11 +21,12 @@ import (
 // TelegramApplication adapts DeploymentService to the presentation-only
 // Telegram application port.
 type TelegramApplication struct {
-	panels     map[string]PanelApplicationConfig
-	order      []string
-	repository DeploymentRepository
-	cherryIP   *cherryip.Service
-	royalIP    *royalip.Service
+	panels      map[string]PanelApplicationConfig
+	order       []string
+	repository  DeploymentRepository
+	cherryIP    *cherryip.Service
+	royalIP     *royalip.Service
+	maintenance *NodeMaintenance
 }
 
 func (a *TelegramApplication) SetRoyalIPService(service *royalip.Service) error {
@@ -573,6 +576,16 @@ func (a *TelegramApplication) ConfigureRoyalIP(ctx context.Context, input telegr
 
 func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSummary, error) {
 	result := make([]telegram.NodeSummary, 0)
+	inventory := make(map[string]repository.NodeNetworkInventory)
+	if store, ok := a.repository.(repository.NodeNetworkStore); ok {
+		items, err := store.ListNodeNetworkInventories(ctx)
+		if err != nil {
+			return nil, errors.New("list Node network inventory failed")
+		}
+		for _, item := range items {
+			inventory[item.PanelID+"\x00"+item.NodeUUID] = item
+		}
+	}
 	for _, id := range a.order {
 		panel := a.panels[id]
 		nodes, err := panel.Service.remnawave.GetNodes(ctx)
@@ -594,6 +607,17 @@ func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSum
 			online[metric.NodeUUID] = metric.UsersOnline
 		}
 		for _, node := range nodes {
+			_, managedErr := a.repository.FindDeploymentByPanelNodeUUID(ctx, id, node.UUID)
+			managed := managedErr == nil
+			if managedErr != nil && !errors.Is(managedErr, repository.ErrNotFound) {
+				return nil, errors.New("classify Node failed")
+			}
+			network := inventory[id+"\x00"+node.UUID]
+			var networkUpdatedAt *time.Time
+			if !network.UpdatedAt.IsZero() {
+				updated := network.UpdatedAt
+				networkUpdatedAt = &updated
+			}
 			usersOnline, onlineKnown := online[node.UUID]
 			lastMessage := ""
 			if node.LastStatusMessage != nil {
@@ -612,6 +636,9 @@ func (a *TelegramApplication) ListNodes(ctx context.Context) ([]telegram.NodeSum
 				OnlineKnown:       onlineKnown,
 				LastStatusMessage: lastMessage,
 				LastStatusChange:  node.LastStatusChange,
+				Managed:           managed,
+				NetworkAddresses:  append([]string(nil), network.Addresses...),
+				NetworkUpdatedAt:  networkUpdatedAt,
 			})
 		}
 	}

@@ -121,6 +121,22 @@ type NodeSummary struct {
 	OnlineKnown       bool
 	LastStatusMessage string
 	LastStatusChange  *time.Time
+	Managed           bool
+	NetworkAddresses  []string
+	NetworkUpdatedAt  *time.Time
+}
+
+type NodeActualizeInput struct {
+	PanelID  string
+	NodeUUID string
+	Password []byte
+}
+
+type NodeActualizeResult struct {
+	NodeName        string
+	Managed         bool
+	Addresses       []string
+	FirewallChanged bool
 }
 
 // NodeIPChangeTarget is an operator-safe projection used by the IP-change
@@ -435,6 +451,10 @@ type RecoveryApplication interface {
 type NodeIPApplication interface {
 	FindNodeForIPChange(context.Context, string, string) (NodeIPChangeTarget, error)
 	ReplaceNodeIP(context.Context, NodeIPChangeInput) (string, error)
+}
+
+type NodeActualizeApplication interface {
+	ActualizeNode(context.Context, NodeActualizeInput) (NodeActualizeResult, error)
 }
 
 // BulkNodeIPApplication updates Remnawave and DNS from an operator-supplied

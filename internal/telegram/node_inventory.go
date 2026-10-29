@@ -240,6 +240,9 @@ func (c *Controller) showNodeCard(ctx context.Context, chatID int64, messageID i
 			if _, available := c.app.(NodeHostMoveApplication); available {
 				rows = append(rows, []Button{{Text: "🔀 Переместить между Host", CallbackData: "nodes:move:" + node.UUID}})
 			}
+			if _, available := c.app.(NodeActualizeApplication); available {
+				rows = append(rows, []Button{{Text: "🛡 Актуализировать настройки ноды", CallbackData: "nodes:actualize:" + node.UUID}})
+			}
 			rows = append(rows,
 				[]Button{{Text: "🔄 Обновить", CallbackData: "nodes:o:" + node.UUID}},
 				[]Button{{Text: "⬅️ К группам", CallbackData: fmt.Sprintf("nodes:p:%d", panelIndex)}},
@@ -271,6 +274,19 @@ func renderNodeCard(snapshot nodePanelSnapshot, node NodeSummary, group nodeGrou
 	}
 	if node.LastStatusChange != nil {
 		fmt.Fprintf(&builder, "\nПоследнее изменение статуса: %s UTC", node.LastStatusChange.UTC().Format("2006-01-02 15:04:05"))
+	}
+	if node.Managed {
+		builder.WriteString("\nТип: актуальная")
+	} else {
+		builder.WriteString("\nТип: legacy")
+	}
+	if len(node.NetworkAddresses) > 0 {
+		fmt.Fprintf(&builder, "\nIP из netplan: %s", safeLine(strings.Join(node.NetworkAddresses, ", "), 500))
+	} else {
+		builder.WriteString("\nIP из netplan: ещё не опрошены")
+	}
+	if node.NetworkUpdatedAt != nil {
+		fmt.Fprintf(&builder, "\nNetplan проверен: %s UTC", node.NetworkUpdatedAt.UTC().Format("2006-01-02 15:04:05"))
 	}
 	if message := safeLine(node.LastStatusMessage, 250); message != "" {
 		fmt.Fprintf(&builder, "\nСообщение панели: %s", message)
@@ -368,6 +384,9 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "move" && validDeploymentID(parts[2]) {
 		return nodesCallback{action: "move_host", uuid: parts[2]}, true
 	}
+	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "actualize" && validDeploymentID(parts[2]) {
+		return nodesCallback{action: "actualize", uuid: parts[2]}, true
+	}
 	if len(parts) == 4 && parts[0] == "nodes" && parts[1] == "ip" && validDeploymentID(parts[3]) {
 		action := ""
 		switch parts[2] {
@@ -445,13 +464,17 @@ func searchNodes(nodes []NodeSummary, query string) []NodeSummary {
 	for _, node := range nodes {
 		name := strings.ToLower(strings.TrimSpace(node.Name))
 		address := strings.ToLower(strings.TrimSpace(node.Address))
-		if strings.Contains(name, normalized) || strings.Contains(address, normalized) {
+		matched := strings.Contains(name, normalized) || strings.Contains(address, normalized)
+		for _, networkAddress := range node.NetworkAddresses {
+			matched = matched || strings.Contains(strings.ToLower(strings.TrimSpace(networkAddress)), normalized)
+		}
+		if matched {
 			result = append(result, node)
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		leftExact := strings.EqualFold(strings.TrimSpace(result[i].Name), query) || strings.EqualFold(strings.TrimSpace(result[i].Address), query)
-		rightExact := strings.EqualFold(strings.TrimSpace(result[j].Name), query) || strings.EqualFold(strings.TrimSpace(result[j].Address), query)
+		leftExact := nodeSearchExact(result[i], query)
+		rightExact := nodeSearchExact(result[j], query)
 		if leftExact != rightExact {
 			return leftExact
 		}
@@ -461,6 +484,85 @@ func searchNodes(nodes []NodeSummary, query string) []NodeSummary {
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 	return result
+}
+
+func nodeSearchExact(node NodeSummary, query string) bool {
+	if strings.EqualFold(strings.TrimSpace(node.Name), query) || strings.EqualFold(strings.TrimSpace(node.Address), query) {
+		return true
+	}
+	for _, address := range node.NetworkAddresses {
+		if strings.EqualFold(strings.TrimSpace(address), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Controller) beginNodeActualize(ctx context.Context, callback *CallbackQuery, uuid string) error {
+	application, available := c.app.(NodeActualizeApplication)
+	if !available {
+		return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, uuid)
+	}
+	nodes, err := c.app.ListNodes(ctx)
+	if err != nil {
+		return c.renderNodeInventoryFailure(ctx, callback.Message.ChatID, callback.Message.ID)
+	}
+	var selected NodeSummary
+	for _, node := range nodes {
+		if node.UUID == uuid {
+			selected = node
+			break
+		}
+	}
+	if selected.UUID == "" {
+		return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, uuid)
+	}
+	if selected.Managed {
+		result, err := application.ActualizeNode(ctx, NodeActualizeInput{PanelID: selected.PanelID, NodeUUID: selected.UUID})
+		return c.renderNodeActualizeResult(ctx, callback.Message.ChatID, callback.Message.ID, selected.UUID, result, err)
+	}
+	nonce, err := c.nonce()
+	if err != nil {
+		return c.renderNodeInventoryFailure(ctx, callback.Message.ChatID, callback.Message.ID)
+	}
+	c.cancelExisting(ctx, callback.FromUserID)
+	c.putSession(&wizard{userID: callback.FromUserID, chatID: callback.Message.ChatID, nonce: nonce, state: stateAwaitingNodeActualizePassword, expiresAt: c.now().Add(c.ttl), statusMsgID: callback.Message.ID, actualizePanelID: selected.PanelID, actualizeNodeUUID: selected.UUID})
+	return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Legacy-нода: отправьте root-пароль. Он будет использован один раз для чтения netplan и применения firewall и не будет сохранён.", Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:o:" + selected.UUID}}}})
+}
+
+func (c *Controller) acceptNodeActualizePassword(ctx context.Context, message *Message, session *wizard) error {
+	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
+	active := c.takeSession(message.FromUserID, session.nonce, stateAwaitingNodeActualizePassword)
+	if active == nil {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	password := []byte(message.Text)
+	defer clearBytes(password)
+	application, ok := c.app.(NodeActualizeApplication)
+	if !ok || len(password) == 0 || len(password) > 1024 {
+		active.clear()
+		return c.showNodeCard(ctx, active.chatID, active.statusMsgID, active.actualizeNodeUUID)
+	}
+	chatID, statusMsgID, nodeUUID := active.chatID, active.statusMsgID, active.actualizeNodeUUID
+	result, err := application.ActualizeNode(ctx, NodeActualizeInput{PanelID: active.actualizePanelID, NodeUUID: nodeUUID, Password: password})
+	active.clear()
+	return c.renderNodeActualizeResult(ctx, chatID, statusMsgID, nodeUUID, result, err)
+}
+
+func (c *Controller) renderNodeActualizeResult(ctx context.Context, chatID int64, messageID int, uuid string, result NodeActualizeResult, actionErr error) error {
+	text := "Не удалось актуализировать ноду. Проверьте SSH-доступ и пароль."
+	if actionErr == nil {
+		firewall := "правила уже были актуальны"
+		if result.FirewallChanged {
+			firewall = "правила обновлены и проверены"
+		}
+		addresses := strings.Join(result.Addresses, ", ")
+		if addresses == "" {
+			addresses = "не найдены"
+		}
+		text = fmt.Sprintf("✅ %s актуализирована.\nIP из netplan: %s\nFirewall: %s.", safeLine(result.NodeName, 80), safeLine(addresses, 500), firewall)
+	}
+	return c.sendOrEdit(ctx, chatID, messageID, text, Keyboard{Inline: [][]Button{{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + uuid}}}})
 }
 
 func (c *Controller) beginNodeHostMove(ctx context.Context, callback *CallbackQuery, uuid string) error {

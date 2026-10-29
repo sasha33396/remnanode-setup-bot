@@ -76,6 +76,7 @@ type Config struct {
 	TelegramPollTimeout         time.Duration
 	TelegramSessionTTL          time.Duration
 	NodeMonitorInterval         time.Duration
+	NodeNetworkPollInterval     time.Duration
 	NodeCriticalAlertInterval   time.Duration
 	CertificateRenewBefore      time.Duration
 	CertificateRenewInterval    time.Duration
@@ -152,6 +153,7 @@ func load(lookup lookupFunc) (Config, error) {
 		TelegramPollTimeout:         30 * time.Second,
 		TelegramSessionTTL:          15 * time.Minute,
 		NodeMonitorInterval:         5 * time.Minute,
+		NodeNetworkPollInterval:     5 * time.Minute,
 		NodeCriticalAlertInterval:   15 * time.Minute,
 		CertificateRenewBefore:      30 * 24 * time.Hour,
 		CertificateRenewInterval:    12 * time.Hour,
@@ -223,6 +225,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"SSH_COMMAND_TIMEOUT", &cfg.SSHCommandTimeout}, {"NODE_CONNECT_TIMEOUT", &cfg.NodeConnectTimeout},
 		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
 		{"NODE_MONITOR_INTERVAL", &cfg.NodeMonitorInterval},
+		{"NODE_NETWORK_POLL_INTERVAL", &cfg.NodeNetworkPollInterval},
 		{"NODE_CRITICAL_ALERT_INTERVAL", &cfg.NodeCriticalAlertInterval},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},

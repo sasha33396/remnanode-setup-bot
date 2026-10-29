@@ -52,7 +52,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	} else {
 		credentials := sshclient.NewInitialCredentials(target.Address, "root", target.Password)
 		target.clear()
-		connection, err = s.legacySSH.ConnectInitial(ctx, "web:"+target.PanelID+":"+target.NodeUUID, credentials)
+		connection, err = s.legacySSH.ConnectInitial(ctx, "legacy:"+target.PanelID+":"+target.NodeUUID, credentials)
 	}
 	if err != nil {
 		s.config.Logger.Warn("web SSH connection failed", "panel_id", target.PanelID, "node_uuid", target.NodeUUID, "managed", target.Managed)

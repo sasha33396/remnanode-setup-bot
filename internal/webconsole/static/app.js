@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const state = { csrf: '', nodes: [], filter: 'all', query: '', selected: null, socket: null, terminal: null };
+  const state = { csrf: '', nodes: [], filter: 'all', query: '', selected: null, passwordAction: 'ssh', socket: null, terminal: null };
   const $ = (selector) => document.querySelector(selector);
   const nodesEl = $('#nodes');
   const notice = $('#notice');
@@ -32,7 +32,7 @@
     const visible = state.nodes.filter((node) => {
       if (state.filter === 'managed' && !node.managed) return false;
       if (state.filter === 'legacy' && node.managed) return false;
-      return !query || `${node.name} ${node.address} ${node.panelName}`.toLowerCase().includes(query);
+      return !query || `${node.name} ${node.address} ${(node.networkAddresses || []).join(' ')} ${node.panelName}`.toLowerCase().includes(query);
     });
     $('#total').textContent = state.nodes.length;
     $('#managed').textContent = state.nodes.filter((node) => node.managed).length;
@@ -42,8 +42,9 @@
       <article class="node-card">
         <div class="node-top"><div class="node-name" title="${escapeHTML(node.name)}">${escapeHTML(node.name)}</div><span class="status-dot ${escapeHTML(node.status)}" title="${escapeHTML(node.status)}"></span></div>
         <div class="node-address">${escapeHTML(node.address)}</div>
+        <div class="node-address">Netplan: ${escapeHTML((node.networkAddresses || []).join(', ') || 'ещё не опрошен')}</div>
         <div class="node-meta"><span class="badge ${node.managed ? 'managed' : 'legacy'}">${node.managed ? 'Актуальная' : 'Legacy'}</span><span class="badge">${node.onlineKnown ? `${node.online} онлайн` : 'онлайн неизвестен'}</span>${node.disabled ? '<span class="badge">выключена</span>' : ''}</div>
-        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div>
+        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Актуализировать</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div>
       </article>`).join('');
   }
 
@@ -62,6 +63,14 @@
     const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/ticket`;
     const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
     openTerminal(node, result.ticket);
+  }
+
+  async function actualizeNode(node, password = '') {
+    clearNotice();
+    const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/actualize`;
+    const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
+    await loadNodes();
+    showNotice(`${result.nodeName}: настройки актуализированы, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'уже актуален'}`);
   }
 
   function openTerminal(node, ticket) {
@@ -94,16 +103,24 @@
   }
 
   document.addEventListener('click', async (event) => {
+    const actualize = event.target.closest('.actualize');
+    if (actualize) {
+      const node = selectNode(actualize.dataset.panel, actualize.dataset.uuid); if (!node) return;
+      state.selected = node; state.passwordAction = 'actualize';
+      if (node.managed) { actualize.disabled = true; try { await actualizeNode(node); } catch (error) { showNotice(error.message); } finally { actualize.disabled = false; } }
+      else { $('#password-title').textContent = `Актуализация: ${node.name}`; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
+      return;
+    }
     const connect = event.target.closest('.connect');
     if (connect) {
       const node = selectNode(connect.dataset.panel, connect.dataset.uuid); if (!node) return;
-      state.selected = node;
+      state.selected = node; state.passwordAction = 'ssh';
       if (node.managed) { connect.disabled = true; try { await createTicket(node); } catch (error) { showNotice(error.message); } finally { connect.disabled = false; } }
       else { $('#password-title').textContent = node.name; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
     }
     if (event.target.matches('[data-close]')) { $('#password').value = ''; passwordDialog.close(); }
   });
-  $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('#password').value; $('#password').value = ''; passwordDialog.close(); try { await createTicket(state.selected, password); } catch (error) { showNotice(error.message); } });
+  $('#password-form').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('#password').value; $('#password').value = ''; passwordDialog.close(); try { if (state.passwordAction === 'actualize') await actualizeNode(state.selected, password); else await createTicket(state.selected, password); } catch (error) { showNotice(error.message); } });
   $('#terminal-close').addEventListener('click', closeTerminal);
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);

@@ -108,7 +108,7 @@ func TestNodesAreSeparatedByPanelAndPriority(t *testing.T) {
 func TestNodeSearchFindsByPartialNameAndIP(t *testing.T) {
 	nodes := []NodeSummary{
 		{PanelID: "hit", PanelName: "Hit", UUID: "00000000-0000-0000-0000-000000000001", Name: "PL-Primary", Address: "2.26.173.226", Connected: true},
-		{PanelID: "horda", PanelName: "Horda", UUID: "00000000-0000-0000-0000-000000000002", Name: "pl-backup", Address: "1.1.1.1", Connected: true},
+		{PanelID: "horda", PanelName: "Horda", UUID: "00000000-0000-0000-0000-000000000002", Name: "pl-backup", Address: "1.1.1.1", Connected: true, NetworkAddresses: []string{"198.51.100.25"}},
 	}
 	application := &fakeApplication{panels: []Panel{{ID: "hit", Name: "Hit"}, {ID: "horda", Name: "Horda"}}, nodes: nodes}
 	messenger := &fakeMessenger{}
@@ -134,6 +134,15 @@ func TestNodeSearchFindsByPartialNameAndIP(t *testing.T) {
 	results = edits[len(edits)-1]
 	if !strings.Contains(results.text, "Найдено: 1") || results.keyboard.Inline[0][0].CallbackData != "nodes:o:"+nodes[0].UUID {
 		t.Fatalf("IP search results = %q %#v", results.text, results.keyboard)
+	}
+
+	handleCallback(t, controller, "root-netplan", "nodes:root", root.message)
+	handleCallback(t, controller, "search-netplan", "nodes:search", root.message)
+	handleMessage(t, controller, 4, "198.51.100.25")
+	edits = messenger.editsSnapshot()
+	results = edits[len(edits)-1]
+	if !strings.Contains(results.text, "Найдено: 1") || results.keyboard.Inline[0][0].CallbackData != "nodes:o:"+nodes[1].UUID {
+		t.Fatalf("netplan IP search results = %q %#v", results.text, results.keyboard)
 	}
 }
 

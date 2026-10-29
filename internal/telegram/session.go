@@ -43,6 +43,7 @@ const (
 	stateAwaitingNodeMoveConfirmation
 	stateAwaitingNodeMovePassword
 	stateAwaitingNodeSearch
+	stateAwaitingNodeActualizePassword
 	stateSelectingBulkIPPanel
 	stateAwaitingBulkIPList
 	stateAwaitingBulkIPConfirmation
@@ -62,40 +63,42 @@ const (
 )
 
 type wizard struct {
-	userID           int64
-	chatID           int64
-	nonce            string
-	state            wizardState
-	expiresAt        time.Time
-	hosts            []Host
-	panels           []Panel
-	panel            Panel
-	selected         Host
-	nodeName         string
-	vpsIP            netip.Addr
-	password         []byte
-	preflight        PreflightResult
-	statusMsgID      int
-	ipTarget         NodeIPChangeTarget
-	dnsSyncTarget    NodeDNSSyncTarget
-	dnsSyncResult    string
-	nodeMoveTarget   NodeHostMoveTarget
-	serverIPProvider serverIPProvider
-	serverCurrentIP  netip.Addr
-	serverNewIP      netip.Addr
-	serverUpdateNode bool
-	bulkIPPlan       BulkNodeIPPlan
-	bulkIPResult     BulkNodeIPResult
-	bulkEnableNodes  bool
-	advancedBalancer bool
-	squads           []InternalSquad
-	balancerTags     []string
-	selectedSquad    InternalSquad
-	balancerTag      string
-	hostFQDN         string
-	egressIP         netip.Addr
-	dualIP           bool
-	expiryTimer      *time.Timer
+	userID            int64
+	chatID            int64
+	nonce             string
+	state             wizardState
+	expiresAt         time.Time
+	hosts             []Host
+	panels            []Panel
+	panel             Panel
+	selected          Host
+	nodeName          string
+	vpsIP             netip.Addr
+	password          []byte
+	preflight         PreflightResult
+	statusMsgID       int
+	ipTarget          NodeIPChangeTarget
+	dnsSyncTarget     NodeDNSSyncTarget
+	dnsSyncResult     string
+	nodeMoveTarget    NodeHostMoveTarget
+	actualizePanelID  string
+	actualizeNodeUUID string
+	serverIPProvider  serverIPProvider
+	serverCurrentIP   netip.Addr
+	serverNewIP       netip.Addr
+	serverUpdateNode  bool
+	bulkIPPlan        BulkNodeIPPlan
+	bulkIPResult      BulkNodeIPResult
+	bulkEnableNodes   bool
+	advancedBalancer  bool
+	squads            []InternalSquad
+	balancerTags      []string
+	selectedSquad     InternalSquad
+	balancerTag       string
+	hostFQDN          string
+	egressIP          netip.Addr
+	dualIP            bool
+	expiryTimer       *time.Timer
 }
 
 func (w *wizard) clone() *wizard {

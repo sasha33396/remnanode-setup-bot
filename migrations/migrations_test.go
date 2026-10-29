@@ -115,3 +115,21 @@ func TestAdvancedBalancerMigrationPersistsRecoveryIdentifiersWithoutSecrets(t *t
 		}
 	}
 }
+
+func TestNodeNetworkInventoryMigrationContainsNoCredentials(t *testing.T) {
+	contents, err := Files.ReadFile("000008_node_network_inventory.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"node_network_inventory", "panel_id", "node_uuid", "addresses", "updated_at"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("node network migration does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"password", "private_key", "token"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("node network migration contains forbidden secret field %q", forbidden)
+		}
+	}
+}

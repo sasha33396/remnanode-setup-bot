@@ -233,6 +233,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptNodeMovePassword(ctx, message, session)
 	case stateAwaitingNodeSearch:
 		return c.acceptNodeSearch(ctx, message, session)
+	case stateAwaitingNodeActualizePassword:
+		return c.acceptNodeActualizePassword(ctx, message, session)
 	default:
 		return c.sendExpired(ctx, message.ChatID)
 	}
@@ -373,6 +375,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.beginNodeCardServerIPChange(ctx, callback, action.uuid, serverIPProviderRoyal)
 		case "move_host":
 			return c.beginNodeHostMove(ctx, callback, action.uuid)
+		case "actualize":
+			return c.beginNodeActualize(ctx, callback, action.uuid)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {

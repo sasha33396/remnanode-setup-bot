@@ -65,6 +65,15 @@ the one-time terminal request, retained in clearable memory for at most one
 minute, and never persisted. `WEB_MAX_SESSIONS` and `WEB_TERMINAL_TIMEOUT`
 bound concurrent and long-running browser terminals.
 
+Managed Nodes are polled over the deployment key every
+`NODE_NETWORK_POLL_INTERVAL` (5 minutes by default). The inventory reads the
+interface `addresses` from `/etc/netplan/50-cloud-init.yaml`, persists only
+those non-secret IP addresses, and includes them in web and Telegram search.
+The **Актуализировать настройки ноды** action also reconciles and validates the
+complete firewall stage, including the IPv4/IPv6 TCP/UDP port 25 guard. For a
+Legacy Node the same action asks for a one-time root password; the password is
+cleared after SSH use and is never stored.
+
 Example NGINX location (TLS must already be configured on the virtual host):
 
 ```nginx
@@ -91,7 +100,7 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-Migrations `000001` through `000007` must be applied first. Startup verifies
+Migrations `000001` through `000008` must be applied first. Startup verifies
 PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
@@ -329,12 +338,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000004_production_recovery
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_targets.down.sql
