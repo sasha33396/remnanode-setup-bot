@@ -73,6 +73,19 @@
     showNotice(`${result.nodeName}: настройки актуализированы, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'уже актуален'}`);
   }
 
+  async function actualizeManagedNodes() {
+    const button = $('#actualize-managed');
+    if (!confirm('Актуализировать netplan и firewall на всех актуальных нодах?')) return;
+    clearNotice(); button.disabled = true; button.textContent = 'Актуализация…';
+    try {
+      const result = await request('/api/nodes/actualize-managed', { method: 'POST' });
+      await loadNodes();
+      const failures = (result.failures || []).slice(0, 5).map((item) => `${item.PanelName}: ${item.NodeName} (${item.Reason})`).join('; ');
+      showNotice(`Массовая актуализация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
+    } catch (error) { showNotice(error.message); }
+    finally { button.disabled = false; button.textContent = 'Актуализировать все'; }
+  }
+
   function openTerminal(node, ticket) {
     terminalDialog.showModal();
     $('#terminal-title').textContent = node.name;
@@ -124,6 +137,7 @@
   $('#terminal-close').addEventListener('click', closeTerminal);
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
+  $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
   $('#search').addEventListener('input', (event) => { state.query = event.target.value; render(); });
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; render(); }));
   $('#logout').addEventListener('click', async () => { try { await request('/logout', { method: 'POST' }); location.href = '/login'; } catch (error) { showNotice(error.message); } });

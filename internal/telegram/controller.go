@@ -377,6 +377,10 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.beginNodeHostMove(ctx, callback, action.uuid)
 		case "actualize":
 			return c.beginNodeActualize(ctx, callback, action.uuid)
+		case "actualize_all":
+			return c.confirmManagedNodesActualize(ctx, callback)
+		case "actualize_all_confirm":
+			return c.startManagedNodesActualize(ctx, callback)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {

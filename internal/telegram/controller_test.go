@@ -146,6 +146,27 @@ func TestNodeSearchFindsByPartialNameAndIP(t *testing.T) {
 	}
 }
 
+func TestManagedNodeBulkActualizeCallbacksAndResult(t *testing.T) {
+	for callback, want := range map[string]string{
+		"nodes:actualize-all":         "actualize_all",
+		"nodes:actualize-all-confirm": "actualize_all_confirm",
+	} {
+		parsed, ok := parseNodesCallback(callback)
+		if !ok || parsed.action != want {
+			t.Fatalf("parseNodesCallback(%q) = %#v, %t", callback, parsed, ok)
+		}
+	}
+	text := renderManagedNodesActualizeResult(ManagedNodesActualizeResult{
+		Total: 3, Updated: 2, Failed: 1, FirewallChanged: 1,
+		Failures: []ManagedNodeActualizeFailure{{PanelName: "Main", NodeName: "edge-3", Reason: "ssh_connect"}},
+	})
+	for _, expected := range []string{"Всего актуальных: 3", "Успешно: 2", "Ошибок: 1", "edge-3", "нет SSH-доступа"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("bulk result %q does not contain %q", text, expected)
+		}
+	}
+}
+
 func TestDisconnectedNodeIsIgnoredByLowOnlineClassification(t *testing.T) {
 	snapshots := classifyNodePanels(
 		[]Panel{{ID: "hit", Name: "Hit"}},

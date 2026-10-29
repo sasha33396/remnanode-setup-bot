@@ -70,6 +70,23 @@ func TestActualizeNodeRequiresSessionCSRFAndReturnsInventory(t *testing.T) {
 	}
 }
 
+func TestBulkActualizeManagedNodes(t *testing.T) {
+	server := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	if err := server.issueSessionCookie(recorder, session{UserID: 42, Name: "Operator"}); err != nil {
+		t.Fatal(err)
+	}
+	cookie := recorder.Result().Cookies()[0]
+	request := httptest.NewRequest(http.MethodPost, "https://nodes.example.com/api/nodes/actualize-managed", nil)
+	request.Header.Set("X-CSRF-Token", server.csrfToken(cookie.Value))
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"updated":1`) || !strings.Contains(response.Body.String(), `"firewallChanged":1`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -103,6 +120,10 @@ func (s staticNodes) ListNodes(context.Context) ([]telegram.NodeSummary, error) 
 
 func (s staticNodes) ActualizeNode(context.Context, telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
 	return telegram.NodeActualizeResult{NodeName: "Legacy", Addresses: []string{"198.51.100.25"}, FirewallChanged: true}, nil
+}
+
+func (s staticNodes) ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error) {
+	return telegram.ManagedNodesActualizeResult{Total: 1, Updated: 1, FirewallChanged: 1}, nil
 }
 
 type staticDeployments struct{ managedUUID string }

@@ -30,13 +30,16 @@ type NodeFirewallConfig struct {
 }
 
 type NodeMaintenance struct {
-	app        *TelegramApplication
-	store      repository.NodeNetworkStore
-	managedSSH *sshclient.Client
-	legacySSH  *sshclient.Client
-	firewall   map[string]NodeFirewallConfig
-	timeout    time.Duration
-	logger     *slog.Logger
+	app         *TelegramApplication
+	store       repository.NodeNetworkStore
+	managedSSH  *sshclient.Client
+	legacySSH   *sshclient.Client
+	firewall    map[string]NodeFirewallConfig
+	timeout     time.Duration
+	logger      *slog.Logger
+	nodeLocks   sync.Map
+	bulkMu      sync.Mutex
+	bulkRunning bool
 }
 
 func NewNodeMaintenance(app *TelegramApplication, store repository.NodeNetworkStore, managedSSH, legacySSH *sshclient.Client, firewall map[string]NodeFirewallConfig, timeout time.Duration, logger *slog.Logger) (*NodeMaintenance, error) {
@@ -64,6 +67,13 @@ func (a *TelegramApplication) ActualizeNode(ctx context.Context, input telegram.
 	return a.maintenance.ActualizeNode(ctx, input)
 }
 
+func (a *TelegramApplication) ActualizeManagedNodes(ctx context.Context) (telegram.ManagedNodesActualizeResult, error) {
+	if a == nil || a.maintenance == nil {
+		return telegram.ManagedNodesActualizeResult{}, errors.New("node maintenance is unavailable")
+	}
+	return a.maintenance.ActualizeManagedNodes(ctx)
+}
+
 func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
 	defer clear(input.Password)
 	panel, err := m.app.panel(input.PanelID)
@@ -85,6 +95,8 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if name == "" || err != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
 		return telegram.NodeActualizeResult{}, errors.New("node not found")
 	}
+	unlock := m.lockNode(input.PanelID, input.NodeUUID)
+	defer unlock()
 	connection, managed, err := m.connect(ctx, input.PanelID, input.NodeUUID, address.Unmap(), input.Password)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("SSH connection failed")
@@ -106,6 +118,129 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 		return telegram.NodeActualizeResult{}, err
 	}
 	return telegram.NodeActualizeResult{NodeName: name, Managed: managed, Addresses: addresses, FirewallChanged: changed}, nil
+}
+
+type managedActualizeTarget struct {
+	panelID      string
+	panelName    string
+	nodeUUID     string
+	nodeName     string
+	deploymentID string
+	address      netip.Addr
+}
+
+func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.ManagedNodesActualizeResult, error) {
+	m.bulkMu.Lock()
+	if m.bulkRunning {
+		m.bulkMu.Unlock()
+		return telegram.ManagedNodesActualizeResult{}, errors.New("managed Node bulk actualization is already running")
+	}
+	m.bulkRunning = true
+	m.bulkMu.Unlock()
+	defer func() {
+		m.bulkMu.Lock()
+		m.bulkRunning = false
+		m.bulkMu.Unlock()
+	}()
+
+	targets := make([]managedActualizeTarget, 0)
+	for _, panelID := range m.app.order {
+		panel := m.app.panels[panelID]
+		nodes, err := panel.Service.remnawave.GetNodes(ctx)
+		if err != nil {
+			return telegram.ManagedNodesActualizeResult{}, errors.New("load managed Nodes failed")
+		}
+		for _, node := range nodes {
+			item, err := m.app.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, node.UUID)
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return telegram.ManagedNodesActualizeResult{}, errors.New("classify managed Node failed")
+			}
+			address, parseErr := netip.ParseAddr(strings.TrimSpace(node.Address))
+			if parseErr != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+				address = netip.Addr{}
+			}
+			targets = append(targets, managedActualizeTarget{panelID: panelID, panelName: panel.Name, nodeUUID: node.UUID, nodeName: node.Name, deploymentID: item.ID, address: address.Unmap()})
+		}
+	}
+
+	type outcome struct {
+		changed bool
+		reason  string
+	}
+	outcomes := make([]outcome, len(targets))
+	semaphore := make(chan struct{}, nodeNetworkPollConcurrency)
+	var workers sync.WaitGroup
+	for index, target := range targets {
+		index, target := index, target
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				outcomes[index].reason = "cancelled"
+				return
+			}
+			outcomes[index].changed, outcomes[index].reason = m.actualizeManagedTarget(ctx, target)
+		}()
+	}
+	workers.Wait()
+
+	result := telegram.ManagedNodesActualizeResult{Total: len(targets)}
+	for index, target := range targets {
+		outcome := outcomes[index]
+		if outcome.reason == "" {
+			result.Updated++
+			if outcome.changed {
+				result.FirewallChanged++
+			}
+			continue
+		}
+		result.Failed++
+		result.Failures = append(result.Failures, telegram.ManagedNodeActualizeFailure{PanelName: target.panelName, NodeName: target.nodeName, Reason: outcome.reason})
+	}
+	m.logger.Info("managed node bulk actualization completed", slog.Int("total", result.Total), slog.Int("updated", result.Updated), slog.Int("failed", result.Failed), slog.Int("firewall_changed", result.FirewallChanged))
+	return result, nil
+}
+
+func (m *NodeMaintenance) actualizeManagedTarget(ctx context.Context, target managedActualizeTarget) (bool, string) {
+	if !target.address.IsValid() {
+		return false, "invalid_address"
+	}
+	unlock := m.lockNode(target.panelID, target.nodeUUID)
+	defer unlock()
+	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, target.deploymentID, target.address, "root")
+	if err != nil {
+		return false, "ssh_connect"
+	}
+	defer connection.Close()
+	addresses, err := readNetplanAddresses(ctx, connection, m.timeout)
+	if err != nil {
+		return false, "netplan_read"
+	}
+	config, ok := m.firewall[target.panelID]
+	if !ok {
+		return false, "firewall_config"
+	}
+	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout)
+	if err != nil {
+		return false, "firewall_reconcile"
+	}
+	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: target.panelID, NodeUUID: target.nodeUUID, Addresses: addresses}); err != nil {
+		return changed, "inventory_save"
+	}
+	return changed, ""
+}
+
+func (m *NodeMaintenance) lockNode(panelID, nodeUUID string) func() {
+	value, _ := m.nodeLocks.LoadOrStore(panelID+"\x00"+nodeUUID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
 }
 
 func (m *NodeMaintenance) connect(ctx context.Context, panelID, nodeUUID string, address netip.Addr, password []byte) (*sshclient.Connection, bool, error) {

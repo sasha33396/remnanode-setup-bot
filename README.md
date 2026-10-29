@@ -74,6 +74,12 @@ complete firewall stage, including the IPv4/IPv6 TCP/UDP port 25 guard. For a
 Legacy Node the same action asks for a one-time root password; the password is
 cleared after SSH use and is never stored.
 
+The web toolbar and Telegram Nodes menu also provide **Актуализировать все**.
+After confirmation it processes only managed Nodes, with at most eight SSH
+operations at once, and reports successful Nodes, failures, and how many
+firewalls required changes. A second bulk run is rejected while the first is
+active.
+
 Example NGINX location (TLS must already be configured on the virtual host):
 
 ```nginx
@@ -84,6 +90,8 @@ location / {
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
 }
 ```
 

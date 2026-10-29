@@ -34,6 +34,7 @@ type NodeProvider interface {
 
 type NodeActualizer interface {
 	ActualizeNode(context.Context, telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error)
+	ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error)
 }
 
 type DeploymentFinder interface {
@@ -317,11 +318,40 @@ func (s *Server) handleTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/nodes/actualize-managed" {
+		s.handleBulkActualize(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/actualize") {
 		s.handleActualize(w, r)
 		return
 	}
 	s.handleTicket(w, r)
+}
+
+func (s *Server) handleBulkActualize(w http.ResponseWriter, r *http.Request) {
+	_, cookie, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.validCSRF(r, cookie) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if s.actualizer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Актуализация нод недоступна"})
+		return
+	}
+	result, err := s.actualizer.ActualizeManagedNodes(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось запустить массовую актуализацию"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": result.Total, "updated": result.Updated, "failed": result.Failed,
+		"firewallChanged": result.FirewallChanged, "failures": result.Failures,
+	})
 }
 
 func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {

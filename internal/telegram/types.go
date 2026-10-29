@@ -139,6 +139,20 @@ type NodeActualizeResult struct {
 	FirewallChanged bool
 }
 
+type ManagedNodeActualizeFailure struct {
+	PanelName string
+	NodeName  string
+	Reason    string
+}
+
+type ManagedNodesActualizeResult struct {
+	Total           int
+	Updated         int
+	Failed          int
+	FirewallChanged int
+	Failures        []ManagedNodeActualizeFailure
+}
+
 // NodeIPChangeTarget is an operator-safe projection used by the IP-change
 // wizard. UUID is retained only in transient server-side state.
 type NodeIPChangeTarget struct {
@@ -455,6 +469,7 @@ type NodeIPApplication interface {
 
 type NodeActualizeApplication interface {
 	ActualizeNode(context.Context, NodeActualizeInput) (NodeActualizeResult, error)
+	ActualizeManagedNodes(context.Context) (ManagedNodesActualizeResult, error)
 }
 
 // BulkNodeIPApplication updates Remnawave and DNS from an operator-supplied

@@ -133,6 +133,9 @@ func (c *Controller) showNodePanels(ctx context.Context, chatID int64, messageID
 	builder.WriteString("📡 Ноды\nВыберите Remnawave-панель. Число на кнопке — общее количество нод.")
 	rows := make([][]Button, 0, len(snapshots)+1)
 	rows = append(rows, []Button{{Text: "🔎 Найти ноду", CallbackData: "nodes:search"}})
+	if _, available := c.app.(NodeActualizeApplication); available {
+		rows = append(rows, []Button{{Text: "🛡 Актуализировать все актуальные", CallbackData: "nodes:actualize-all"}})
+	}
 	for index, snapshot := range snapshots {
 		rows = append(rows, []Button{{Text: fmt.Sprintf("%s — %d", safeLine(snapshot.Panel.Name, 42), len(snapshot.All)), CallbackData: fmt.Sprintf("nodes:p:%d", index)}})
 	}
@@ -364,6 +367,12 @@ func parseNodesCallback(data string) (nodesCallback, bool) {
 	if len(parts) == 2 && parts[0] == "nodes" && parts[1] == "search" {
 		return nodesCallback{action: "search"}, true
 	}
+	if len(parts) == 2 && parts[0] == "nodes" && parts[1] == "actualize-all" {
+		return nodesCallback{action: "actualize_all"}, true
+	}
+	if len(parts) == 2 && parts[0] == "nodes" && parts[1] == "actualize-all-confirm" {
+		return nodesCallback{action: "actualize_all_confirm"}, true
+	}
 	if len(parts) == 3 && parts[0] == "nodes" && parts[1] == "p" {
 		panel, err := strconv.Atoi(parts[2])
 		return nodesCallback{action: "panel", panelIndex: panel}, err == nil && panel >= 0
@@ -528,6 +537,85 @@ func (c *Controller) beginNodeActualize(ctx context.Context, callback *CallbackQ
 	c.cancelExisting(ctx, callback.FromUserID)
 	c.putSession(&wizard{userID: callback.FromUserID, chatID: callback.Message.ChatID, nonce: nonce, state: stateAwaitingNodeActualizePassword, expiresAt: c.now().Add(c.ttl), statusMsgID: callback.Message.ID, actualizePanelID: selected.PanelID, actualizeNodeUUID: selected.UUID})
 	return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Legacy-нода: отправьте root-пароль. Он будет использован один раз для чтения netplan и применения firewall и не будет сохранён.", Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:o:" + selected.UUID}}}})
+}
+
+func (c *Controller) confirmManagedNodesActualize(ctx context.Context, callback *CallbackQuery) error {
+	nodes, err := c.app.ListNodes(ctx)
+	if err != nil {
+		return c.renderNodeInventoryFailure(ctx, callback.Message.ChatID, callback.Message.ID)
+	}
+	managed := 0
+	for _, node := range nodes {
+		if node.Managed {
+			managed++
+		}
+	}
+	if managed == 0 {
+		return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, "Актуальные ноды не найдены.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К нодам", CallbackData: "nodes:root"}}}})
+	}
+	text := fmt.Sprintf("⚠️ Актуализировать %d актуальных нод?\n\nДля каждой ноды будут прочитаны IP из netplan, проверены и при необходимости применены полные правила firewall, включая блокировку порта 25.", managed)
+	return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, text, Keyboard{Inline: [][]Button{
+		{{Text: "✅ Запустить", CallbackData: "nodes:actualize-all-confirm"}},
+		{{Text: "❌ Отмена", CallbackData: "nodes:root"}},
+	}})
+}
+
+func (c *Controller) startManagedNodesActualize(ctx context.Context, callback *CallbackQuery) error {
+	application, available := c.app.(NodeActualizeApplication)
+	if !available {
+		return c.renderNodeInventoryFailure(ctx, callback.Message.ChatID, callback.Message.ID)
+	}
+	chatID, messageID := callback.Message.ChatID, callback.Message.ID
+	if err := c.sendOrEdit(ctx, chatID, messageID, "⏳ Массовая актуализация запущена. Проверяю netplan и firewall на актуальных нодах…", Keyboard{}); err != nil {
+		return err
+	}
+	runCtx := context.WithoutCancel(ctx)
+	c.workers.Add(1)
+	go func() {
+		defer c.workers.Done()
+		result, err := application.ActualizeManagedNodes(runCtx)
+		if err != nil {
+			_ = c.sendOrEdit(runCtx, chatID, messageID, "❌ Массовую актуализацию запустить не удалось или она уже выполняется.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К нодам", CallbackData: "nodes:root"}}}})
+			return
+		}
+		_ = c.sendOrEdit(runCtx, chatID, messageID, renderManagedNodesActualizeResult(result), Keyboard{Inline: [][]Button{{{Text: "⬅️ К нодам", CallbackData: "nodes:root"}}}})
+	}()
+	return nil
+}
+
+func renderManagedNodesActualizeResult(result ManagedNodesActualizeResult) string {
+	text := fmt.Sprintf("✅ Массовая актуализация завершена.\nВсего актуальных: %d\nУспешно: %d\nОшибок: %d\nFirewall изменён: %d", result.Total, result.Updated, result.Failed, result.FirewallChanged)
+	if len(result.Failures) == 0 {
+		return text
+	}
+	text += "\n\nПервые ошибки:"
+	limit := len(result.Failures)
+	if limit > 10 {
+		limit = 10
+	}
+	for _, failure := range result.Failures[:limit] {
+		text += fmt.Sprintf("\n• %s / %s: %s", safeLine(failure.PanelName, 60), safeLine(failure.NodeName, 80), managedNodeActualizeReason(failure.Reason))
+	}
+	return truncateUTF8(text, maxMessageBytes)
+}
+
+func managedNodeActualizeReason(reason string) string {
+	switch reason {
+	case "invalid_address":
+		return "некорректный адрес"
+	case "ssh_connect":
+		return "нет SSH-доступа"
+	case "netplan_read":
+		return "не прочитан netplan"
+	case "firewall_config":
+		return "нет конфигурации firewall"
+	case "firewall_reconcile":
+		return "ошибка применения firewall"
+	case "inventory_save":
+		return "не сохранён список IP"
+	default:
+		return "операция отменена"
+	}
 }
 
 func (c *Controller) acceptNodeActualizePassword(ctx context.Context, message *Message, session *wizard) error {
