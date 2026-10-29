@@ -14,6 +14,14 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:?TELEGRAM_ALLOWED_USERS is required}
+      WEB_ENABLED: ${WEB_ENABLED:-false}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-}
+      WEB_ADDR: :8081
+      WEB_SESSION_SECRET: ${WEB_SESSION_SECRET:-}
+      WEB_SESSION_TTL: ${WEB_SESSION_TTL:-12h}
+      WEB_TERMINAL_TIMEOUT: ${WEB_TERMINAL_TIMEOUT:-2h}
+      WEB_MAX_SESSIONS: ${WEB_MAX_SESSIONS:-4}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
       PANELS_CONFIG_FILE: "${PANELS_CONFIG_FILE:-}"
       PANELS_JSON: "${PANELS_JSON:-}"
       REMNAWAVE_URL: ${REMNAWAVE_URL:-}
@@ -55,6 +63,7 @@ services:
       - ./config:/etc/remnanode-setup-bot:ro
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
+      - "127.0.0.1:${WEB_PORT:-8081}:8081"
     depends_on:
       postgres:
         condition: service_healthy

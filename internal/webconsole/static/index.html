@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Remnanode Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" integrity="sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP" crossorigin="anonymous">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark small">R</span><span>Remnanode Console</span></div>
+    <div class="top-actions"><span id="operator" class="operator"></span><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
+  </header>
+  <main class="shell">
+    <section class="hero">
+      <div><p class="eyebrow">ИНВЕНТАРЬ</p><h1>Ноды</h1><p class="muted">Актуальные ноды используют deploy SSH key. Для legacy-ноды пароль запрашивается только перед подключением.</p></div>
+      <div class="stats"><div><span id="total">—</span><small>Всего</small></div><div><span id="managed">—</span><small>Актуальных</small></div><div><span id="legacy">—</span><small>Legacy</small></div></div>
+    </section>
+    <section class="toolbar">
+      <input id="search" class="search" type="search" placeholder="Поиск по имени, IP или панели">
+      <div class="filters" role="group"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="managed">Актуальные</button><button class="filter" data-filter="legacy">Legacy</button></div>
+    </section>
+    <div id="notice" class="notice hidden"></div>
+    <section id="nodes" class="node-grid" aria-live="polite"></section>
+  </main>
+
+  <dialog id="password-dialog" class="dialog">
+    <form id="password-form" method="dialog">
+      <p class="eyebrow">LEGACY SSH</p><h2 id="password-title">Подключение</h2>
+      <p class="muted">Пароль не записывается в базу и удаляется из памяти сервера сразу после попытки подключения.</p>
+      <label>Root-пароль<input id="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button type="submit" class="button primary">Подключиться</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="terminal-dialog" class="terminal-dialog">
+    <div class="terminal-head"><div><strong id="terminal-title">SSH</strong><span id="terminal-subtitle"></span></div><button id="terminal-close" class="icon-button" aria-label="Закрыть">×</button></div>
+    <div id="terminal"></div>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js" integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/" crossorigin="anonymous"></script>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

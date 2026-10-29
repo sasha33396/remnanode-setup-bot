@@ -48,6 +48,40 @@ The optional `HEALTH_ADDR` environment variable controls the local HTTP bind
 address and defaults to `:8080`. Docker Compose sets it automatically.
 For Compose, `DATABASE_URL` must use `postgres` as the database hostname.
 
+### Web console
+
+Set `WEB_ENABLED=true`, `WEB_PUBLIC_URL=https://nodes.example.com`,
+`TELEGRAM_BOT_USERNAME`, and a random `WEB_SESSION_SECRET` of at least 32
+characters. The Compose service listens on loopback `WEB_PORT` (8081 by
+default); publish it through an HTTPS reverse proxy with WebSocket upgrade
+support. Register the public origin for the bot in @BotFather (`/setdomain` or
+Login Widget settings).
+
+Only IDs already present in `TELEGRAM_ALLOWED_USERS` may sign in. The inventory
+marks Nodes backed by a deployment row as **Актуальная** and Remnawave-only
+Nodes as **Legacy**. Actual Nodes authenticate with the installed deployment
+key and their pinned SSH host key. A legacy root password is accepted only in
+the one-time terminal request, retained in clearable memory for at most one
+minute, and never persisted. `WEB_MAX_SESSIONS` and `WEB_TERMINAL_TIMEOUT`
+bound concurrent and long-running browser terminals.
+
+Example NGINX location (TLS must already be configured on the virtual host):
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+Generate the session secret with `openssl rand -base64 48`. Do not expose the
+container port directly to the Internet: secure cookies and Telegram callback
+validation intentionally require the configured HTTPS origin.
+
 ## Run locally
 
 Export all variables listed in `.env.example`, plus a PostgreSQL connection URL

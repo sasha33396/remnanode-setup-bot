@@ -118,4 +118,9 @@ func TestFirewallUsesConfiguredSourcesAndReplacesStaleManagedRules(t *testing.T)
 	if !strings.Contains(apply, `ufw --force delete "$number"`) {
 		t.Fatal("firewall apply cannot remove a stale deployer-managed rule")
 	}
+	for _, required := range []string{"table inet smtp_guard", "hook input priority -20", "hook output priority -20", "hook forward priority -20", "tcp dport 25 counter drop", "udp dport 25 counter drop", "smtp-guard.service", "nft -c -f"} {
+		if !strings.Contains(inspect+apply, required) {
+			t.Fatalf("SMTP guard does not contain %q", required)
+		}
+	}
 }

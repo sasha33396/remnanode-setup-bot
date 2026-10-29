@@ -27,6 +27,7 @@ import (
 	"remnanode-setup-bot/internal/royalip"
 	sshclient "remnanode-setup-bot/internal/ssh"
 	"remnanode-setup-bot/internal/telegram"
+	"remnanode-setup-bot/internal/webconsole"
 )
 
 func main() { os.Exit(run()) }
@@ -38,7 +39,7 @@ func run() int {
 		bootstrapLogger.Error("configuration validation failed", slog.Any("error", err))
 		return 1
 	}
-	secrets := []string{cfg.TelegramBotToken, cfg.RemnawaveToken, cfg.DNSBalancerToken, cfg.CloudflareAPIToken, cfg.DatabaseURL}
+	secrets := []string{cfg.TelegramBotToken, cfg.RemnawaveToken, cfg.DNSBalancerToken, cfg.CloudflareAPIToken, cfg.DatabaseURL, cfg.WebSessionSecret}
 	for _, panel := range cfg.Panels {
 		secrets = append(secrets, panel.RemnawaveToken, panel.DNSBalancerToken, panel.CloudflareAPIToken)
 	}
@@ -249,6 +250,19 @@ func run() int {
 		return 1
 	}
 	defer func() { controller.Close(); controller.Wait() }()
+	var webServer *webconsole.Server
+	if cfg.WebEnabled {
+		webServer, err = webconsole.New(webconsole.Config{
+			Addr: cfg.WebAddr, PublicURL: cfg.WebPublicURL, BotToken: cfg.TelegramBotToken,
+			BotUsername: cfg.TelegramBotUsername, SessionSecret: cfg.WebSessionSecret,
+			SessionTTL: cfg.WebSessionTTL, TerminalTimeout: cfg.WebTerminalTimeout,
+			MaxSessions: cfg.WebMaxSessions, AllowedUsers: cfg.TelegramAllowedUsers, Logger: logger,
+		}, application, repository, ssh, serverIPSSH)
+		if err != nil {
+			logger.Error("web console initialization failed")
+			return 1
+		}
+	}
 
 	healthServer := health.NewServerWithOptions(cfg.HealthAddr, logger, func(checkCtx context.Context) error {
 		if err := pool.Ping(checkCtx); err != nil {
@@ -260,11 +274,14 @@ func run() int {
 	group.Go(func() error { return healthServer.Run(runCtx) })
 	group.Go(func() error { return bot.Run(runCtx, controller) })
 	group.Go(func() error { return nodeMonitor.Run(runCtx) })
+	if webServer != nil {
+		group.Go(func() error { return webServer.Run(runCtx) })
+	}
 	for _, manager := range certificateManagers {
 		manager := manager
 		group.Go(func() error { return manager.Run(runCtx) })
 	}
-	logger.Info("deployer started", slog.String("health_addr", cfg.HealthAddr), slog.Int("panels", len(cfg.Panels)), slog.Int("recovered_jobs", recoveredJobs))
+	logger.Info("deployer started", slog.String("health_addr", cfg.HealthAddr), slog.Bool("web_enabled", cfg.WebEnabled), slog.Int("panels", len(cfg.Panels)), slog.Int("recovered_jobs", recoveredJobs))
 	if err := group.Wait(); err != nil && ctx.Err() == nil {
 		logger.Error("deployer stopped with an error", slog.Any("error", err))
 		return 1

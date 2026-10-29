@@ -51,6 +51,42 @@ func TestLoadNodeMonitorOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadWebConsoleConfiguration(t *testing.T) {
+	values := validValues()
+	values["WEB_ENABLED"] = "true"
+	values["WEB_ADDR"] = ":9090"
+	values["WEB_PUBLIC_URL"] = "https://nodes.example.com/"
+	values["WEB_SESSION_SECRET"] = strings.Repeat("s", 32)
+	values["TELEGRAM_BOT_USERNAME"] = "@node_setup_bot"
+	values["WEB_SESSION_TTL"] = "6h"
+	values["WEB_TERMINAL_TIMEOUT"] = "45m"
+	values["WEB_MAX_SESSIONS"] = "8"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WebEnabled || cfg.WebAddr != ":9090" || cfg.WebPublicURL != "https://nodes.example.com" || cfg.TelegramBotUsername != "node_setup_bot" || cfg.WebSessionTTL != 6*time.Hour || cfg.WebTerminalTimeout != 45*time.Minute || cfg.WebMaxSessions != 8 {
+		t.Fatalf("web configuration = %#v", cfg)
+	}
+}
+
+func TestLoadRejectsUnsafeWebConsoleConfiguration(t *testing.T) {
+	values := validValues()
+	values["WEB_ENABLED"] = "true"
+	values["WEB_PUBLIC_URL"] = "http://nodes.example.com/path"
+	values["WEB_SESSION_SECRET"] = "short"
+	values["TELEGRAM_BOT_USERNAME"] = "invalid user"
+	_, err := load(mapLookup(values))
+	if err == nil {
+		t.Fatal("load() error = nil")
+	}
+	for _, name := range []string{"WEB_PUBLIC_URL", "WEB_SESSION_SECRET", "TELEGRAM_BOT_USERNAME"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not mention %s", err, name)
+		}
+	}
+}
+
 func TestLoadMultiplePanelsFromYAMLFile(t *testing.T) {
 	values := validValues()
 	for _, name := range []string{"REMNAWAVE_URL", "REMNAWAVE_TOKEN", "DNS_BALANCER_URL", "DNS_BALANCER_TOKEN", "CF_API_TOKEN"} {

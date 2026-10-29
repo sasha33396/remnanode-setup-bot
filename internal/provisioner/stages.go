@@ -246,15 +246,86 @@ func firewallCommands(panelIP, metricsIP string) (string, string, string) {
     status=$(ufw status numbered)
 fi`, rule.marker, rule.expected, rule.marker, rule.command))
 	}
-	check := "status=$(ufw status numbered 2>/dev/null || true); if " + strings.Join(checks, " && ") + ` && printf '%s\n' "$status" | grep -q '^Status: active'; then printf ready; else printf pending; fi`
+	smtpGuardCheck := `systemctl is-enabled --quiet smtp-guard.service 2>/dev/null &&
+systemctl is-active --quiet smtp-guard.service 2>/dev/null &&
+nft list chain inet smtp_guard input 2>/dev/null | grep -Eq 'hook input priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
+nft list chain inet smtp_guard output 2>/dev/null | grep -Eq 'hook output priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
+nft list chain inet smtp_guard forward 2>/dev/null | grep -Eq 'hook forward priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
+nft list table inet smtp_guard 2>/dev/null | grep -Fq 'tcp dport 25 counter packets' &&
+nft list table inet smtp_guard 2>/dev/null | grep -Fq 'udp dport 25 counter packets'`
+	check := "status=$(ufw status numbered 2>/dev/null || true); if " + strings.Join(checks, " && ") + ` && printf '%s\n' "$status" | grep -q '^Status: active' &&
+` + smtpGuardCheck + `; then printf ready; else printf pending; fi`
 	applyCommand := `set -eu
 export DEBIAN_FRONTEND=noninteractive
-if ! command -v ufw >/dev/null 2>&1; then apt-get update; apt-get install -y ufw; fi
+if ! command -v ufw >/dev/null 2>&1 || ! command -v nft >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y ufw nftables
+fi
 if ! ufw show added | grep -Fq 'deployer-ssh'; then ufw allow 22/tcp comment 'deployer-ssh'; fi
 ufw --force enable
 status=$(ufw status numbered)
 ` + strings.Join(apply, "\n") + `
-true`
+
+# SMTP GUARD: block port 25 for IPv4/IPv6, TCP/UDP and every traffic direction.
+install -d -m 0755 /etc/nftables.d /usr/local/sbin
+cat > /etc/nftables.d/smtp-guard.nft <<'NFT'
+table inet smtp_guard {
+    chain input {
+        type filter hook input priority -20; policy accept;
+        tcp dport 25 counter drop
+        udp dport 25 counter drop
+    }
+
+    chain output {
+        type filter hook output priority -20; policy accept;
+        tcp dport 25 counter drop
+        udp dport 25 counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority -20; policy accept;
+        tcp dport 25 counter drop
+        udp dport 25 counter drop
+    }
+}
+NFT
+
+cat > /usr/local/sbin/apply-smtp-guard <<'SH'
+#!/bin/sh
+set -eu
+CONFIG=/etc/nftables.d/smtp-guard.nft
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+if nft list table inet smtp_guard >/dev/null 2>&1; then
+    echo "delete table inet smtp_guard" > "$TMP"
+fi
+cat "$CONFIG" >> "$TMP"
+nft -c -f "$TMP"
+nft -f "$TMP"
+SH
+chmod 0750 /usr/local/sbin/apply-smtp-guard
+
+cat > /etc/systemd/system/smtp-guard.service <<'UNIT'
+[Unit]
+Description=SMTP Port 25 Firewall Guard
+After=local-fs.target ufw.service nftables.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/apply-smtp-guard
+ExecReload=/usr/local/sbin/apply-smtp-guard
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable smtp-guard.service
+systemctl restart smtp-guard.service
+
+` + smtpGuardCheck
 	return check, applyCommand, check
 }
 

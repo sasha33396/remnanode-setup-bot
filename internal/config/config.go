@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/mail"
 	"net/netip"
 	"net/url"
@@ -44,6 +45,7 @@ const (
 	defaultXraySNIRef       = "v0.1.0-external"
 	defaultACMEDirectory    = "https://acme-v02.api.letsencrypt.org/directory"
 	defaultCertificateStore = "/var/lib/deployer/certificates"
+	defaultWebAddr          = ":8081"
 )
 
 // Config contains the deployer's startup configuration. Callers must not log
@@ -84,6 +86,14 @@ type Config struct {
 	MaxCertificateDistributions int
 	NodeMonitorConfirmations    int
 	NodeCriticalOnlineThreshold int
+	WebEnabled                  bool
+	WebAddr                     string
+	WebPublicURL                string
+	WebSessionSecret            string
+	WebSessionTTL               time.Duration
+	WebTerminalTimeout          time.Duration
+	WebMaxSessions              int
+	TelegramBotUsername         string
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -152,6 +162,10 @@ func load(lookup lookupFunc) (Config, error) {
 		MaxCertificateDistributions: 4,
 		NodeMonitorConfirmations:    2,
 		NodeCriticalOnlineThreshold: 20,
+		WebAddr:                     defaultWebAddr,
+		WebSessionTTL:               12 * time.Hour,
+		WebTerminalTimeout:          2 * time.Hour,
+		WebMaxSessions:              4,
 	}
 	remnaAPIIP := legacyRequired("REMNA_API_IP")
 	if remnaAPIIP != "" {
@@ -180,6 +194,26 @@ func load(lookup lookupFunc) (Config, error) {
 	if value, ok := lookup("CERTIFICATE_STORE_PATH"); ok && strings.TrimSpace(value) != "" {
 		cfg.CertificateStorePath = strings.TrimSpace(value)
 	}
+	if value, ok := lookup("WEB_ENABLED"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			validationErrors = append(validationErrors, errors.New("WEB_ENABLED must be true or false"))
+		} else {
+			cfg.WebEnabled = parsed
+		}
+	}
+	if value, ok := lookup("WEB_ADDR"); ok && strings.TrimSpace(value) != "" {
+		cfg.WebAddr = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("WEB_PUBLIC_URL"); ok {
+		cfg.WebPublicURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+	if value, ok := lookup("WEB_SESSION_SECRET"); ok {
+		cfg.WebSessionSecret = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("TELEGRAM_BOT_USERNAME"); ok {
+		cfg.TelegramBotUsername = strings.TrimPrefix(strings.TrimSpace(value), "@")
+	}
 
 	durations := []struct {
 		name   string
@@ -193,6 +227,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
 		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
+		{"WEB_SESSION_TTL", &cfg.WebSessionTTL}, {"WEB_TERMINAL_TIMEOUT", &cfg.WebTerminalTimeout},
 	}
 	for _, item := range durations {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -213,6 +248,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"MAX_CERTIFICATE_DISTRIBUTIONS", &cfg.MaxCertificateDistributions, 32},
 		{"NODE_MONITOR_CONFIRMATIONS", &cfg.NodeMonitorConfirmations, 10},
 		{"NODE_CRITICAL_ONLINE_THRESHOLD", &cfg.NodeCriticalOnlineThreshold, 100000},
+		{"WEB_MAX_SESSIONS", &cfg.WebMaxSessions, 100},
 	}
 	for _, item := range integers {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -261,6 +297,21 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 	if !validPinnedRef(cfg.XraySNIRef) {
 		validationErrors = append(validationErrors, errors.New("XRAY_SNI_REF must be a pinned tag or commit, not a branch HEAD"))
+	}
+	if cfg.WebEnabled {
+		if _, _, err := net.SplitHostPort(cfg.WebAddr); err != nil {
+			validationErrors = append(validationErrors, errors.New("WEB_ADDR must be a valid listen address"))
+		}
+		publicURL, err := url.Parse(cfg.WebPublicURL)
+		if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" || publicURL.User != nil || (publicURL.Path != "" && publicURL.Path != "/") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+			validationErrors = append(validationErrors, errors.New("WEB_PUBLIC_URL must be an origin-only HTTPS URL"))
+		}
+		if len(cfg.WebSessionSecret) < 32 {
+			validationErrors = append(validationErrors, errors.New("WEB_SESSION_SECRET must contain at least 32 characters"))
+		}
+		if !validTelegramUsername(cfg.TelegramBotUsername) {
+			validationErrors = append(validationErrors, errors.New("TELEGRAM_BOT_USERNAME must be a valid bot username"))
+		}
 	}
 
 	if len(validationErrors) > 0 {
@@ -496,4 +547,17 @@ func validURL(value string, database bool) bool {
 		return parsed.Scheme == "postgres" || parsed.Scheme == "postgresql"
 	}
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
+func validTelegramUsername(value string) bool {
+	if len(value) < 5 || len(value) > 32 || !strings.HasSuffix(strings.ToLower(value), "bot") {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
