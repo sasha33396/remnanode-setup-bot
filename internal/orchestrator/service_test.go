@@ -84,6 +84,9 @@ func TestAdoptLegacyNodeRunsStandardWorkflowWithoutCreatingDuplicateNode(t *test
 	if fixture.vps.provisionCalls != 1 || fixture.remnawave.createCalls != 0 {
 		t.Fatalf("side effects: provision=%d create=%d", fixture.vps.provisionCalls, fixture.remnawave.createCalls)
 	}
+	if !fixture.vps.preflightAllowedExisting {
+		t.Fatal("legacy adoption did not enable existing-installation preflight")
+	}
 	managed, err := fixture.repo.FindDeploymentByPanelNodeUUID(context.Background(), "default", testNodeUUID)
 	if err != nil || managed.ID != result.ID {
 		t.Fatalf("managed binding = %#v, %v", managed, err)
@@ -1342,14 +1345,15 @@ func (f *fakeRemnawave) UpdateNodeProfile(_ context.Context, input remnawave.Upd
 type fakeVPS struct {
 	mu sync.Mutex
 
-	events           *eventLog
-	preflightResult  provisioner.PreflightResult
-	preflightErr     error
-	provisionErr     error
-	provisionCalls   int
-	secret           []byte
-	provisionStarted chan struct{}
-	provisionRelease chan struct{}
+	events                   *eventLog
+	preflightResult          provisioner.PreflightResult
+	preflightErr             error
+	provisionErr             error
+	provisionCalls           int
+	secret                   []byte
+	provisionStarted         chan struct{}
+	provisionRelease         chan struct{}
+	preflightAllowedExisting bool
 }
 
 type limitedVPS struct {
@@ -1389,7 +1393,8 @@ func (v *limitedVPS) maximum() int {
 	return v.maxSeen
 }
 
-func (f *fakeVPS) Preflight(context.Context, PreflightVPSInput) (provisioner.PreflightResult, error) {
+func (f *fakeVPS) Preflight(_ context.Context, input PreflightVPSInput) (provisioner.PreflightResult, error) {
+	f.preflightAllowedExisting = input.AllowExistingInstallation
 	f.events.add("vps.preflight")
 	return f.preflightResult, f.preflightErr
 }

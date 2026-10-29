@@ -65,7 +65,9 @@ func (v *SSHProvisioner) Preflight(ctx context.Context, input PreflightVPSInput)
 		return provisioner.PreflightResult{}, errors.New("initial SSH connection failed")
 	}
 	defer connection.Close()
-	check, err := provisioner.NewPreflight(connection, v.config.Preflight)
+	requirements := v.config.Preflight
+	requirements.AllowExistingInstallation = input.AllowExistingInstallation
+	check, err := provisioner.NewPreflight(connection, requirements)
 	if err != nil {
 		return provisioner.PreflightResult{}, errors.New("create VPS preflight failed")
 	}

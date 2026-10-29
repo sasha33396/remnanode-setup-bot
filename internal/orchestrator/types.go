@@ -68,9 +68,10 @@ type VPSOperator interface {
 }
 
 type PreflightVPSInput struct {
-	DeploymentID string
-	Address      netip.Addr
-	Password     []byte
+	DeploymentID              string
+	Address                   netip.Addr
+	Password                  []byte
+	AllowExistingInstallation bool
 }
 
 type ProvisionVPSInput struct {

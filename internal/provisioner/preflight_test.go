@@ -84,6 +84,56 @@ port_9443=false`
 	}
 }
 
+func TestAdoptionPreflightAllowsPortsBackedByExistingComponents(t *testing.T) {
+	ports := `port_22=true
+port_443=true
+port_2222=true
+port_9100=true
+port_9200=true
+port_9443=true`
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		systemInfoCommand:     {stdout: validSystemOutput},
+		componentStateCommand: {stdout: "docker=true\nremnanode_directory=true\nxray_sni_directory=true\nnode_exporter_active=true"},
+		containerListCommand:  {stdout: "remnanode\nsnisite\nspeedtest-exporter"},
+		portStateCommand:      {stdout: ports},
+	}}
+	preflight, _ := NewPreflight(runner, Requirements{AllowExistingInstallation: true})
+	result, err := preflight.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed() {
+		t.Fatalf("adoption preflight did not pass: %#v", result.FatalFailures)
+	}
+	for _, port := range []string{"PORT_443_USED_BY_EXISTING_COMPONENT", "PORT_2222_USED_BY_EXISTING_COMPONENT", "PORT_9100_USED_BY_EXISTING_COMPONENT", "PORT_9200_USED_BY_EXISTING_COMPONENT", "PORT_9443_USED_BY_EXISTING_COMPONENT"} {
+		if !hasIssue(result.Warnings, port) {
+			t.Errorf("warnings = %#v, missing %s", result.Warnings, port)
+		}
+	}
+}
+
+func TestAdoptionPreflightStillRejectsUnexplainedOccupiedPort(t *testing.T) {
+	ports := `port_22=true
+port_443=true
+port_2222=false
+port_9100=false
+port_9200=false
+port_9443=false`
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		systemInfoCommand:     {stdout: validSystemOutput},
+		componentStateCommand: {stdout: "docker=false\nremnanode_directory=false\nxray_sni_directory=false\nnode_exporter_active=false"},
+		portStateCommand:      {stdout: ports},
+	}}
+	preflight, _ := NewPreflight(runner, Requirements{AllowExistingInstallation: true})
+	result, err := preflight.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Passed() || !hasIssue(result.FatalFailures, "PORT_443_OCCUPIED") {
+		t.Fatalf("fatal failures = %#v", result.FatalFailures)
+	}
+}
+
 func TestPreflightValidatesRootOSArchitectureAndResources(t *testing.T) {
 	output := `effective_uid=1000
 effective_user=ubuntu

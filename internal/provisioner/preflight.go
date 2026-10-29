@@ -26,7 +26,8 @@ printf 'free_disk_kib=%s\n' "$(df -Pk / | awk 'NR == 2 {print $4}')"`
 const componentStateCommand = `set -eu
 if command -v docker >/dev/null 2>&1; then printf 'docker=true\n'; else printf 'docker=false\n'; fi
 if [ -d /opt/remnanode ]; then printf 'remnanode_directory=true\n'; else printf 'remnanode_directory=false\n'; fi
-if [ -d /opt/xray-sni ]; then printf 'xray_sni_directory=true\n'; else printf 'xray_sni_directory=false\n'; fi`
+if [ -d /opt/xray-sni ] || [ -d /root/xray-sni ]; then printf 'xray_sni_directory=true\n'; else printf 'xray_sni_directory=false\n'; fi
+if command -v node_exporter >/dev/null 2>&1 && systemctl is-active --quiet node_exporter; then printf 'node_exporter_active=true\n'; else printf 'node_exporter_active=false\n'; fi`
 
 const containerListCommand = `docker ps -a --format '{{.Names}}'`
 
@@ -49,12 +50,13 @@ var relevantPorts = []int{22, 443, 2222, 9100, 9200, 9443}
 // sizing policy. Empty distro/architecture lists use Ubuntu/Debian and
 // amd64/arm64 defaults.
 type Requirements struct {
-	MinimumCPUCount          int
-	MinimumAvailableRAMBytes int64
-	MinimumFreeDiskBytes     int64
-	AllowedDistributions     []string
-	AllowedArchitectures     []string
-	CommandTimeout           time.Duration
+	MinimumCPUCount           int
+	MinimumAvailableRAMBytes  int64
+	MinimumFreeDiskBytes      int64
+	AllowedDistributions      []string
+	AllowedArchitectures      []string
+	CommandTimeout            time.Duration
+	AllowExistingInstallation bool
 }
 
 // SystemInfo is typed data collected from the VPS.
@@ -76,6 +78,8 @@ type ComponentState struct {
 	XraySNIDirectory    bool
 	RemnanodeContainers []string
 	XraySNIContainers   []string
+	SpeedtestContainers []string
+	NodeExporterActive  bool
 }
 
 // PortState reports whether one relevant TCP port has a listener.
@@ -164,7 +168,7 @@ func (p *Preflight) Run(ctx context.Context) (PreflightResult, error) {
 			}
 			result.Warnings = append(result.Warnings, Issue{Code: "CONTAINER_INSPECTION_FAILED", Message: "Existing Docker containers could not be inspected"})
 		} else {
-			result.Components.RemnanodeContainers, result.Components.XraySNIContainers = parseContainers(containerCommand.Stdout)
+			result.Components.RemnanodeContainers, result.Components.XraySNIContainers, result.Components.SpeedtestContainers = parseContainers(containerCommand.Stdout)
 		}
 	}
 
@@ -221,8 +225,27 @@ func (p *Preflight) validate(result *PreflightResult) {
 			result.Warnings = append(result.Warnings, Issue{Code: "SSH_PORT_NOT_DETECTED", Message: "Port 22 was not detected as listening despite the SSH connection"})
 		}
 		if port.Port != 22 && port.Occupied {
+			if p.requirements.AllowExistingInstallation && expectedExistingPort(result.Components, port.Port) {
+				result.Warnings = append(result.Warnings, Issue{Code: fmt.Sprintf("PORT_%d_USED_BY_EXISTING_COMPONENT", port.Port), Message: fmt.Sprintf("TCP port %d is used by an existing managed component", port.Port)})
+				continue
+			}
 			result.FatalFailures = append(result.FatalFailures, Issue{Code: fmt.Sprintf("PORT_%d_OCCUPIED", port.Port), Message: fmt.Sprintf("Required TCP port %d is already occupied", port.Port)})
 		}
+	}
+}
+
+func expectedExistingPort(components ComponentState, port int) bool {
+	switch port {
+	case 443, 9443:
+		return components.XraySNIDirectory || len(components.XraySNIContainers) > 0
+	case 2222:
+		return components.RemnanodeDirectory || len(components.RemnanodeContainers) > 0
+	case 9100:
+		return components.NodeExporterActive
+	case 9200:
+		return len(components.SpeedtestContainers) > 0
+	default:
+		return false
 	}
 }
 
@@ -282,12 +305,20 @@ func parseComponentState(output string) (ComponentState, error) {
 	if err != nil {
 		return ComponentState{}, ErrInvalidPreflightOutput
 	}
-	return ComponentState{DockerInstalled: docker, RemnanodeDirectory: remnanode, XraySNIDirectory: xraySNI}, nil
+	nodeExporter := false
+	if value, exists := values["node_exporter_active"]; exists {
+		nodeExporter, err = strconv.ParseBool(value)
+		if err != nil {
+			return ComponentState{}, ErrInvalidPreflightOutput
+		}
+	}
+	return ComponentState{DockerInstalled: docker, RemnanodeDirectory: remnanode, XraySNIDirectory: xraySNI, NodeExporterActive: nodeExporter}, nil
 }
 
-func parseContainers(output string) ([]string, []string) {
+func parseContainers(output string) ([]string, []string, []string) {
 	var remnanode []string
 	var xraySNI []string
+	var speedtest []string
 	for _, line := range strings.Split(output, "\n") {
 		name := strings.TrimSpace(line)
 		lower := strings.ToLower(name)
@@ -297,11 +328,14 @@ func parseContainers(output string) ([]string, []string) {
 		if strings.Contains(lower, "remnanode") {
 			remnanode = append(remnanode, name)
 		}
-		if strings.Contains(lower, "xray-sni") || strings.Contains(lower, "xray_sni") {
+		if strings.Contains(lower, "xray-sni") || strings.Contains(lower, "xray_sni") || lower == "snisite" {
 			xraySNI = append(xraySNI, name)
 		}
+		if strings.Contains(lower, "speedtest-exporter") || strings.Contains(lower, "speedtest_exporter") {
+			speedtest = append(speedtest, name)
+		}
 	}
-	return remnanode, xraySNI
+	return remnanode, xraySNI, speedtest
 }
 
 func parsePortStates(output string) ([]PortState, error) {

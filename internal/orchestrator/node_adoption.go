@@ -144,7 +144,7 @@ func (s *DeploymentService) preflightLegacyAdoption(ctx context.Context, created
 		return err
 	}
 	secret := append([]byte(nil), password...)
-	result, preflightErr := s.vps.Preflight(runCtx, PreflightVPSInput{DeploymentID: created.ID, Address: address, Password: secret})
+	result, preflightErr := s.vps.Preflight(runCtx, PreflightVPSInput{DeploymentID: created.ID, Address: address, Password: secret, AllowExistingInstallation: true})
 	clear(secret)
 	if runCtx.Err() != nil {
 		return runCtx.Err()
