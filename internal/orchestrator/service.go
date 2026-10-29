@@ -370,6 +370,17 @@ func warningCode(code string) string {
 // Deploy resumes a prepared deployment. Completed deployments are a no-op;
 // DNS_FAILED deployments require RetryDNS.
 func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progress ProgressSink) error {
+	return s.deploy(ctx, input, progress, "")
+}
+
+// deployExistingNode runs the standard workflow while excluding the known
+// legacy Node from uniqueness checks. createNode still rediscovers and binds
+// that exact name/address pair only after VPS provisioning has succeeded.
+func (s *DeploymentService) deployExistingNode(ctx context.Context, input StartInput, existingNodeUUID string, progress ProgressSink) error {
+	return s.deploy(ctx, input, progress, strings.TrimSpace(existingNodeUUID))
+}
+
+func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progress ProgressSink, existingNodeUUID string) error {
 	started := time.Now()
 	defer func() {
 		if s.config.Observer != nil {
@@ -420,7 +431,11 @@ func (s *DeploymentService) Deploy(ctx context.Context, input StartInput, progre
 		return s.failStage(runCtx, current.ID, current.CurrentStep, deployment.StatusFailed, "HOST_INVALID", "Selected Host is no longer deployable", ErrHostUnavailable)
 	}
 	allowRecovery := current.Status == deployment.StatusCreatingRemnawave || current.Status == deployment.StatusWaitingRemnawave || current.Status == deployment.StatusAddingToDNS
-	if err := s.checkUnique(runCtx, current.NodeName, current.TargetVPSIP, nodeUUID(current), allowRecovery); err != nil {
+	ownNodeUUID := nodeUUID(current)
+	if ownNodeUUID == "" {
+		ownNodeUUID = existingNodeUUID
+	}
+	if err := s.checkUnique(runCtx, current.NodeName, current.TargetVPSIP, ownNodeUUID, allowRecovery); err != nil {
 		if runCtx.Err() != nil {
 			return runCtx.Err()
 		}

@@ -65,6 +65,50 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 	}
 }
 
+func TestAdoptLegacyNodeRunsStandardWorkflowWithoutCreatingDuplicateNode(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID: testNodeUUID, Name: "legacy-edge", Address: "8.8.8.8",
+		ActiveConfigProfileUUID: stringPtr(testProfileUUID), ActiveInboundUUIDs: []string{testInboundUUID},
+	}}
+
+	result, err := fixture.service.AdoptLegacyNode(context.Background(), AdoptLegacyNodeInput{
+		OperatorUserID: 42, NodeUUID: testNodeUUID, Password: []byte("temporary-password"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("AdoptLegacyNode() error = %v", err)
+	}
+	if result.Status != deployment.StatusCompleted || result.RemnawaveNodeUUID == nil || *result.RemnawaveNodeUUID != testNodeUUID {
+		t.Fatalf("AdoptLegacyNode() result = %#v", result)
+	}
+	if fixture.vps.provisionCalls != 1 || fixture.remnawave.createCalls != 0 {
+		t.Fatalf("side effects: provision=%d create=%d", fixture.vps.provisionCalls, fixture.remnawave.createCalls)
+	}
+	managed, err := fixture.repo.FindDeploymentByPanelNodeUUID(context.Background(), "default", testNodeUUID)
+	if err != nil || managed.ID != result.ID {
+		t.Fatalf("managed binding = %#v, %v", managed, err)
+	}
+}
+
+func TestAdoptLegacyNodeClearsManagedBindingWhenFinalWorkflowFails(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.nodes = []remnawave.Node{{
+		UUID: testNodeUUID, Name: "legacy-edge", Address: "8.8.8.8",
+		ActiveConfigProfileUUID: stringPtr(testProfileUUID), ActiveInboundUUIDs: []string{testInboundUUID},
+	}}
+	fixture.dns.addErr = errors.New("DNS unavailable")
+
+	_, err := fixture.service.AdoptLegacyNode(context.Background(), AdoptLegacyNodeInput{
+		OperatorUserID: 42, NodeUUID: testNodeUUID, Password: []byte("temporary-password"),
+	}, nil)
+	if err == nil {
+		t.Fatal("AdoptLegacyNode() error = nil, want failure")
+	}
+	if _, findErr := fixture.repo.FindDeploymentByPanelNodeUUID(context.Background(), "default", testNodeUUID); !errors.Is(findErr, repository.ErrNotFound) {
+		t.Fatalf("legacy Node remained managed after failure: %v", findErr)
+	}
+}
+
 func TestDeploymentCompletesWithExplicitSkippedDNSForDisabledPanel(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.service.config.PanelID = "test"
@@ -814,6 +858,18 @@ func (r *memoryRepository) SetRemnawaveNodeUUID(_ context.Context, id, uuid stri
 		return deployment.Deployment{}, repository.ErrNotFound
 	}
 	item.RemnawaveNodeUUID = stringPtr(uuid)
+	r.items[id] = item
+	return item, nil
+}
+
+func (r *memoryRepository) ClearRemnawaveNodeUUID(_ context.Context, id string) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, ok := r.items[id]
+	if !ok {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.RemnawaveNodeUUID = nil
 	r.items[id] = item
 	return item, nil
 }

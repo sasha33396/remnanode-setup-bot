@@ -70,7 +70,8 @@
     const path = `/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/actualize`;
     const result = await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) });
     await loadNodes();
-    showNotice(`${result.nodeName}: настройки актуализированы, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'уже актуален'}`);
+    const action = result.adopted ? 'легаси-нода полностью переведена под управление и актуализирована' : 'настройки актуализированы';
+    showNotice(`${result.nodeName}: ${action}, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'проверен и актуален'}`);
   }
 
   async function actualizeManagedNodes() {
@@ -121,7 +122,7 @@
       const node = selectNode(actualize.dataset.panel, actualize.dataset.uuid); if (!node) return;
       state.selected = node; state.passwordAction = 'actualize';
       if (node.managed) { actualize.disabled = true; try { await actualizeNode(node); } catch (error) { showNotice(error.message); } finally { actualize.disabled = false; } }
-      else { $('#password-title').textContent = `Актуализация: ${node.name}`; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
+      else { $('#password-title').textContent = `Перевод под управление: ${node.name}`; $('#password-description').textContent = 'Будет выполнен полный типовой provisioning. Нода станет актуальной только после всех проверок; пароль не сохраняется.'; $('#password-submit').textContent = 'Перевести и актуализировать'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
       return;
     }
     const connect = event.target.closest('.connect');
@@ -129,7 +130,7 @@
       const node = selectNode(connect.dataset.panel, connect.dataset.uuid); if (!node) return;
       state.selected = node; state.passwordAction = 'ssh';
       if (node.managed) { connect.disabled = true; try { await createTicket(node); } catch (error) { showNotice(error.message); } finally { connect.disabled = false; } }
-      else { $('#password-title').textContent = node.name; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
+      else { $('#password-title').textContent = node.name; $('#password-description').textContent = 'Пароль не записывается в базу и удаляется из памяти сервера сразу после попытки подключения.'; $('#password-submit').textContent = 'Подключиться'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
     }
     if (event.target.matches('[data-close]')) { $('#password').value = ''; passwordDialog.close(); }
   });

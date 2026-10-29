@@ -249,6 +249,24 @@ func (r *Repository) SetRemnawaveNodeUUID(ctx context.Context, id, nodeUUID stri
 	return result, nil
 }
 
+// ClearRemnawaveNodeUUID removes a provisional Node binding when adoption of
+// an existing legacy Node did not finish successfully.
+func (r *Repository) ClearRemnawaveNodeUUID(ctx context.Context, id string) (deployment.Deployment, error) {
+	if !validUUID(id) {
+		return deployment.Deployment{}, invalid("deployment ID")
+	}
+	row := r.pool.QueryRow(ctx, `
+        UPDATE deployments
+        SET remnawave_node_uuid = NULL, updated_at = now()
+        WHERE id = $1
+        RETURNING `+deploymentColumns, id)
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("clear Remnawave Node UUID", err)
+	}
+	return result, nil
+}
+
 // SetTargetVPSIP updates the canonical address after the panel and DNS have
 // both completed an idempotent Node IP replacement.
 func (r *Repository) SetTargetVPSIP(ctx context.Context, id string, address netip.Addr) (deployment.Deployment, error) {

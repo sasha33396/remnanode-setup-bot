@@ -108,6 +108,11 @@ func (r *recoveryRepository) SetRemnawaveNodeUUID(_ context.Context, _ string, u
 	r.item.RemnawaveNodeUUID = &uuid
 	return r.item, nil
 }
+
+func (r *recoveryRepository) ClearRemnawaveNodeUUID(_ context.Context, _ string) (deployment.Deployment, error) {
+	r.item.RemnawaveNodeUUID = nil
+	return r.item, nil
+}
 func (r *recoveryRepository) SetTargetVPSIP(_ context.Context, _ string, address netip.Addr) (deployment.Deployment, error) {
 	r.item.TargetVPSIP = address.Unmap()
 	return r.item, nil

@@ -197,6 +197,14 @@ type StartInput struct {
 	VPSIP          netip.Addr
 }
 
+// AdoptLegacyNodeInput promotes an existing Remnawave Node into the managed
+// deployment lifecycle. Password is only used by the initial SSH preflight.
+type AdoptLegacyNodeInput struct {
+	OperatorUserID int64
+	NodeUUID       string
+	Password       []byte
+}
+
 type Progress struct {
 	Step        string
 	Completed   int

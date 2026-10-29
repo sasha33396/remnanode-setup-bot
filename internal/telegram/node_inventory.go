@@ -527,7 +527,7 @@ func (c *Controller) beginNodeActualize(ctx context.Context, callback *CallbackQ
 		return c.showNodeCard(ctx, callback.Message.ChatID, callback.Message.ID, uuid)
 	}
 	if selected.Managed {
-		result, err := application.ActualizeNode(ctx, NodeActualizeInput{PanelID: selected.PanelID, NodeUUID: selected.UUID})
+		result, err := application.ActualizeNode(ctx, NodeActualizeInput{PanelID: selected.PanelID, NodeUUID: selected.UUID, OperatorUserID: callback.FromUserID})
 		return c.renderNodeActualizeResult(ctx, callback.Message.ChatID, callback.Message.ID, selected.UUID, result, err)
 	}
 	nonce, err := c.nonce()
@@ -536,7 +536,7 @@ func (c *Controller) beginNodeActualize(ctx context.Context, callback *CallbackQ
 	}
 	c.cancelExisting(ctx, callback.FromUserID)
 	c.putSession(&wizard{userID: callback.FromUserID, chatID: callback.Message.ChatID, nonce: nonce, state: stateAwaitingNodeActualizePassword, expiresAt: c.now().Add(c.ttl), statusMsgID: callback.Message.ID, actualizePanelID: selected.PanelID, actualizeNodeUUID: selected.UUID})
-	return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Legacy-нода: отправьте root-пароль. Он будет использован один раз для чтения netplan и применения firewall и не будет сохранён.", Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:o:" + selected.UUID}}}})
+	return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Legacy-нода: отправьте root-пароль. Он будет использован один раз для полного перевода ноды под управление: установки deploy-key, типового provisioning, Xray SNI, exporters, logrotate, netplan и полного firewall. Пароль не сохраняется.", Keyboard{Inline: [][]Button{{{Text: "❌ Отмена", CallbackData: "nodes:o:" + selected.UUID}}}})
 }
 
 func (c *Controller) confirmManagedNodesActualize(ctx context.Context, callback *CallbackQuery) error {
@@ -625,20 +625,33 @@ func (c *Controller) acceptNodeActualizePassword(ctx context.Context, message *M
 		return c.sendExpired(ctx, message.ChatID)
 	}
 	password := []byte(message.Text)
-	defer clearBytes(password)
 	application, ok := c.app.(NodeActualizeApplication)
 	if !ok || len(password) == 0 || len(password) > 1024 {
+		chatID, statusMsgID, nodeUUID := active.chatID, active.statusMsgID, active.actualizeNodeUUID
+		clearBytes(password)
 		active.clear()
-		return c.showNodeCard(ctx, active.chatID, active.statusMsgID, active.actualizeNodeUUID)
+		return c.showNodeCard(ctx, chatID, statusMsgID, nodeUUID)
 	}
-	chatID, statusMsgID, nodeUUID := active.chatID, active.statusMsgID, active.actualizeNodeUUID
-	result, err := application.ActualizeNode(ctx, NodeActualizeInput{PanelID: active.actualizePanelID, NodeUUID: nodeUUID, Password: password})
+	chatID, statusMsgID, nodeUUID, panelID, operatorUserID := active.chatID, active.statusMsgID, active.actualizeNodeUUID, active.actualizePanelID, message.FromUserID
+	if err := c.sendOrEdit(ctx, chatID, statusMsgID, "⏳ Перевожу legacy-ноду под управление и выполняю полный provisioning. Это может занять несколько минут…", Keyboard{}); err != nil {
+		clearBytes(password)
+		active.clear()
+		return err
+	}
 	active.clear()
-	return c.renderNodeActualizeResult(ctx, chatID, statusMsgID, nodeUUID, result, err)
+	runCtx := context.WithoutCancel(ctx)
+	c.workers.Add(1)
+	go func() {
+		defer c.workers.Done()
+		defer clearBytes(password)
+		result, err := application.ActualizeNode(runCtx, NodeActualizeInput{PanelID: panelID, NodeUUID: nodeUUID, OperatorUserID: operatorUserID, Password: password})
+		_ = c.renderNodeActualizeResult(runCtx, chatID, statusMsgID, nodeUUID, result, err)
+	}()
+	return nil
 }
 
 func (c *Controller) renderNodeActualizeResult(ctx context.Context, chatID int64, messageID int, uuid string, result NodeActualizeResult, actionErr error) error {
-	text := "Не удалось актуализировать ноду. Проверьте SSH-доступ и пароль."
+	text := "Не удалось полностью перевести ноду под управление. Проверьте SSH-доступ, пароль и Host-профиль ноды. Метка legacy сохранена."
 	if actionErr == nil {
 		firewall := "правила уже были актуальны"
 		if result.FirewallChanged {
@@ -648,7 +661,11 @@ func (c *Controller) renderNodeActualizeResult(ctx context.Context, chatID int64
 		if addresses == "" {
 			addresses = "не найдены"
 		}
-		text = fmt.Sprintf("✅ %s актуализирована.\nIP из netplan: %s\nFirewall: %s.", safeLine(result.NodeName, 80), safeLine(addresses, 500), firewall)
+		action := "актуализирована"
+		if result.Adopted {
+			action = "полностью переведена из legacy под управление и актуализирована"
+		}
+		text = fmt.Sprintf("✅ %s %s.\nIP из netplan: %s\nFirewall: %s.", safeLine(result.NodeName, 80), action, safeLine(addresses, 500), firewall)
 	}
 	return c.sendOrEdit(ctx, chatID, messageID, text, Keyboard{Inline: [][]Button{{{Text: "⬅️ К карточке", CallbackData: "nodes:o:" + uuid}}}})
 }

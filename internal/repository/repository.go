@@ -69,6 +69,7 @@ type DeploymentRepository interface {
 	GetDeployment(context.Context, string) (deployment.Deployment, error)
 	UpdateDeploymentState(context.Context, string, UpdateDeploymentStateParams) (deployment.Deployment, error)
 	SetRemnawaveNodeUUID(context.Context, string, string) (deployment.Deployment, error)
+	ClearRemnawaveNodeUUID(context.Context, string) (deployment.Deployment, error)
 	SetTargetVPSIP(context.Context, string, netip.Addr) (deployment.Deployment, error)
 	SetNodeHostBinding(context.Context, string, SetNodeHostBindingParams) (deployment.Deployment, error)
 	RecordDeploymentStep(context.Context, RecordStepParams) (deployment.Step, error)

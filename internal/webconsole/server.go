@@ -355,7 +355,7 @@ func (s *Server) handleBulkActualize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
-	_, cookie, ok := s.readSession(r)
+	user, cookie, ok := s.readSession(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
@@ -383,12 +383,12 @@ func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {
 	}
 	password := []byte(body.Password)
 	defer clear(password)
-	result, err := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{PanelID: parts[0], NodeUUID: parts[1], Password: password})
+	result, err := s.actualizer.ActualizeNode(r.Context(), telegram.NodeActualizeInput{PanelID: parts[0], NodeUUID: parts[1], OperatorUserID: user.UserID, Password: password})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось актуализировать ноду: проверьте SSH и пароль"})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось полностью актуализировать ноду: проверьте SSH, пароль и Host-профиль. При ошибке нода остаётся legacy"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodeName": result.NodeName, "managed": result.Managed, "addresses": result.Addresses, "firewallChanged": result.FirewallChanged})
+	writeJSON(w, http.StatusOK, map[string]any{"nodeName": result.NodeName, "managed": result.Managed, "adopted": result.Adopted, "addresses": result.Addresses, "firewallChanged": result.FirewallChanged})
 }
 
 func (s *Server) resolveTarget(ctx context.Context, panelID, nodeUUID string) (terminalTicket, error) {

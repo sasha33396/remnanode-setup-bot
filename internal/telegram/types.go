@@ -127,14 +127,16 @@ type NodeSummary struct {
 }
 
 type NodeActualizeInput struct {
-	PanelID  string
-	NodeUUID string
-	Password []byte
+	PanelID        string
+	NodeUUID       string
+	OperatorUserID int64
+	Password       []byte
 }
 
 type NodeActualizeResult struct {
 	NodeName        string
 	Managed         bool
+	Adopted         bool
 	Addresses       []string
 	FirewallChanged bool
 }

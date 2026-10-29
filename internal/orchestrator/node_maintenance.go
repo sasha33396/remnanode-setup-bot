@@ -97,7 +97,25 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	}
 	unlock := m.lockNode(input.PanelID, input.NodeUUID)
 	defer unlock()
-	connection, managed, err := m.connect(ctx, input.PanelID, input.NodeUUID, address.Unmap(), input.Password)
+	managedDeployment, managedErr := m.app.repository.FindDeploymentByPanelNodeUUID(ctx, input.PanelID, input.NodeUUID)
+	adopted := false
+	if errors.Is(managedErr, repository.ErrNotFound) {
+		if input.OperatorUserID <= 0 || len(input.Password) == 0 {
+			return telegram.NodeActualizeResult{}, errors.New("legacy node password and operator are required")
+		}
+		managedDeployment, err = panel.Service.AdoptLegacyNode(ctx, AdoptLegacyNodeInput{
+			OperatorUserID: input.OperatorUserID,
+			NodeUUID:       input.NodeUUID,
+			Password:       input.Password,
+		}, nil)
+		if err != nil {
+			return telegram.NodeActualizeResult{}, errors.New("legacy node adoption failed")
+		}
+		adopted = true
+	} else if managedErr != nil {
+		return telegram.NodeActualizeResult{}, errors.New("classify node failed")
+	}
+	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, managedDeployment.ID, address.Unmap(), "root")
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("SSH connection failed")
 	}
@@ -117,7 +135,7 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: input.PanelID, NodeUUID: input.NodeUUID, Addresses: addresses}); err != nil {
 		return telegram.NodeActualizeResult{}, err
 	}
-	return telegram.NodeActualizeResult{NodeName: name, Managed: managed, Addresses: addresses, FirewallChanged: changed}, nil
+	return telegram.NodeActualizeResult{NodeName: name, Managed: true, Adopted: adopted, Addresses: addresses, FirewallChanged: changed}, nil
 }
 
 type managedActualizeTarget struct {

@@ -14,7 +14,7 @@
   </header>
   <main class="shell">
     <section class="hero">
-      <div><p class="eyebrow">ИНВЕНТАРЬ</p><h1>Ноды</h1><p class="muted">Актуальные ноды используют deploy SSH key. Для legacy-ноды пароль запрашивается только перед подключением.</p></div>
+      <div><p class="eyebrow">ИНВЕНТАРЬ</p><h1>Ноды</h1><p class="muted">Актуальные ноды используют deploy SSH key. Root-пароль legacy-ноды нужен для разового SSH или полного перевода под управление.</p></div>
       <div class="stats"><div><span id="total">—</span><small>Всего</small></div><div><span id="managed">—</span><small>Актуальных</small></div><div><span id="legacy">—</span><small>Legacy</small></div></div>
     </section>
     <section class="toolbar">
@@ -28,9 +28,9 @@
   <dialog id="password-dialog" class="dialog">
     <form id="password-form" method="dialog">
       <p class="eyebrow">LEGACY SSH</p><h2 id="password-title">Подключение</h2>
-      <p class="muted">Пароль не записывается в базу и удаляется из памяти сервера сразу после попытки подключения.</p>
+      <p id="password-description" class="muted">Пароль не записывается в базу и удаляется из памяти сервера сразу после попытки подключения.</p>
       <label>Root-пароль<input id="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
-      <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button type="submit" class="button primary">Подключиться</button></div>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close>Отмена</button><button id="password-submit" type="submit" class="button primary">Подключиться</button></div>
     </form>
   </dialog>
 

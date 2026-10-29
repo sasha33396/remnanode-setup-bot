@@ -71,8 +71,14 @@ interface `addresses` from `/etc/netplan/50-cloud-init.yaml`, persists only
 those non-secret IP addresses, and includes them in web and Telegram search.
 The **Актуализировать настройки ноды** action also reconciles and validates the
 complete firewall stage, including the IPv4/IPv6 TCP/UDP port 25 guard. For a
-Legacy Node the same action asks for a one-time root password; the password is
-cleared after SSH use and is never stored.
+Legacy Node the same action asks for a one-time root password and performs a
+full adoption through the standard deployment workflow: preflight and deploy
+key installation, Docker/Remnanode, exporters, logrotate, Xray SNI, netplan,
+the complete firewall stage, Remnawave connectivity verification, and DNS.
+The existing Remnawave Node UUID is reused instead of creating a duplicate.
+Only a fully completed deployment changes the Node to **Актуальная**; on any
+failure its provisional managed binding is removed. The password is cleared
+after SSH use and is never stored.
 
 The web toolbar and Telegram Nodes menu also provide **Актуализировать все**.
 After confirmation it processes only managed Nodes, with at most eight SSH
