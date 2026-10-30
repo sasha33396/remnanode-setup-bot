@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,14 +89,21 @@ func (s *Server) readOIDCLoginAttempt(r *http.Request) (oidcLoginAttempt, error)
 
 func sessionFromOIDCIDToken(token *oidc.IDToken) (session, error) {
 	var claims struct {
-		ID         int64  `json:"id"`
-		Name       string `json:"name"`
-		GivenName  string `json:"given_name"`
-		FamilyName string `json:"family_name"`
-		Username   string `json:"preferred_username"`
+		ID         json.RawMessage `json:"id"`
+		Name       string          `json:"name"`
+		GivenName  string          `json:"given_name"`
+		FamilyName string          `json:"family_name"`
+		Username   string          `json:"preferred_username"`
 	}
-	if token == nil || token.Claims(&claims) != nil || claims.ID <= 0 {
-		return session{}, errors.New("invalid Telegram OIDC claims")
+	if token == nil {
+		return session{}, errors.New("Telegram OIDC token is nil")
+	}
+	if err := token.Claims(&claims); err != nil {
+		return session{}, fmt.Errorf("decode Telegram OIDC claims: %w", err)
+	}
+	userID, err := parseTelegramUserID(claims.ID)
+	if err != nil {
+		return session{}, err
 	}
 	name := strings.TrimSpace(claims.Name)
 	if name == "" {
@@ -106,7 +115,25 @@ func sessionFromOIDCIDToken(token *oidc.IDToken) (session, error) {
 	if len(name) > 120 {
 		name = name[:120]
 	}
-	return session{UserID: claims.ID, Name: name}, nil
+	return session{UserID: userID, Name: name}, nil
+}
+
+func parseTelegramUserID(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 {
+		return 0, errors.New("Telegram OIDC id claim is missing")
+	}
+	var numericID int64
+	if err := json.Unmarshal(raw, &numericID); err == nil && numericID > 0 {
+		return numericID, nil
+	}
+	var stringID string
+	if err := json.Unmarshal(raw, &stringID); err == nil {
+		parsed, parseErr := strconv.ParseInt(strings.TrimSpace(stringID), 10, 64)
+		if parseErr == nil && parsed > 0 {
+			return parsed, nil
+		}
+	}
+	return 0, errors.New("Telegram OIDC id claim has an invalid type or value")
 }
 
 func randomToken(bytes int) (string, error) {

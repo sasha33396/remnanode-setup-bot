@@ -1,12 +1,39 @@
 package webconsole
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestParseTelegramUserIDAcceptsNumberAndString(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		want int64
+	}{
+		{name: "number", raw: `987654321`, want: 987654321},
+		{name: "string", raw: `"987654321"`, want: 987654321},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseTelegramUserID(json.RawMessage(test.raw))
+			if err != nil || got != test.want {
+				t.Fatalf("parseTelegramUserID() = %d, %v; want %d", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestParseTelegramUserIDRejectsMissingAndInvalidValues(t *testing.T) {
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(`0`), json.RawMessage(`"invalid"`), json.RawMessage(`{}`)} {
+		if got, err := parseTelegramUserID(raw); err == nil || got != 0 {
+			t.Fatalf("parseTelegramUserID(%s) = %d, %v", raw, got, err)
+		}
+	}
+}
 
 func TestOIDCLoginAttemptCookieRoundTrip(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)

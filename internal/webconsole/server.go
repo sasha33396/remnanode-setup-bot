@@ -336,6 +336,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	value, err := sessionFromOIDCIDToken(idToken)
 	if err != nil {
+		s.config.Logger.Warn("Telegram OIDC user claims rejected", "error", err)
 		http.Error(w, "Telegram не вернул корректного пользователя", http.StatusForbidden)
 		return
 	}
