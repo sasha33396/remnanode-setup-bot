@@ -106,7 +106,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 		Endpoint:    oauth2.Endpoint{AuthURL: "https://oauth.telegram.org/auth", TokenURL: "https://oauth.telegram.org/token", AuthStyle: oauth2.AuthStyleInHeader},
 		Scopes:      []string{oidc.ScopeOpenID, "profile"},
 	}
-	keySet := oidc.NewRemoteKeySet(context.Background(), "https://oauth.telegram.org/.well-known/jwks.json")
+	keySet := newTelegramRS256KeySet("https://oauth.telegram.org/.well-known/jwks.json")
 	server.oidcVerifier = oidc.NewVerifier("https://oauth.telegram.org", keySet, &oidc.Config{ClientID: config.OIDCClientID})
 	if server.config.Logger == nil {
 		server.config.Logger = slog.Default()
