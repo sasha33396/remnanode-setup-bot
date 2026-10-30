@@ -57,7 +57,8 @@ func TestLoadWebConsoleConfiguration(t *testing.T) {
 	values["WEB_ADDR"] = ":9090"
 	values["WEB_PUBLIC_URL"] = "https://nodes.example.com/"
 	values["WEB_SESSION_SECRET"] = strings.Repeat("s", 32)
-	values["TELEGRAM_BOT_USERNAME"] = "@node_setup_bot"
+	values["TELEGRAM_OIDC_CLIENT_ID"] = "123456789"
+	values["TELEGRAM_OIDC_CLIENT_SECRET"] = strings.Repeat("o", 32)
 	values["WEB_SESSION_TTL"] = "6h"
 	values["WEB_TERMINAL_TIMEOUT"] = "45m"
 	values["WEB_MAX_SESSIONS"] = "8"
@@ -65,7 +66,7 @@ func TestLoadWebConsoleConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.WebEnabled || cfg.WebAddr != ":9090" || cfg.WebPublicURL != "https://nodes.example.com" || cfg.TelegramBotUsername != "node_setup_bot" || cfg.WebSessionTTL != 6*time.Hour || cfg.WebTerminalTimeout != 45*time.Minute || cfg.WebMaxSessions != 8 {
+	if !cfg.WebEnabled || cfg.WebAddr != ":9090" || cfg.WebPublicURL != "https://nodes.example.com" || cfg.TelegramOIDCClientID != "123456789" || cfg.TelegramOIDCClientSecret != strings.Repeat("o", 32) || cfg.WebSessionTTL != 6*time.Hour || cfg.WebTerminalTimeout != 45*time.Minute || cfg.WebMaxSessions != 8 {
 		t.Fatalf("web configuration = %#v", cfg)
 	}
 }
@@ -75,12 +76,13 @@ func TestLoadRejectsUnsafeWebConsoleConfiguration(t *testing.T) {
 	values["WEB_ENABLED"] = "true"
 	values["WEB_PUBLIC_URL"] = "http://nodes.example.com/path"
 	values["WEB_SESSION_SECRET"] = "short"
-	values["TELEGRAM_BOT_USERNAME"] = "invalid user"
+	values["TELEGRAM_OIDC_CLIENT_ID"] = "invalid user"
+	values["TELEGRAM_OIDC_CLIENT_SECRET"] = "short"
 	_, err := load(mapLookup(values))
 	if err == nil {
 		t.Fatal("load() error = nil")
 	}
-	for _, name := range []string{"WEB_PUBLIC_URL", "WEB_SESSION_SECRET", "TELEGRAM_BOT_USERNAME"} {
+	for _, name := range []string{"WEB_PUBLIC_URL", "WEB_SESSION_SECRET", "TELEGRAM_OIDC_CLIENT_ID", "TELEGRAM_OIDC_CLIENT_SECRET"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("error %q does not mention %s", err, name)
 		}

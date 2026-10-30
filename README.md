@@ -51,11 +51,16 @@ For Compose, `DATABASE_URL` must use `postgres` as the database hostname.
 ### Web console
 
 Set `WEB_ENABLED=true`, `WEB_PUBLIC_URL=https://nodes.example.com`,
-`TELEGRAM_BOT_USERNAME`, and a random `WEB_SESSION_SECRET` of at least 32
+`TELEGRAM_OIDC_CLIENT_ID`, `TELEGRAM_OIDC_CLIENT_SECRET`, and a random `WEB_SESSION_SECRET` of at least 32
 characters. The Compose service listens on loopback `WEB_PORT` (8081 by
 default); publish it through an HTTPS reverse proxy with WebSocket upgrade
-support. Register the public origin for the bot in @BotFather (`/setdomain` or
-Login Widget settings).
+support. In the @BotFather mini app open the bot's **Login Widget** settings,
+register `https://nodes.example.com` and the exact redirect URI
+`https://nodes.example.com/auth/oidc/callback`, then copy the issued Client ID
+and Client Secret into the two OIDC variables. The console uses Telegram's
+Authorization Code flow with PKCE, `state`, `nonce`, and signed ID-token
+verification through the official JWKS endpoint. Keep the BotFather signing
+algorithm at its default `RS256` value.
 
 Only IDs already present in `TELEGRAM_ALLOWED_USERS` may sign in. The inventory
 marks Nodes backed by a deployment row as **Актуальная** and Remnawave-only

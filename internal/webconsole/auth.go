@@ -5,15 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -27,50 +26,87 @@ type session struct {
 	ExpiresAt int64  `json:"exp"`
 }
 
-func verifyTelegramLogin(values url.Values, botToken string, now time.Time) (session, error) {
-	hashValue := values.Get("hash")
-	if len(hashValue) != sha256.Size*2 {
-		return session{}, errors.New("missing Telegram authorization hash")
-	}
-	keys := make([]string, 0, len(values))
-	for key, entries := range values {
-		if key == "hash" || key == "state" {
-			continue
-		}
-		if len(entries) != 1 || strings.ContainsAny(key, "\r\n=") || strings.ContainsAny(entries[0], "\r\n") {
-			return session{}, errors.New("invalid Telegram authorization data")
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+values.Get(key))
-	}
-	secret := sha256.Sum256([]byte(botToken))
-	mac := hmac.New(sha256.New, secret[:])
-	_, _ = mac.Write([]byte(strings.Join(parts, "\n")))
-	expected, err := hex.DecodeString(hashValue)
-	if err != nil || !hmac.Equal(mac.Sum(nil), expected) {
-		return session{}, errors.New("invalid Telegram authorization signature")
-	}
+type oidcLoginAttempt struct {
+	State     string `json:"state"`
+	Nonce     string `json:"nonce"`
+	Verifier  string `json:"verifier"`
+	ExpiresAt int64  `json:"exp"`
+}
 
-	authDate, err := strconv.ParseInt(values.Get("auth_date"), 10, 64)
-	if err != nil || authDate > now.Add(time.Minute).Unix() || now.Sub(time.Unix(authDate, 0)) > 5*time.Minute {
-		return session{}, errors.New("expired Telegram authorization")
+func newOIDCLoginAttempt(now time.Time) (oidcLoginAttempt, error) {
+	state, err := randomToken(24)
+	if err != nil {
+		return oidcLoginAttempt{}, err
 	}
-	userID, err := strconv.ParseInt(values.Get("id"), 10, 64)
-	if err != nil || userID <= 0 {
-		return session{}, errors.New("invalid Telegram user")
+	nonce, err := randomToken(24)
+	if err != nil {
+		return oidcLoginAttempt{}, err
 	}
-	name := strings.TrimSpace(values.Get("first_name") + " " + values.Get("last_name"))
+	return oidcLoginAttempt{State: state, Nonce: nonce, Verifier: oauth2.GenerateVerifier(), ExpiresAt: now.Add(10 * time.Minute).Unix()}, nil
+}
+
+func (s *Server) signOIDCLoginAttempt(value oidcLoginAttempt) (string, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, s.sessionKey)
+	_, _ = mac.Write([]byte("oidc:" + encoded))
+	return encoded + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (s *Server) readOIDCLoginAttempt(r *http.Request) (oidcLoginAttempt, error) {
+	cookie, err := r.Cookie(loginStateCookie)
+	if err != nil {
+		return oidcLoginAttempt{}, err
+	}
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return oidcLoginAttempt{}, errors.New("invalid OIDC state cookie")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return oidcLoginAttempt{}, err
+	}
+	mac := hmac.New(sha256.New, s.sessionKey)
+	_, _ = mac.Write([]byte("oidc:" + parts[0]))
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return oidcLoginAttempt{}, errors.New("invalid OIDC state signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return oidcLoginAttempt{}, err
+	}
+	var value oidcLoginAttempt
+	if json.Unmarshal(payload, &value) != nil || value.State == "" || value.Nonce == "" || value.Verifier == "" || value.ExpiresAt <= s.now().Unix() {
+		return oidcLoginAttempt{}, errors.New("expired OIDC login attempt")
+	}
+	return value, nil
+}
+
+func sessionFromOIDCIDToken(token *oidc.IDToken) (session, error) {
+	var claims struct {
+		ID         int64  `json:"id"`
+		Name       string `json:"name"`
+		GivenName  string `json:"given_name"`
+		FamilyName string `json:"family_name"`
+		Username   string `json:"preferred_username"`
+	}
+	if token == nil || token.Claims(&claims) != nil || claims.ID <= 0 {
+		return session{}, errors.New("invalid Telegram OIDC claims")
+	}
+	name := strings.TrimSpace(claims.Name)
 	if name == "" {
-		name = strings.TrimSpace(values.Get("username"))
+		name = strings.TrimSpace(claims.GivenName + " " + claims.FamilyName)
+	}
+	if name == "" {
+		name = strings.TrimSpace(claims.Username)
 	}
 	if len(name) > 120 {
 		name = name[:120]
 	}
-	return session{UserID: userID, Name: name}, nil
+	return session{UserID: claims.ID, Name: name}, nil
 }
 
 func randomToken(bytes int) (string, error) {

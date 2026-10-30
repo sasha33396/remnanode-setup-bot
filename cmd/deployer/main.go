@@ -39,7 +39,7 @@ func run() int {
 		bootstrapLogger.Error("configuration validation failed", slog.Any("error", err))
 		return 1
 	}
-	secrets := []string{cfg.TelegramBotToken, cfg.RemnawaveToken, cfg.DNSBalancerToken, cfg.CloudflareAPIToken, cfg.DatabaseURL, cfg.WebSessionSecret}
+	secrets := []string{cfg.TelegramBotToken, cfg.TelegramOIDCClientSecret, cfg.RemnawaveToken, cfg.DNSBalancerToken, cfg.CloudflareAPIToken, cfg.DatabaseURL, cfg.WebSessionSecret}
 	for _, panel := range cfg.Panels {
 		secrets = append(secrets, panel.RemnawaveToken, panel.DNSBalancerToken, panel.CloudflareAPIToken)
 	}
@@ -264,8 +264,8 @@ func run() int {
 	var webServer *webconsole.Server
 	if cfg.WebEnabled {
 		webServer, err = webconsole.New(webconsole.Config{
-			Addr: cfg.WebAddr, PublicURL: cfg.WebPublicURL, BotToken: cfg.TelegramBotToken,
-			BotUsername: cfg.TelegramBotUsername, SessionSecret: cfg.WebSessionSecret,
+			Addr: cfg.WebAddr, PublicURL: cfg.WebPublicURL,
+			OIDCClientID: cfg.TelegramOIDCClientID, OIDCClientSecret: cfg.TelegramOIDCClientSecret, SessionSecret: cfg.WebSessionSecret,
 			SessionTTL: cfg.WebSessionTTL, TerminalTimeout: cfg.WebTerminalTimeout,
 			MaxSessions: cfg.WebMaxSessions, AllowedUsers: cfg.TelegramAllowedUsers, Logger: logger,
 		}, application, repository, ssh, serverIPSSH)

@@ -20,6 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/repository"
 	sshclient "remnanode-setup-bot/internal/ssh"
@@ -43,16 +46,16 @@ type DeploymentFinder interface {
 }
 
 type Config struct {
-	Addr            string
-	PublicURL       string
-	BotToken        string
-	BotUsername     string
-	SessionSecret   string
-	SessionTTL      time.Duration
-	TerminalTimeout time.Duration
-	MaxSessions     int
-	AllowedUsers    []int64
-	Logger          *slog.Logger
+	Addr             string
+	PublicURL        string
+	OIDCClientID     string
+	OIDCClientSecret string
+	SessionSecret    string
+	SessionTTL       time.Duration
+	TerminalTimeout  time.Duration
+	MaxSessions      int
+	AllowedUsers     []int64
+	Logger           *slog.Logger
 }
 
 type Server struct {
@@ -66,6 +69,8 @@ type Server struct {
 	sessionKey   []byte
 	publicURL    *url.URL
 	login        *template.Template
+	oauth2Config oauth2.Config
+	oidcVerifier *oidc.IDTokenVerifier
 	tickets      *ticketStore
 	jobs         *nodeJobStore
 	jobContext   context.Context
@@ -78,7 +83,7 @@ type Server struct {
 
 func New(config Config, nodes NodeProvider, deployments DeploymentFinder, managedSSH, legacySSH *sshclient.Client) (*Server, error) {
 	actualizer, _ := nodes.(NodeActualizer)
-	if config.Addr == "" || config.PublicURL == "" || config.BotToken == "" || config.BotUsername == "" || len(config.SessionSecret) < 32 || config.SessionTTL <= 0 || config.TerminalTimeout <= 0 || config.MaxSessions <= 0 || len(config.AllowedUsers) == 0 || nodes == nil || deployments == nil || managedSSH == nil || legacySSH == nil {
+	if config.Addr == "" || config.PublicURL == "" || strings.TrimSpace(config.OIDCClientID) == "" || strings.TrimSpace(config.OIDCClientSecret) == "" || len(config.SessionSecret) < 32 || config.SessionTTL <= 0 || config.TerminalTimeout <= 0 || config.MaxSessions <= 0 || len(config.AllowedUsers) == 0 || nodes == nil || deployments == nil || managedSSH == nil || legacySSH == nil {
 		return nil, errors.New("invalid web console configuration")
 	}
 	publicURL, err := url.Parse(config.PublicURL)
@@ -95,6 +100,14 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 		allowedUsers: make(map[int64]struct{}, len(config.AllowedUsers)), sessionKey: key[:], publicURL: publicURL,
 		login: login, slots: make(chan struct{}, config.MaxSessions), now: time.Now,
 	}
+	server.oauth2Config = oauth2.Config{
+		ClientID: config.OIDCClientID, ClientSecret: config.OIDCClientSecret,
+		RedirectURL: strings.TrimRight(config.PublicURL, "/") + "/auth/oidc/callback",
+		Endpoint:    oauth2.Endpoint{AuthURL: "https://oauth.telegram.org/auth", TokenURL: "https://oauth.telegram.org/token", AuthStyle: oauth2.AuthStyleInHeader},
+		Scopes:      []string{oidc.ScopeOpenID, "profile"},
+	}
+	keySet := oidc.NewRemoteKeySet(context.Background(), "https://oauth.telegram.org/.well-known/jwks.json")
+	server.oidcVerifier = oidc.NewVerifier("https://oauth.telegram.org", keySet, &oidc.Config{ClientID: config.OIDCClientID})
 	if server.config.Logger == nil {
 		server.config.Logger = slog.Default()
 	}
@@ -109,7 +122,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.handleIndex)
 	mux.HandleFunc("GET /login", server.handleLogin)
-	mux.HandleFunc("GET /auth/telegram", server.handleTelegramAuth)
+	mux.HandleFunc("GET /auth/oidc/callback", server.handleOIDCCallback)
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
 	mux.HandleFunc("GET /api/jobs/", server.handleJob)
@@ -247,7 +260,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://telegram.org https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; frame-src https://oauth.telegram.org https://telegram.org; img-src 'self' data: https:; connect-src 'self' wss:")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; frame-src 'none'; img-src 'self' data: https:; connect-src 'self' wss:")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -269,29 +282,52 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	state, err := randomToken(24)
+	attempt, err := newOIDCLoginAttempt(s.now())
 	if err != nil {
 		http.Error(w, "Не удалось подготовить авторизацию", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: loginStateCookie, Value: state, Path: "/auth/telegram", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	authURL := s.config.PublicURL + "/auth/telegram?state=" + url.QueryEscape(state)
+	cookie, err := s.signOIDCLoginAttempt(attempt)
+	if err != nil {
+		http.Error(w, "Не удалось подготовить авторизацию", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: loginStateCookie, Value: cookie, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: 600})
+	authURL := s.oauth2Config.AuthCodeURL(attempt.State, oauth2.S256ChallengeOption(attempt.Verifier), oidc.Nonce(attempt.Nonce))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.login.ExecuteTemplate(w, "login.html", map[string]string{"BotUsername": s.config.BotUsername, "AuthURL": authURL}); err != nil {
+	if err := s.login.ExecuteTemplate(w, "login.html", map[string]string{"AuthURL": authURL}); err != nil {
 		s.config.Logger.Error("web login template failed")
 	}
 }
 
-func (s *Server) handleTelegramAuth(w http.ResponseWriter, r *http.Request) {
-	stateCookie, err := r.Cookie(loginStateCookie)
-	if err != nil || !hmac.Equal([]byte(stateCookie.Value), []byte(r.URL.Query().Get("state"))) {
+func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	attempt, err := s.readOIDCLoginAttempt(r)
+	clearCookie(w, loginStateCookie)
+	if err != nil || !hmac.Equal([]byte(attempt.State), []byte(r.URL.Query().Get("state"))) || strings.TrimSpace(r.URL.Query().Get("code")) == "" {
 		http.Error(w, "Проверка входа не пройдена", http.StatusForbidden)
 		return
 	}
-	clearCookie(w, loginStateCookie)
-	value, err := verifyTelegramLogin(r.URL.Query(), s.config.BotToken, s.now())
+	callbackCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	token, err := s.oauth2Config.Exchange(callbackCtx, r.URL.Query().Get("code"), oauth2.VerifierOption(attempt.Verifier))
 	if err != nil {
+		s.config.Logger.Warn("Telegram OIDC code exchange failed", "error", err)
 		http.Error(w, "Telegram-авторизация недействительна", http.StatusForbidden)
+		return
+	}
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || strings.TrimSpace(rawIDToken) == "" {
+		http.Error(w, "Telegram не вернул ID token", http.StatusForbidden)
+		return
+	}
+	idToken, err := s.oidcVerifier.Verify(callbackCtx, rawIDToken)
+	if err != nil || idToken == nil || !hmac.Equal([]byte(idToken.Nonce), []byte(attempt.Nonce)) {
+		http.Error(w, "ID token Telegram не прошёл проверку", http.StatusForbidden)
+		return
+	}
+	value, err := sessionFromOIDCIDToken(idToken)
+	if err != nil {
+		http.Error(w, "Telegram не вернул корректного пользователя", http.StatusForbidden)
 		return
 	}
 	if _, allowed := s.allowedUsers[value.UserID]; !allowed {

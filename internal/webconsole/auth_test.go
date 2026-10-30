@@ -1,57 +1,55 @@
 package webconsole
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"net/url"
-	"sort"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestVerifyTelegramLogin(t *testing.T) {
+func TestOIDCLoginAttemptCookieRoundTrip(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	values := url.Values{
-		"id": {"12345"}, "first_name": {"Test"}, "last_name": {"Operator"},
-		"username": {"operator"}, "auth_date": {"1800000000"}, "state": {"local-state"},
+	server := &Server{sessionKey: []byte(strings.Repeat("s", 32)), now: func() time.Time { return now }}
+	attempt, err := newOIDCLoginAttempt(now)
+	if err != nil {
+		t.Fatal(err)
 	}
-	signTelegram(values, "bot-token")
-	got, err := verifyTelegramLogin(values, "bot-token", now)
-	if err != nil || got.UserID != 12345 || got.Name != "Test Operator" {
-		t.Fatalf("verifyTelegramLogin() = %#v, %v", got, err)
+	if attempt.State == "" || attempt.Nonce == "" || attempt.Verifier == "" || attempt.State == attempt.Nonce {
+		t.Fatalf("invalid OIDC attempt: %#v", attempt)
 	}
-
-	values.Set("first_name", "Changed")
-	if _, err := verifyTelegramLogin(values, "bot-token", now); err == nil {
-		t.Fatal("tampered Telegram login was accepted")
+	value, err := server.signOIDCLoginAttempt(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/auth/oidc/callback", nil)
+	request.AddCookie(&http.Cookie{Name: loginStateCookie, Value: value})
+	got, err := server.readOIDCLoginAttempt(request)
+	if err != nil || got != attempt {
+		t.Fatalf("readOIDCLoginAttempt() = %#v, %v", got, err)
 	}
 }
 
-func TestVerifyTelegramLoginRejectsExpiredData(t *testing.T) {
+func TestOIDCLoginAttemptRejectsTamperingAndExpiry(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	values := url.Values{"id": {"12345"}, "auth_date": {"1799999000"}}
-	signTelegram(values, "bot-token")
-	if _, err := verifyTelegramLogin(values, "bot-token", now); err == nil {
-		t.Fatal("expired Telegram login was accepted")
+	server := &Server{sessionKey: []byte(strings.Repeat("s", 32)), now: func() time.Time { return now }}
+	attempt, err := newOIDCLoginAttempt(now)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func signTelegram(values url.Values, token string) {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		if key != "hash" && key != "state" {
-			keys = append(keys, key)
-		}
+	value, err := server.signOIDCLoginAttempt(attempt)
+	if err != nil {
+		t.Fatal(err)
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+values.Get(key))
+	request := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/auth/oidc/callback", nil)
+	request.AddCookie(&http.Cookie{Name: loginStateCookie, Value: "x" + value})
+	if _, err := server.readOIDCLoginAttempt(request); err == nil {
+		t.Fatal("tampered OIDC attempt was accepted")
 	}
-	secret := sha256.Sum256([]byte(token))
-	mac := hmac.New(sha256.New, secret[:])
-	_, _ = mac.Write([]byte(strings.Join(parts, "\n")))
-	values.Set("hash", hex.EncodeToString(mac.Sum(nil)))
+	server.now = func() time.Time { return now.Add(11 * time.Minute) }
+	request = httptest.NewRequest(http.MethodGet, "https://nodes.example.com/auth/oidc/callback", nil)
+	request.AddCookie(&http.Cookie{Name: loginStateCookie, Value: value})
+	if _, err := server.readOIDCLoginAttempt(request); err == nil {
+		t.Fatal("expired OIDC attempt was accepted")
+	}
 }

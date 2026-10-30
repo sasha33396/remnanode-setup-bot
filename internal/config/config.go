@@ -94,7 +94,8 @@ type Config struct {
 	WebSessionTTL               time.Duration
 	WebTerminalTimeout          time.Duration
 	WebMaxSessions              int
-	TelegramBotUsername         string
+	TelegramOIDCClientID        string
+	TelegramOIDCClientSecret    string
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -213,8 +214,11 @@ func load(lookup lookupFunc) (Config, error) {
 	if value, ok := lookup("WEB_SESSION_SECRET"); ok {
 		cfg.WebSessionSecret = strings.TrimSpace(value)
 	}
-	if value, ok := lookup("TELEGRAM_BOT_USERNAME"); ok {
-		cfg.TelegramBotUsername = strings.TrimPrefix(strings.TrimSpace(value), "@")
+	if value, ok := lookup("TELEGRAM_OIDC_CLIENT_ID"); ok {
+		cfg.TelegramOIDCClientID = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("TELEGRAM_OIDC_CLIENT_SECRET"); ok {
+		cfg.TelegramOIDCClientSecret = strings.TrimSpace(value)
 	}
 
 	durations := []struct {
@@ -312,8 +316,11 @@ func load(lookup lookupFunc) (Config, error) {
 		if len(cfg.WebSessionSecret) < 32 {
 			validationErrors = append(validationErrors, errors.New("WEB_SESSION_SECRET must contain at least 32 characters"))
 		}
-		if !validTelegramUsername(cfg.TelegramBotUsername) {
-			validationErrors = append(validationErrors, errors.New("TELEGRAM_BOT_USERNAME must be a valid bot username"))
+		if cfg.TelegramOIDCClientID == "" || strings.ContainsAny(cfg.TelegramOIDCClientID, " \t\r\n") {
+			validationErrors = append(validationErrors, errors.New("TELEGRAM_OIDC_CLIENT_ID is required and must not contain whitespace"))
+		}
+		if len(cfg.TelegramOIDCClientSecret) < 16 || strings.ContainsAny(cfg.TelegramOIDCClientSecret, "\r\n") {
+			validationErrors = append(validationErrors, errors.New("TELEGRAM_OIDC_CLIENT_SECRET must contain at least 16 characters"))
 		}
 	}
 
@@ -550,17 +557,4 @@ func validURL(value string, database bool) bool {
 		return parsed.Scheme == "postgres" || parsed.Scheme == "postgresql"
 	}
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
-}
-
-func validTelegramUsername(value string) bool {
-	if len(value) < 5 || len(value) > 32 || !strings.HasSuffix(strings.ToLower(value), "bot") {
-		return false
-	}
-	for _, char := range value {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' {
-			continue
-		}
-		return false
-	}
-	return true
 }

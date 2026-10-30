@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	gossh "golang.org/x/crypto/ssh"
 
 	"remnanode-setup-bot/internal/deployment"
@@ -42,13 +47,81 @@ func TestNodeInventoryClassifiesManagedAndLegacyNodes(t *testing.T) {
 	}
 }
 
-func TestLoginRendersTelegramWidget(t *testing.T) {
+func TestLoginStartsTelegramOIDCWithPKCE(t *testing.T) {
 	server := newTestServer(t)
 	request := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/login", nil)
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-telegram-login="node_setup_bot"`) || len(response.Result().Cookies()) == 0 {
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `https://oauth.telegram.org/auth?`) || !strings.Contains(body, `code_challenge`) || !strings.Contains(body, `nonce`) || len(response.Result().Cookies()) == 0 {
 		t.Fatalf("login status = %d, cookies = %d, body = %s", response.Code, len(response.Result().Cookies()), response.Body.String())
+	}
+}
+
+func TestTelegramOIDCCallbackCreatesAllowedSession(t *testing.T) {
+	server := newTestServer(t)
+	now := time.Now().UTC()
+	server.now = func() time.Time { return now }
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := "test-key"
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privateKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := newOIDCLoginAttempt(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := ""
+	var rawIDToken string
+	fakeOIDC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/jwks":
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &privateKey.PublicKey, KeyID: keyID, Algorithm: string(jose.RS256), Use: "sig"}}})
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "token_type": "Bearer", "expires_in": 3600, "id_token": rawIDToken})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fakeOIDC.Close()
+	issuer = fakeOIDC.URL
+	rawIDToken, err = jwt.Signed(signer).Claims(jwt.Claims{Issuer: issuer, Subject: "42", Audience: jwt.Audience{"123456789"}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Hour))}).Claims(map[string]any{"nonce": attempt.Nonce, "id": int64(42), "name": "OIDC Operator"}).Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.oauth2Config.Endpoint.TokenURL = fakeOIDC.URL + "/token"
+	server.oidcVerifier = oidc.NewVerifier(issuer, oidc.NewRemoteKeySet(context.Background(), fakeOIDC.URL+"/jwks"), &oidc.Config{ClientID: "123456789"})
+	attemptCookie, err := server.signOIDCLoginAttempt(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/auth/oidc/callback?state="+url.QueryEscape(attempt.State)+"&code=test-code", nil)
+	request.AddCookie(&http.Cookie{Name: loginStateCookie, Value: attemptCookie})
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("callback status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == sessionCookieName {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("session cookie was not issued")
+	}
+	sessionRequest := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/api/session", nil)
+	sessionRequest.AddCookie(sessionCookie)
+	value, _, ok := server.readSession(sessionRequest)
+	if !ok || value.UserID != 42 || value.Name != "OIDC Operator" {
+		t.Fatalf("session = %#v, ok = %v", value, ok)
 	}
 }
 
@@ -182,7 +255,7 @@ func newTestServer(t *testing.T) *Server {
 		{PanelID: "main", PanelName: "Main", UUID: "11111111-1111-4111-8111-111111111111", Name: "Managed", Address: "192.0.2.10", Connected: true},
 		{PanelID: "main", PanelName: "Main", UUID: "22222222-2222-4222-8222-222222222222", Name: "Legacy", Address: "192.0.2.11"},
 	}}
-	server, err := New(Config{Addr: ":8081", PublicURL: "https://nodes.example.com", BotToken: "token", BotUsername: "node_setup_bot", SessionSecret: strings.Repeat("s", 32), SessionTTL: time.Hour, TerminalTimeout: time.Hour, MaxSessions: 2, AllowedUsers: []int64{42}}, provider, finder, client, client)
+	server, err := New(Config{Addr: ":8081", PublicURL: "https://nodes.example.com", OIDCClientID: "123456789", OIDCClientSecret: strings.Repeat("o", 32), SessionSecret: strings.Repeat("s", 32), SessionTTL: time.Hour, TerminalTimeout: time.Hour, MaxSessions: 2, AllowedUsers: []int64{42}}, provider, finder, client, client)
 	if err != nil {
 		t.Fatal(err)
 	}
