@@ -154,7 +154,10 @@ func (s *Server) issueSessionCookie(w http.ResponseWriter, value session) error 
 	mac := hmac.New(sha256.New, s.sessionKey)
 	_, _ = mac.Write([]byte(encoded))
 	signed := encoded + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: signed, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, Expires: time.Unix(value.ExpiresAt, 0), MaxAge: int(s.config.SessionTTL.Seconds())})
+	// Lax is required because this cookie is issued on the top-level callback
+	// from oauth.telegram.org and must survive the immediate redirect to "/".
+	// Mutating requests are additionally protected by a per-session CSRF token.
+	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: signed, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, Expires: time.Unix(value.ExpiresAt, 0), MaxAge: int(s.config.SessionTTL.Seconds())})
 	return nil
 }
 

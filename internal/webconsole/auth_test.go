@@ -35,6 +35,27 @@ func TestParseTelegramUserIDRejectsMissingAndInvalidValues(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSurvivesOIDCCallbackRedirect(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	server := &Server{
+		config:     Config{SessionTTL: 12 * time.Hour},
+		sessionKey: []byte(strings.Repeat("s", 32)),
+		now:        func() time.Time { return now },
+	}
+	response := httptest.NewRecorder()
+	if err := server.issueSessionCookie(response, session{UserID: 42, Name: "Operator"}); err != nil {
+		t.Fatal(err)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d; want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != sessionCookieName || cookie.SameSite != http.SameSiteLaxMode || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" {
+		t.Fatalf("unexpected session cookie: %#v", cookie)
+	}
+}
+
 func TestOIDCLoginAttemptCookieRoundTrip(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	server := &Server{sessionKey: []byte(strings.Repeat("s", 32)), now: func() time.Time { return now }}
