@@ -58,8 +58,9 @@ support. In the @BotFather mini app open the bot's **Login Widget** settings,
 register `https://nodes.example.com` and the exact redirect URI
 `https://nodes.example.com/auth/oidc/callback`, then copy the issued Client ID
 and Client Secret into the two OIDC variables. The console uses Telegram's
-Authorization Code flow with PKCE, `state`, `nonce`, and signed ID-token
-verification through the official JWKS endpoint. Keep the BotFather signing
+Authorization Code flow with PKCE and signed `state`. It verifies the ID-token
+signature through the official JWKS endpoint, as well as issuer, audience, expiration,
+and `nonce` when Telegram returns it. Keep the BotFather signing
 algorithm at its default `RS256` value.
 
 Only IDs already present in `TELEGRAM_ALLOWED_USERS` may sign in. The inventory

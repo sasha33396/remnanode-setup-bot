@@ -321,9 +321,18 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idToken, err := s.oidcVerifier.Verify(callbackCtx, rawIDToken)
-	if err != nil || idToken == nil || !hmac.Equal([]byte(idToken.Nonce), []byte(attempt.Nonce)) {
+	if err != nil || idToken == nil {
+		s.config.Logger.Warn("Telegram OIDC ID token verification failed", "error", err)
 		http.Error(w, "ID token Telegram не прошёл проверку", http.StatusForbidden)
 		return
+	}
+	if idToken.Nonce != "" && !hmac.Equal([]byte(idToken.Nonce), []byte(attempt.Nonce)) {
+		s.config.Logger.Warn("Telegram OIDC nonce mismatch")
+		http.Error(w, "ID token Telegram не прошёл проверку nonce", http.StatusForbidden)
+		return
+	}
+	if idToken.Nonce == "" {
+		s.config.Logger.Info("Telegram OIDC ID token omitted nonce; signed state and PKCE were verified")
 	}
 	value, err := sessionFromOIDCIDToken(idToken)
 	if err != nil {

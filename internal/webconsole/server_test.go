@@ -125,6 +125,55 @@ func TestTelegramOIDCCallbackCreatesAllowedSession(t *testing.T) {
 	}
 }
 
+func TestTelegramOIDCCallbackAcceptsVerifiedTokenWithoutNonce(t *testing.T) {
+	server := newTestServer(t)
+	now := time.Now().UTC()
+	server.now = func() time.Time { return now }
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := "test-key-without-nonce"
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privateKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", keyID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := newOIDCLoginAttempt(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawIDToken string
+	fakeOIDC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/jwks":
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &privateKey.PublicKey, KeyID: keyID, Algorithm: string(jose.RS256), Use: "sig"}}})
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "token_type": "Bearer", "expires_in": 3600, "id_token": rawIDToken})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fakeOIDC.Close()
+	rawIDToken, err = jwt.Signed(signer).Claims(jwt.Claims{Issuer: fakeOIDC.URL, Subject: "42", Audience: jwt.Audience{"123456789"}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Hour))}).Claims(map[string]any{"id": int64(42), "name": "OIDC Operator"}).Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.oauth2Config.Endpoint.TokenURL = fakeOIDC.URL + "/token"
+	server.oidcVerifier = oidc.NewVerifier(fakeOIDC.URL, oidc.NewRemoteKeySet(context.Background(), fakeOIDC.URL+"/jwks"), &oidc.Config{ClientID: "123456789"})
+	attemptCookie, err := server.signOIDCLoginAttempt(attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/auth/oidc/callback?state="+url.QueryEscape(attempt.State)+"&code=test-code", nil)
+	request.AddCookie(&http.Cookie{Name: loginStateCookie, Value: attemptCookie})
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("callback status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestActualizeNodeRequiresSessionCSRFAndReturnsInventory(t *testing.T) {
 	server := newTestServer(t)
 	recorder := httptest.NewRecorder()
