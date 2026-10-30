@@ -44,6 +44,39 @@ func safeProvisioningMessage(err error) string {
 	return "VPS provisioning failed"
 }
 
+type preflightPhaseError struct {
+	code    string
+	message string
+}
+
+func (e *preflightPhaseError) Error() string { return e.message }
+
+func preflightFailure(code, message string) error {
+	return &preflightPhaseError{code: code, message: message}
+}
+
+func safePreflightFailure(err error) (string, string) {
+	var phase *preflightPhaseError
+	if errors.As(err, &phase) && strings.TrimSpace(phase.code) != "" && strings.TrimSpace(phase.message) != "" {
+		return phase.code, phase.message
+	}
+	return "PREFLIGHT_FAILED", "Не удалось завершить предварительную проверку VPS"
+}
+
+func safeInitialSSHFailure(ctx context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return preflightFailure("SSH_CONNECTION_TIMEOUT", "Истекло время подключения к SSH. Проверьте доступность TCP/22")
+	}
+	detail := strings.ToLower(err.Error())
+	if strings.Contains(detail, "unable to authenticate") || strings.Contains(detail, "no supported methods remain") {
+		return preflightFailure("SSH_AUTHENTICATION_FAILED", "SSH доступен, но пароль root отклонён или PasswordAuthentication отключён")
+	}
+	if strings.Contains(detail, "host key") || strings.Contains(detail, "fingerprint") {
+		return preflightFailure("SSH_HOST_KEY_VERIFICATION_FAILED", "Не удалось проверить ключ SSH-хоста; проверьте, не был ли сервер переустановлен")
+	}
+	return preflightFailure("SSH_CONNECTION_FAILED", "Не удалось подключиться к SSH. Проверьте IP и доступность TCP/22")
+}
+
 func NewSSHProvisioner(ssh *sshclient.Client, store provisioner.StepStore, config SSHProvisionerConfig) (*SSHProvisioner, error) {
 	if ssh == nil || store == nil || !config.RemnawaveAPIIP.IsValid() || !config.MetricsIP.IsValid() || strings.TrimSpace(config.XrayRepository) == "" || strings.TrimSpace(config.XrayRef) == "" {
 		return nil, errors.New("invalid SSH provisioner configuration")
@@ -62,21 +95,27 @@ func (v *SSHProvisioner) Preflight(ctx context.Context, input PreflightVPSInput)
 	defer credentials.Clear()
 	connection, err := v.ssh.ConnectInitial(ctx, input.DeploymentID, credentials)
 	if err != nil {
-		return provisioner.PreflightResult{}, errors.New("initial SSH connection failed")
+		return provisioner.PreflightResult{}, safeInitialSSHFailure(ctx, err)
 	}
 	defer connection.Close()
 	requirements := v.config.Preflight
 	requirements.AllowExistingInstallation = input.AllowExistingInstallation
 	check, err := provisioner.NewPreflight(connection, requirements)
 	if err != nil {
-		return provisioner.PreflightResult{}, errors.New("create VPS preflight failed")
+		return provisioner.PreflightResult{}, preflightFailure("PREFLIGHT_SETUP_FAILED", "Не удалось подготовить проверку VPS")
 	}
 	result, err := check.Run(ctx)
-	if err != nil || !result.Passed() {
-		return result, err
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return result, preflightFailure("PREFLIGHT_TIMEOUT", "Проверка VPS по SSH превысила допустимое время")
+		}
+		return result, preflightFailure("PREFLIGHT_COMMAND_FAILED", "Не удалось выполнить проверочные команды на VPS")
+	}
+	if !result.Passed() {
+		return result, nil
 	}
 	if err := v.ssh.InstallDeploymentPublicKey(ctx, connection); err != nil {
-		return provisioner.PreflightResult{}, errors.New("deployment SSH key installation failed")
+		return provisioner.PreflightResult{}, preflightFailure("DEPLOYMENT_KEY_INSTALL_FAILED", "SSH доступен, но не удалось установить deploy-key в /root/.ssh/authorized_keys")
 	}
 	return result, nil
 }

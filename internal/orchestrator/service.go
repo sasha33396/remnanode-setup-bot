@@ -152,7 +152,8 @@ func (s *DeploymentService) Prepare(ctx context.Context, input PrepareInput) (Pr
 		return PreparedDeployment{}, runCtx.Err()
 	}
 	if preflightErr != nil {
-		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, "PREFLIGHT_FAILED", "VPS preflight could not be completed", ErrPreflightFailed)
+		code, message := safePreflightFailure(preflightErr)
+		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, code, message, ErrPreflightFailed)
 	}
 	if !result.Passed() {
 		message := "VPS did not pass preflight"
@@ -309,7 +310,8 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, runCtx.Err()
 	}
 	if preflightErr != nil {
-		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, "PREFLIGHT_FAILED", "VPS preflight could not be completed", ErrPreflightFailed)
+		code, message := safePreflightFailure(preflightErr)
+		return PreparedDeployment{}, s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, code, message, ErrPreflightFailed)
 	}
 	if !result.Passed() {
 		message := "VPS did not pass preflight"

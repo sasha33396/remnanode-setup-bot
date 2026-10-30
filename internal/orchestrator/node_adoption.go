@@ -152,7 +152,8 @@ func (s *DeploymentService) preflightLegacyAdoption(ctx context.Context, created
 		return runCtx.Err()
 	}
 	if preflightErr != nil {
-		return s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, "PREFLIGHT_FAILED", "VPS preflight could not be completed", ErrPreflightFailed)
+		code, message := safePreflightFailure(preflightErr)
+		return s.failStage(runCtx, created.ID, stepPreflight, deployment.StatusFailed, code, message, ErrPreflightFailed)
 	}
 	if !result.Passed() {
 		message := "VPS did not pass preflight"
