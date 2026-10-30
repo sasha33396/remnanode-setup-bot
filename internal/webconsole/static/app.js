@@ -82,7 +82,9 @@
       if (job.status === 'failed') {
         const error = job.error || 'Операция завершилась с ошибкой';
         const stage = job.progress && job.progress.message ? job.progress.message : '';
-        showJobProgress(message, { ...(job.progress || {}), failed: true, message: stage ? `${error}. Последний этап: ${stage}` : error });
+        const separator = message.indexOf(':');
+        const failedTitle = separator > 0 ? `${message.slice(0, separator)}: операция завершилась с ошибкой` : 'Операция завершилась с ошибкой';
+        showJobProgress(failedTitle, { ...(job.progress || {}), failed: true, message: stage ? `${error}. Последний этап: ${stage}` : error });
         throw new Error(error);
       }
       await delay(2000);
