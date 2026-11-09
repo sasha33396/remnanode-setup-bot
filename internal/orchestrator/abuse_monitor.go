@@ -34,17 +34,18 @@ type AbuseMonitorConfig struct {
 }
 
 type AbuseMonitor struct {
-	app           *TelegramApplication
-	store         abuse.Store
-	ssh           *sshclient.Client
-	messenger     telegram.Messenger
-	allowed       []int64
-	config        AbuseMonitorConfig
-	logger        *slog.Logger
-	apiMu         sync.RWMutex
-	apiIPs        map[[2]string]map[netip.Addr]time.Time
-	apiPanels     map[string]bool
-	ipInfoLookups atomic.Int64
+	app               *TelegramApplication
+	store             abuse.Store
+	ssh               *sshclient.Client
+	messenger         telegram.Messenger
+	allowed           []int64
+	config            AbuseMonitorConfig
+	logger            *slog.Logger
+	apiMu             sync.RWMutex
+	apiIPs            map[[2]string]map[netip.Addr]time.Time
+	apiPanels         map[string]bool
+	ipInfoLookups     atomic.Int64
+	ipInfoErrorLogged atomic.Bool
 }
 
 func NewAbuseMonitor(app *TelegramApplication, store abuse.Store, ssh *sshclient.Client, messenger telegram.Messenger, allowed []int64, config AbuseMonitorConfig, logger *slog.Logger) (*AbuseMonitor, error) {
@@ -82,6 +83,7 @@ func (m *AbuseMonitor) Run(ctx context.Context) error {
 
 func (m *AbuseMonitor) poll(ctx context.Context) {
 	m.ipInfoLookups.Store(0)
+	m.ipInfoErrorLogged.Store(false)
 	targets, err := m.targets(ctx)
 	if err != nil {
 		m.logger.Warn("abuse monitor inventory failed", slog.Any("error", err))
@@ -290,8 +292,8 @@ func (m *AbuseMonitor) lookupIntelligence(ctx context.Context, ip netip.Addr) ab
 		resolved, err := m.config.IPInfo.Lookup(ctx, ip)
 		if err == nil {
 			info = resolved
-		} else {
-			m.logger.Debug("IPinfo lookup failed; using local fallback", slog.String("ip", ip.String()), slog.Any("error", err))
+		} else if m.ipInfoErrorLogged.CompareAndSwap(false, true) {
+			m.logger.Warn("IPinfo lookup failed; using local fallback", slog.String("ip", ip.String()), slog.Any("error", err))
 		}
 	}
 	if info.ASN == 0 {
@@ -317,18 +319,24 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 		if loadErr != nil {
 			continue
 		}
-		intel := enrichUnknownEvents(events, func(ip netip.Addr) abuse.Intelligence {
-			return m.lookupIntelligence(ctx, ip)
-		})
+		intel := storedEventIntelligence(events)
 		observedIPs, fromAPI := m.apiSnapshot(identity[0], identity[1])
-		if fromAPI {
-			for ip := range observedIPs {
-				intel[ip] = m.lookupIntelligence(ctx, ip)
-			}
-		} else {
+		if !fromAPI {
 			observedIPs = nil
 		}
 		assessment := abuse.Assess(identity[0], identity[1], events, intel, observedIPs, now, m.config.Thresholds)
+		if assessment.Risk != abuse.RiskLow || assessment.UniqueIPs24H >= m.config.Thresholds.UniqueASNWarn24H {
+			m.ipInfoLookups.Store(0)
+			intel = enrichUnknownEvents(events, func(ip netip.Addr) abuse.Intelligence {
+				return m.lookupIntelligence(ctx, ip)
+			})
+			if fromAPI {
+				for ip := range observedIPs {
+					intel[ip] = m.lookupIntelligence(ctx, ip)
+				}
+			}
+			assessment = abuse.Assess(identity[0], identity[1], events, intel, observedIPs, now, m.config.Thresholds)
+		}
 		if err := m.store.SaveAssessment(ctx, assessment); err != nil {
 			m.logger.Warn("abuse assessment persistence failed", slog.String("panel_id", identity[0]), slog.Any("error", err))
 			continue
@@ -349,12 +357,7 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 // single lookup per unique IP is enough to make old incidents useful after
 // IPinfo is enabled.
 func enrichUnknownEvents(events []abuse.Event, resolve func(netip.Addr) abuse.Intelligence) map[netip.Addr]abuse.Intelligence {
-	intel := make(map[netip.Addr]abuse.Intelligence)
-	for _, event := range events {
-		if event.ClientIP.IsValid() && event.ASN != 0 {
-			intel[event.ClientIP] = abuse.Intelligence{ASN: event.ASN, Provider: event.Provider, Category: event.Category}
-		}
-	}
+	intel := storedEventIntelligence(events)
 	for index := range events {
 		ip := events[index].ClientIP
 		if !ip.IsValid() {
@@ -367,6 +370,16 @@ func enrichUnknownEvents(events []abuse.Event, resolve func(netip.Addr) abuse.In
 		}
 		if events[index].ASN == 0 && info.ASN != 0 {
 			events[index].ASN, events[index].Provider, events[index].Category = info.ASN, info.Provider, info.Category
+		}
+	}
+	return intel
+}
+
+func storedEventIntelligence(events []abuse.Event) map[netip.Addr]abuse.Intelligence {
+	intel := make(map[netip.Addr]abuse.Intelligence)
+	for _, event := range events {
+		if event.ClientIP.IsValid() && event.ASN != 0 {
+			intel[event.ClientIP] = abuse.Intelligence{ASN: event.ASN, Provider: event.Provider, Category: event.Category}
 		}
 	}
 	return intel
