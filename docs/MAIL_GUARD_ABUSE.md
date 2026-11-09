@@ -72,7 +72,8 @@ git fetch origin
 git switch feature/mail-guard-abuse-monitor
 git pull --ff-only origin feature/mail-guard-abuse-monitor
 set -a; . ./.env; set +a
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.up.sql
+docker compose up -d postgres
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < migrations/000009_abuse_monitor.up.sql
 docker compose up -d --build
 docker compose logs -f --tail=100 deployer
 ```
