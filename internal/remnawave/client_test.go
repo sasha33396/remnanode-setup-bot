@@ -284,6 +284,32 @@ func TestClientTimeout(t *testing.T) {
 	}
 }
 
+func TestFetchNodeUserIPsPollsJobResult(t *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/ip-control/fetch-users-ips/"+testNodeUUID:
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"response":{"jobId":"job-1"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/ip-control/fetch-users-ips/result/job-1":
+			if polls.Add(1) == 1 {
+				fmt.Fprint(w, `{"response":{"isCompleted":false,"isFailed":false,"result":null}}`)
+				return
+			}
+			fmt.Fprint(w, `{"response":{"isCompleted":true,"isFailed":false,"result":{"success":true,"nodeUuid":"`+testNodeUUID+`","users":[{"userId":"42","ips":[{"ip":"8.8.8.8","lastSeen":"2026-11-09T12:00:00Z"}]}]}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 2*time.Second)
+	users, err := client.FetchNodeUserIPs(context.Background(), testNodeUUID)
+	if err != nil || len(users) != 1 || users[0].UserID != "42" || users[0].IPs[0].IP.String() != "8.8.8.8" || polls.Load() != 2 {
+		t.Fatalf("FetchNodeUserIPs() = %#v, %v; polls=%d", users, err, polls.Load())
+	}
+}
+
 func TestCreateNodeStopsOnDuplicate(t *testing.T) {
 	var postCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

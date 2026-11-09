@@ -32,7 +32,7 @@ func TestParseBlockRoutes(t *testing.T) {
 func TestAssessmentDoesNotFlagNormalIMAP(t *testing.T) {
 	now := time.Date(2026, 11, 9, 15, 0, 0, 0, time.UTC)
 	event := Event{PanelID: "a", UserID: "42", OccurredAt: now.Add(-time.Minute), ClientIP: netip.MustParseAddr("192.0.2.1"), DestinationPort: 993}
-	got := Assess("a", "42", []Event{event}, nil, now, DefaultThresholds())
+	got := Assess("a", "42", []Event{event}, nil, nil, now, DefaultThresholds())
 	if got.Risk != RiskLow || got.Score != 0 {
 		t.Fatalf("assessment = %#v", got)
 	}
@@ -44,7 +44,7 @@ func TestAssessmentScopesSameUserToPanel(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		events = append(events, Event{PanelID: "other", UserID: "42", OccurredAt: now, ClientIP: netip.MustParseAddr("192.0.2.1"), DestinationPort: 25})
 	}
-	if got := Assess("main", "42", events, nil, now, DefaultThresholds()); got.Risk != RiskLow {
+	if got := Assess("main", "42", events, nil, nil, now, DefaultThresholds()); got.Risk != RiskLow {
 		t.Fatalf("cross-panel events leaked: %#v", got)
 	}
 }
@@ -55,7 +55,20 @@ func TestMassSMTPCreatesHighRisk(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		events = append(events, Event{PanelID: "main", UserID: "42", OccurredAt: now.Add(-time.Minute), ClientIP: netip.MustParseAddr("192.0.2.1"), DestinationPort: 25})
 	}
-	if got := Assess("main", "42", events, nil, now, DefaultThresholds()); got.Risk != RiskHigh {
+	if got := Assess("main", "42", events, nil, nil, now, DefaultThresholds()); got.Risk != RiskHigh {
+		t.Fatalf("assessment = %#v", got)
+	}
+}
+
+func TestAssessmentUsesRemnawaveIPLastSeenButKeepsMailCountsFromLogs(t *testing.T) {
+	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	event := Event{PanelID: "main", UserID: "42", OccurredAt: now.Add(-time.Minute), ClientIP: netip.MustParseAddr("192.0.2.1"), DestinationPort: 25}
+	observed := map[netip.Addr]time.Time{
+		netip.MustParseAddr("8.8.8.8"): now.Add(-10 * time.Minute),
+		netip.MustParseAddr("1.1.1.1"): now.Add(-2 * time.Hour),
+	}
+	got := Assess("main", "42", []Event{event}, nil, observed, now, DefaultThresholds())
+	if !got.IPsFromAPI || got.UniqueIPs1H != 1 || got.UniqueIPs24H != 2 || got.SMTP25Attempts10M != 1 {
 		t.Fatalf("assessment = %#v", got)
 	}
 }

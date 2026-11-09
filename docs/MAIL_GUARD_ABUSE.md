@@ -35,9 +35,13 @@ does not emit alerts for an unbounded history. Events are retained for seven
 days by default. Legacy-only nodes are not polled because the service does not
 retain their password; after adoption they are monitored as managed nodes.
 
-The current Remnawave client does not expose a reliable user UUID lookup for an
-access-log `email` value. Identity is therefore explicitly scoped as
-`panel_id + email/User ID`; equal IDs from different panels never mix.
+Mail-port attempts, destinations, `BLOCK` and `DIRECT` are always calculated
+from each node's `access.log`. Unique client IP/ASN windows are obtained from
+Remnawave v2 IP-control (`fetch-users-ips`) and its per-IP `lastSeen` value.
+The panel token therefore needs both IP-control fetch/result permissions. If a
+complete panel snapshot cannot be obtained, the monitor explicitly falls back
+to access-log IP counts for that poll. Identity is scoped as `panel_id +
+email/User ID`; equal IDs from different panels never mix.
 
 `accepted` means Xray accepted the request and `DIRECT` is only a route choice.
 Neither proves SMTP succeeded. `BLOCK` events remain attempts and contribute
@@ -52,14 +56,19 @@ Optional local IP intelligence is a CSV selected by `ABUSE_IP_INTEL_FILE`:
 203.0.113.0/24,AS64500,Example Hosting,HOSTING
 ```
 
-Without this file provider, ASN and category are `UNKNOWN`; no paid API is
-required. `ABUSE_ASN_OVERRIDES=AS64500=HOSTING,AS64501=PROXY` overrides local
-categories.
+Server-side IPinfo enrichment is optional. Set `IPINFO_TOKEN` and use
+`IPINFO_TIER=lite` for the free unlimited Lite endpoint (ASN/provider), or
+`IPINFO_TIER=core` for ASN type plus hosting/anonymous flags. Results are kept
+in the existing PostgreSQL cache for seven days and failures safely fall back
+to the local CSV. Without IPinfo or this file, ASN/category are `UNKNOWN`.
+`ABUSE_ASN_OVERRIDES=AS64500=HOSTING,AS64501=PROXY` overrides either source.
 
-Alerts go only to `TELEGRAM_ALLOWED_USERS` and include Details, Statistics and
-Ignore for 24 hours. Incidents are unique by panel, user and anomaly type. The
-default cooldown is 60 minutes, with an immediate alert when risk increases.
-Incident state survives restarts.
+Alerts go only to `TELEGRAM_ALLOWED_USERS`, label whether IP counts came from
+Remnawave API or the log fallback, and add safe `https://ipinfo.io/<ip>` buttons
+for the busiest client IPs. They also include Details, Statistics and Ignore
+for 24 hours. Incidents are unique by panel, user and anomaly type. The default
+cooldown is 60 minutes, with an immediate alert when risk increases. Incident
+state survives restarts.
 
 ## Production update
 

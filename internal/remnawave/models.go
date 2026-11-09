@@ -2,6 +2,7 @@
 package remnawave
 
 import (
+	"context"
 	"encoding/json"
 	"net/netip"
 	"time"
@@ -63,6 +64,24 @@ type NodeMetric struct {
 	NodeUUID    string
 	NodeName    string
 	UsersOnline int
+}
+
+// UserIP is a Remnawave IP-control observation for a user on a Node.
+type UserIP struct {
+	IP       netip.Addr
+	LastSeen time.Time
+}
+
+// NodeUserIPs groups observations by the Xray user ID used in access.log.
+type NodeUserIPs struct {
+	UserID string
+	IPs    []UserIP
+}
+
+// NodeUserIPsAPI is separate from API because IP-control requires an optional
+// Remnawave token scope and is not needed by deployment operations.
+type NodeUserIPsAPI interface {
+	FetchNodeUserIPs(context.Context, string) ([]NodeUserIPs, error)
 }
 
 // CreateNodeInput contains operator input plus the selected Host. The API port

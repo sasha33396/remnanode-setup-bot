@@ -269,10 +269,18 @@ func run() int {
 			logger.Error("local IP intelligence initialization failed", slog.Any("error", intelligenceErr))
 			return 1
 		}
+		var ipInfo *abuse.IPInfoClient
+		if cfg.IPInfoToken != "" {
+			ipInfo, err = abuse.NewIPInfoClient(cfg.IPInfoToken, cfg.IPInfoTier, cfg.HTTPTimeout)
+			if err != nil {
+				logger.Error("IPinfo initialization failed")
+				return 1
+			}
+		}
 		abuseMonitor, err = orchestrator.NewAbuseMonitor(application, repository, ssh, bot, cfg.TelegramAllowedUsers, orchestrator.AbuseMonitorConfig{
 			Interval: cfg.AbuseMonitorInterval, Cooldown: cfg.AbuseAlertCooldown, Retention: cfg.AbuseEventRetention,
 			LogPath: cfg.AbuseLogPath, LogLocation: location, MaxConcurrent: cfg.AbuseMaxConcurrentNodes,
-			Intelligence: intelligence,
+			Intelligence: intelligence, IPInfo: ipInfo, ASNOverrides: cfg.AbuseASNOverrides,
 			Thresholds: abuse.Thresholds{
 				SMTP25Warn10M: cfg.AbuseSMTP25Warn10M, SMTP25High10M: cfg.AbuseSMTP25High10M,
 				SubmissionWarn1H: cfg.AbuseSubmissionWarn1H, SubmissionHigh1H: cfg.AbuseSubmissionHigh1H,

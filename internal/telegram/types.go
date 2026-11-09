@@ -46,6 +46,7 @@ type CallbackQuery struct {
 type Button struct {
 	Text         string
 	CallbackData string
+	URL          string
 }
 
 // Keyboard represents either an inline or a reply keyboard.

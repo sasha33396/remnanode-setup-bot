@@ -93,6 +93,8 @@ type Config struct {
 	AbuseLogPath                string
 	AbuseLogTimezone            string
 	AbuseIPIntelFile            string
+	IPInfoToken                 string
+	IPInfoTier                  string
 	AbuseASNOverrides           map[uint32]string
 	AbuseMaxConcurrentNodes     int
 	AbuseSMTP25Warn10M          int
@@ -185,6 +187,7 @@ func load(lookup lookupFunc) (Config, error) {
 		AbuseEventRetention:         7 * 24 * time.Hour,
 		AbuseLogPath:                "/var/log/remnanode/access.log",
 		AbuseLogTimezone:            "UTC",
+		IPInfoTier:                  "lite",
 		AbuseASNOverrides:           make(map[uint32]string),
 		AbuseMaxConcurrentNodes:     4,
 		AbuseSMTP25Warn10M:          10,
@@ -276,6 +279,15 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 	if value, ok := lookup("ABUSE_IP_INTEL_FILE"); ok {
 		cfg.AbuseIPIntelFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("IPINFO_TOKEN"); ok {
+		cfg.IPInfoToken = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("IPINFO_TIER"); ok && strings.TrimSpace(value) != "" {
+		cfg.IPInfoTier = strings.ToLower(strings.TrimSpace(value))
+	}
+	if cfg.IPInfoTier != "lite" && cfg.IPInfoTier != "core" {
+		validationErrors = append(validationErrors, errors.New("IPINFO_TIER must be lite or core"))
 	}
 	if value, ok := lookup("ABUSE_ASN_OVERRIDES"); ok && strings.TrimSpace(value) != "" {
 		cfg.AbuseASNOverrides, validationErrors = parseASNOverrides(value, validationErrors)

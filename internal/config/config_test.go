@@ -60,16 +60,22 @@ func TestLoadAbuseMonitorOverrides(t *testing.T) {
 	values["ABUSE_SMTP25_WARN_10M"] = "20"
 	values["ABUSE_SMTP25_HIGH_10M"] = "80"
 	values["ABUSE_ASN_OVERRIDES"] = "AS64500=HOSTING,64501=PROXY"
+	values["IPINFO_TOKEN"] = "ipinfo-secret"
+	values["IPINFO_TIER"] = "core"
 	cfg, err := load(mapLookup(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AbuseMonitorInterval != 2*time.Minute || cfg.AbuseAlertCooldown != 90*time.Minute || cfg.AbuseSMTP25Warn10M != 20 || cfg.AbuseSMTP25High10M != 80 || cfg.AbuseASNOverrides[64501] != "PROXY" {
+	if cfg.AbuseMonitorInterval != 2*time.Minute || cfg.AbuseAlertCooldown != 90*time.Minute || cfg.AbuseSMTP25Warn10M != 20 || cfg.AbuseSMTP25High10M != 80 || cfg.AbuseASNOverrides[64501] != "PROXY" || cfg.IPInfoToken != "ipinfo-secret" || cfg.IPInfoTier != "core" {
 		t.Fatalf("abuse monitor overrides = %#v", cfg)
 	}
 	values["ABUSE_SMTP25_HIGH_10M"] = "10"
 	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "HIGH thresholds") {
 		t.Fatalf("invalid abuse thresholds error = %v", err)
+	}
+	values["IPINFO_TIER"] = "paid-magic"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "IPINFO_TIER") {
+		t.Fatalf("invalid IPinfo tier error = %v", err)
 	}
 }
 

@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"remnanode-setup-bot/internal/abuse"
+	"remnanode-setup-bot/internal/remnawave"
 	sshclient "remnanode-setup-bot/internal/ssh"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -27,16 +29,22 @@ type AbuseMonitorConfig struct {
 	MaxConcurrent                 int
 	Thresholds                    abuse.Thresholds
 	Intelligence                  *abuse.LocalIntelligence
+	IPInfo                        *abuse.IPInfoClient
+	ASNOverrides                  map[uint32]string
 }
 
 type AbuseMonitor struct {
-	app       *TelegramApplication
-	store     abuse.Store
-	ssh       *sshclient.Client
-	messenger telegram.Messenger
-	allowed   []int64
-	config    AbuseMonitorConfig
-	logger    *slog.Logger
+	app           *TelegramApplication
+	store         abuse.Store
+	ssh           *sshclient.Client
+	messenger     telegram.Messenger
+	allowed       []int64
+	config        AbuseMonitorConfig
+	logger        *slog.Logger
+	apiMu         sync.RWMutex
+	apiIPs        map[[2]string]map[netip.Addr]time.Time
+	apiPanels     map[string]bool
+	ipInfoLookups atomic.Int64
 }
 
 func NewAbuseMonitor(app *TelegramApplication, store abuse.Store, ssh *sshclient.Client, messenger telegram.Messenger, allowed []int64, config AbuseMonitorConfig, logger *slog.Logger) (*AbuseMonitor, error) {
@@ -49,7 +57,7 @@ func NewAbuseMonitor(app *TelegramApplication, store abuse.Store, ssh *sshclient
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AbuseMonitor{app: app, store: store, ssh: ssh, messenger: messenger, allowed: append([]int64(nil), allowed...), config: config, logger: logger}, nil
+	return &AbuseMonitor{app: app, store: store, ssh: ssh, messenger: messenger, allowed: append([]int64(nil), allowed...), config: config, logger: logger, apiIPs: make(map[[2]string]map[netip.Addr]time.Time), apiPanels: make(map[string]bool)}, nil
 }
 
 func (m *AbuseMonitor) Run(ctx context.Context) error {
@@ -73,6 +81,7 @@ func (m *AbuseMonitor) Run(ctx context.Context) error {
 }
 
 func (m *AbuseMonitor) poll(ctx context.Context) {
+	m.ipInfoLookups.Store(0)
 	targets, err := m.targets(ctx)
 	if err != nil {
 		m.logger.Warn("abuse monitor inventory failed", slog.Any("error", err))
@@ -80,6 +89,12 @@ func (m *AbuseMonitor) poll(ctx context.Context) {
 	}
 	sem := make(chan struct{}, m.config.MaxConcurrent)
 	var workers sync.WaitGroup
+	var snapshotMu sync.Mutex
+	snapshots := make(map[[2]string]map[netip.Addr]time.Time)
+	expected, succeeded := make(map[string]int), make(map[string]int)
+	for _, target := range targets {
+		expected[target.panelID]++
+	}
 	for _, target := range targets {
 		target := target
 		workers.Add(1)
@@ -94,10 +109,45 @@ func (m *AbuseMonitor) poll(ctx context.Context) {
 			if err := m.collect(ctx, target); err != nil {
 				m.logger.Warn("abuse log collection skipped node", slog.String("panel_id", target.panelID), slog.String("node_name", target.nodeName), slog.Any("error", err))
 			}
+			users, apiErr := m.fetchNodeUserIPs(ctx, target)
+			if apiErr != nil {
+				m.logger.Warn("Remnawave IP-control snapshot skipped node", slog.String("panel_id", target.panelID), slog.String("node_name", target.nodeName), slog.Any("error", apiErr))
+				return
+			}
+			snapshotMu.Lock()
+			succeeded[target.panelID]++
+			for _, user := range users {
+				key := [2]string{target.panelID, user.UserID}
+				if snapshots[key] == nil {
+					snapshots[key] = make(map[netip.Addr]time.Time)
+				}
+				for _, item := range user.IPs {
+					if item.LastSeen.After(snapshots[key][item.IP]) {
+						snapshots[key][item.IP] = item.LastSeen
+					}
+				}
+			}
+			snapshotMu.Unlock()
 		}()
 	}
 	workers.Wait()
+	completePanels := make(map[string]bool)
+	for panelID, count := range expected {
+		completePanels[panelID] = count > 0 && succeeded[panelID] == count
+	}
+	m.apiMu.Lock()
+	m.apiIPs, m.apiPanels = snapshots, completePanels
+	m.apiMu.Unlock()
 	m.analyze(ctx)
+}
+
+func (m *AbuseMonitor) fetchNodeUserIPs(ctx context.Context, target managedActualizeTarget) ([]remnawave.NodeUserIPs, error) {
+	panel := m.app.panels[target.panelID]
+	provider, ok := panel.Service.remnawave.(remnawave.NodeUserIPsAPI)
+	if !ok {
+		return nil, errors.New("Remnawave IP-control is unavailable")
+	}
+	return provider.FetchNodeUserIPs(ctx, target.nodeUUID)
 }
 
 func (m *AbuseMonitor) targets(ctx context.Context) ([]managedActualizeTarget, error) {
@@ -231,9 +281,25 @@ func (m *AbuseMonitor) saveLogChunks(ctx context.Context, target managedActualiz
 func (m *AbuseMonitor) lookupIntelligence(ctx context.Context, ip netip.Addr) abuse.Intelligence {
 	now := time.Now().UTC()
 	if info, found, err := m.store.LoadIPIntelligence(ctx, ip, now); err == nil && found {
-		return info
+		if m.config.IPInfo == nil || info.ASN != 0 {
+			return info
+		}
 	}
-	info := m.config.Intelligence.Lookup(ip)
+	var info abuse.Intelligence
+	if m.config.IPInfo != nil && m.ipInfoLookups.Add(1) <= 20 {
+		resolved, err := m.config.IPInfo.Lookup(ctx, ip)
+		if err == nil {
+			info = resolved
+		} else {
+			m.logger.Debug("IPinfo lookup failed; using local fallback", slog.String("ip", ip.String()), slog.Any("error", err))
+		}
+	}
+	if info.ASN == 0 {
+		info = m.config.Intelligence.Lookup(ip)
+	}
+	if override := strings.TrimSpace(m.config.ASNOverrides[info.ASN]); override != "" {
+		info.Category = strings.ToUpper(override)
+	}
 	if err := m.store.SaveIPIntelligence(ctx, ip, info, now.Add(7*24*time.Hour)); err != nil {
 		m.logger.Debug("IP intelligence cache write failed", slog.Any("error", err))
 	}
@@ -255,7 +321,15 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 		for _, event := range events {
 			intel[event.ClientIP] = abuse.Intelligence{ASN: event.ASN, Provider: event.Provider, Category: event.Category}
 		}
-		assessment := abuse.Assess(identity[0], identity[1], events, intel, now, m.config.Thresholds)
+		observedIPs, fromAPI := m.apiSnapshot(identity[0], identity[1])
+		if fromAPI {
+			for ip := range observedIPs {
+				intel[ip] = m.lookupIntelligence(ctx, ip)
+			}
+		} else {
+			observedIPs = nil
+		}
+		assessment := abuse.Assess(identity[0], identity[1], events, intel, observedIPs, now, m.config.Thresholds)
 		if err := m.store.SaveAssessment(ctx, assessment); err != nil {
 			m.logger.Warn("abuse assessment persistence failed", slog.String("panel_id", identity[0]), slog.Any("error", err))
 			continue
@@ -271,6 +345,19 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 	}
 }
 
+func (m *AbuseMonitor) apiSnapshot(panelID, userID string) (map[netip.Addr]time.Time, bool) {
+	m.apiMu.RLock()
+	defer m.apiMu.RUnlock()
+	if !m.apiPanels[panelID] {
+		return nil, false
+	}
+	result := make(map[netip.Addr]time.Time)
+	for ip, seen := range m.apiIPs[[2]string{panelID, userID}] {
+		result[ip] = seen
+	}
+	return result, true
+}
+
 func (m *AbuseMonitor) notify(ctx context.Context, incident abuse.Incident, assessment abuse.Assessment, events []abuse.Event) {
 	if len(events) == 0 {
 		return
@@ -284,8 +371,15 @@ func (m *AbuseMonitor) notify(ctx context.Context, incident abuse.Incident, asse
 			direct++
 		}
 	}
-	text := fmt.Sprintf("🚨 ПОДОЗРИТЕЛЬНАЯ АКТИВНОСТЬ\n\nПанель: %s\nНода: %s\nNode IP: %s\n\nUser ID: %s\nSMTP/25 (10m): %d\nSubmission 465/587 (1h): %d\nMail destinations (1h): %d\nBLOCK: %d, DIRECT: %d\nUnique IP (1h/24h): %d/%d\nUnique ASN (24h): %d\n\nTOP client IP:\n%s\n\nRisk: %s (%d)\nПризнаки: %s\n\nЭто оценка косвенных признаков, а не подтверждение отправки спама.", last.PanelID, last.NodeName, last.NodeIP, assessment.UserID, assessment.SMTP25Attempts10M, assessment.SubmissionAttempts1H, assessment.UniqueMailDestinations1H, blocked, direct, assessment.UniqueIPs1H, assessment.UniqueIPs24H, assessment.UniqueASNs24H, topIPDetails(events, 5), assessment.Risk, assessment.Score, strings.Join(assessment.Reasons, ", "))
+	ipSource := "access.log fallback"
+	if assessment.IPsFromAPI {
+		ipSource = "Remnawave API"
+	}
+	text := fmt.Sprintf("🚨 ПОДОЗРИТЕЛЬНАЯ АКТИВНОСТЬ\n\nПанель: %s\nНода: %s\nNode IP: %s\n\nUser ID: %s\nSMTP/25 (10m, логи ноды): %d\nSubmission 465/587 (1h, логи ноды): %d\nMail destinations (1h, логи ноды): %d\nBLOCK: %d, DIRECT: %d\nUnique IP (1h/24h, %s): %d/%d\nUnique ASN (24h): %d\n\nTOP client IP:\n%s\n\nRisk: %s (%d)\nПризнаки: %s\n\nЭто оценка косвенных признаков, а не подтверждение отправки спама.", last.PanelID, last.NodeName, last.NodeIP, assessment.UserID, assessment.SMTP25Attempts10M, assessment.SubmissionAttempts1H, assessment.UniqueMailDestinations1H, blocked, direct, ipSource, assessment.UniqueIPs1H, assessment.UniqueIPs24H, assessment.UniqueASNs24H, topIPDetails(events, 5), assessment.Risk, assessment.Score, strings.Join(assessment.Reasons, ", "))
 	keyboard := telegram.Keyboard{Inline: [][]telegram.Button{{{Text: "🔎 Подробнее", CallbackData: "abuse:details:" + incident.ID}, {Text: "📊 Статистика", CallbackData: "abuse:stats:" + incident.ID}}, {{Text: "🔕 Игнорировать 24 часа", CallbackData: "abuse:ignore:" + incident.ID}}}}
+	for _, ip := range topClientIPs(events, 3) {
+		keyboard.Inline = append(keyboard.Inline, []telegram.Button{{Text: "🌐 " + ip, URL: "https://ipinfo.io/" + ip}})
+	}
 	for _, chatID := range m.allowed {
 		if _, err := m.messenger.SendMessage(ctx, chatID, text, keyboard); err != nil {
 			m.logger.Warn("abuse alert delivery failed", slog.Int64("chat_id", chatID))
@@ -389,6 +483,37 @@ func topIPDetails(events []abuse.Event, limit int) string {
 		lines = append(lines, fmt.Sprintf("• %s — %d, %s, %s, %s", current.ip, current.count, asn, current.provider, current.category))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func topClientIPs(events []abuse.Event, limit int) []string {
+	counts := make(map[string]int)
+	for _, event := range events {
+		if event.ClientIP.IsValid() {
+			counts[event.ClientIP.Unmap().String()]++
+		}
+	}
+	type pair struct {
+		ip    string
+		count int
+	}
+	items := make([]pair, 0, len(counts))
+	for ip, count := range counts {
+		items = append(items, pair{ip, count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].ip < items[j].ip
+		}
+		return items[i].count > items[j].count
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	result := make([]string, len(items))
+	for i := range items {
+		result[i] = items[i].ip
+	}
+	return result
 }
 
 var _ telegram.AbuseIncidentApplication = (*AbuseMonitor)(nil)

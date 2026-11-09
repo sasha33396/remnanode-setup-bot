@@ -2,6 +2,7 @@ package remnawave
 
 import (
 	"encoding/json"
+	"net/netip"
 	"time"
 )
 
@@ -66,6 +67,54 @@ type nodeMetricsEnvelope struct {
 	Response *struct {
 		Nodes *[]nodeMetricWire `json:"nodes"`
 	} `json:"response"`
+}
+
+type fetchUsersIPsEnvelope struct {
+	Response *struct {
+		JobID *string `json:"jobId"`
+	} `json:"response"`
+}
+
+type fetchUsersIPsResultEnvelope struct {
+	Response *struct {
+		IsCompleted *bool                `json:"isCompleted"`
+		IsFailed    *bool                `json:"isFailed"`
+		Result      *fetchUsersIPsResult `json:"result"`
+	} `json:"response"`
+}
+
+type fetchUsersIPsResult struct {
+	Success  *bool              `json:"success"`
+	NodeUUID *string            `json:"nodeUuid"`
+	Users    []fetchUsersIPUser `json:"users"`
+}
+
+type fetchUsersIPUser struct {
+	UserID *string            `json:"userId"`
+	IPs    []fetchUsersIPItem `json:"ips"`
+}
+
+type fetchUsersIPItem struct {
+	IP       *string    `json:"ip"`
+	LastSeen *time.Time `json:"lastSeen"`
+}
+
+func (u fetchUsersIPUser) model() (NodeUserIPs, error) {
+	if u.UserID == nil || *u.UserID == "" {
+		return NodeUserIPs{}, ErrInvalidResponse
+	}
+	result := NodeUserIPs{UserID: *u.UserID, IPs: make([]UserIP, 0, len(u.IPs))}
+	for _, item := range u.IPs {
+		if item.IP == nil || item.LastSeen == nil {
+			return NodeUserIPs{}, ErrInvalidResponse
+		}
+		address, err := netip.ParseAddr(*item.IP)
+		if err != nil || item.LastSeen.IsZero() {
+			return NodeUserIPs{}, ErrInvalidResponse
+		}
+		result.IPs = append(result.IPs, UserIP{IP: address.Unmap(), LastSeen: item.LastSeen.UTC()})
+	}
+	return result, nil
 }
 
 type nodeMetricWire struct {

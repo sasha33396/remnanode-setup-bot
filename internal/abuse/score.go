@@ -43,12 +43,17 @@ type Assessment struct {
 	SMTP25Attempts10M, SubmissionAttempts1H  int
 	UniqueIPs1H, UniqueIPs24H, UniqueASNs24H int
 	UniqueMailDestinations1H                 int
+	IPsFromAPI                               bool
 	FirstSeen, LastSeen                      time.Time
 }
 
-func Assess(panelID, userID string, events []Event, intel map[netip.Addr]Intelligence, now time.Time, thresholds Thresholds) Assessment {
+// Assess always derives mail-port activity from node access.log events. When
+// observedIPs is non-nil, unique IP/ASN windows come from Remnawave
+// IP-control's lastSeen values; nil preserves the log-based fallback.
+func Assess(panelID, userID string, events []Event, intel map[netip.Addr]Intelligence, observedIPs map[netip.Addr]time.Time, now time.Time, thresholds Thresholds) Assessment {
 	result := Assessment{PanelID: panelID, UserID: userID, Risk: RiskLow}
 	ips1h, ips24h, asns24h := map[netip.Addr]struct{}{}, map[netip.Addr]struct{}{}, map[uint32]struct{}{}
+	logIPs := map[netip.Addr]time.Time{}
 	mailDestinations1h := map[string]struct{}{}
 	hosting := false
 	for _, event := range events {
@@ -61,16 +66,10 @@ func Assess(panelID, userID string, events []Event, intel map[netip.Addr]Intelli
 		if event.OccurredAt.After(result.LastSeen) {
 			result.LastSeen = event.OccurredAt
 		}
-		ips24h[event.ClientIP] = struct{}{}
-		info := intel[event.ClientIP]
-		if info.ASN != 0 {
-			asns24h[info.ASN] = struct{}{}
-		}
-		if info.Category == "HOSTING" || info.Category == "PROXY" {
-			hosting = true
+		if event.OccurredAt.After(logIPs[event.ClientIP]) {
+			logIPs[event.ClientIP] = event.OccurredAt
 		}
 		if event.OccurredAt.After(now.Add(-time.Hour)) {
-			ips1h[event.ClientIP] = struct{}{}
 			if event.DestinationPort == 465 || event.DestinationPort == 587 {
 				result.SubmissionAttempts1H++
 				mailDestinations1h[event.Destination] = struct{}{}
@@ -78,6 +77,27 @@ func Assess(panelID, userID string, events []Event, intel map[netip.Addr]Intelli
 		}
 		if event.OccurredAt.After(now.Add(-10*time.Minute)) && event.DestinationPort == 25 {
 			result.SMTP25Attempts10M++
+		}
+	}
+	if observedIPs == nil {
+		observedIPs = logIPs
+	} else {
+		result.IPsFromAPI = true
+	}
+	for ip, lastSeen := range observedIPs {
+		if lastSeen.Before(now.Add(-24*time.Hour)) || lastSeen.After(now.Add(time.Minute)) {
+			continue
+		}
+		ips24h[ip] = struct{}{}
+		if lastSeen.After(now.Add(-time.Hour)) {
+			ips1h[ip] = struct{}{}
+		}
+		info := intel[ip]
+		if info.ASN != 0 {
+			asns24h[info.ASN] = struct{}{}
+		}
+		if info.Category == "HOSTING" || info.Category == "PROXY" {
+			hosting = true
 		}
 	}
 	result.UniqueIPs1H, result.UniqueIPs24H, result.UniqueASNs24H = len(ips1h), len(ips24h), len(asns24h)

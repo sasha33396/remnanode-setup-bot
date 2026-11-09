@@ -87,6 +87,32 @@ func TestBotAPISendsInlineKeyboard(t *testing.T) {
 	}
 }
 
+func TestBotAPISendsURLButtonWithoutCallbackData(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true,"result":{"message_id":7,"from":{"id":1},"chat":{"id":42},"text":"sent"}}`))
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL + "/bot-test-token/")
+	client := &BotAPI{baseURL: baseURL, httpClient: server.Client()}
+	_, err := client.SendMessage(context.Background(), 42, "IP", Keyboard{Inline: [][]Button{{{Text: "8.8.8.8", URL: "https://ipinfo.io/8.8.8.8"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markup := payload["reply_markup"].(map[string]any)
+	button := markup["inline_keyboard"].([]any)[0].([]any)[0].(map[string]any)
+	if button["url"] != "https://ipinfo.io/8.8.8.8" {
+		t.Fatalf("button = %#v", button)
+	}
+	if _, exists := button["callback_data"]; exists {
+		t.Fatalf("URL button contains callback_data: %#v", button)
+	}
+}
+
 func TestBotAPIEditMessageNeverSendsReplyKeyboard(t *testing.T) {
 	var requestPath string
 	var payload map[string]any

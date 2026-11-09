@@ -68,6 +68,63 @@ func (c *Client) GetNodesMetrics(ctx context.Context) ([]NodeMetric, error) {
 	return result, nil
 }
 
+// FetchNodeUserIPs uses Remnawave v2 IP-control. The POST starts a background
+// job and the GET result is polled briefly until it contains per-user IPs.
+func (c *Client) FetchNodeUserIPs(ctx context.Context, nodeUUID string) ([]NodeUserIPs, error) {
+	nodeUUID = strings.TrimSpace(nodeUUID)
+	if !validUUID(nodeUUID) {
+		return nil, fmt.Errorf("Node UUID: %w", ErrInvalidInput)
+	}
+	jobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var start fetchUsersIPsEnvelope
+	path := "/api/ip-control/fetch-users-ips/" + url.PathEscape(nodeUUID)
+	if err := c.doJSONStatuses(jobCtx, http.MethodPost, path, nil, &start, http.StatusOK, http.StatusCreated, http.StatusAccepted); err != nil {
+		return nil, err
+	}
+	if start.Response == nil || start.Response.JobID == nil || strings.TrimSpace(*start.Response.JobID) == "" {
+		return nil, invalidResponse("fetch users IPs jobId is missing")
+	}
+	resultPath := "/api/ip-control/fetch-users-ips/result/" + url.PathEscape(strings.TrimSpace(*start.Response.JobID))
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var envelope fetchUsersIPsResultEnvelope
+		if err := c.doJSON(jobCtx, http.MethodGet, resultPath, nil, http.StatusOK, &envelope); err != nil {
+			return nil, err
+		}
+		if envelope.Response == nil || envelope.Response.IsCompleted == nil || envelope.Response.IsFailed == nil {
+			return nil, invalidResponse("fetch users IPs job state is missing")
+		}
+		if *envelope.Response.IsFailed {
+			return nil, errors.New("Remnawave IP-control job failed")
+		}
+		if *envelope.Response.IsCompleted {
+			result := envelope.Response.Result
+			if result == nil || result.Success == nil || !*result.Success || result.NodeUUID == nil || *result.NodeUUID != nodeUUID {
+				return nil, invalidResponse("fetch users IPs result is incomplete")
+			}
+			users := make([]NodeUserIPs, 0, len(result.Users))
+			for index, item := range result.Users {
+				user, err := item.model()
+				if err != nil {
+					return nil, invalidResponse(fmt.Sprintf("fetch users IPs user %d is incomplete", index))
+				}
+				users = append(users, user)
+			}
+			return users, nil
+		}
+		select {
+		case <-jobCtx.Done():
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errors.New("Remnawave IP-control job timed out")
+		case <-ticker.C:
+		}
+	}
+}
+
 // Client is a Remnawave HTTP API client.
 type Client struct {
 	baseURL *url.URL
@@ -77,6 +134,7 @@ type Client struct {
 }
 
 var _ API = (*Client)(nil)
+var _ NodeUserIPsAPI = (*Client)(nil)
 
 // NewClient creates a client with a mandatory explicit timeout.
 func NewClient(baseURL, token string, timeout time.Duration) (*Client, error) {
@@ -318,6 +376,10 @@ func (c *Client) DeleteNode(ctx context.Context, uuid string) (bool, error) {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, requestBody any, expectedStatus int, response any) error {
+	return c.doJSONStatuses(ctx, method, path, requestBody, response, expectedStatus)
+}
+
+func (c *Client) doJSONStatuses(ctx context.Context, method, path string, requestBody any, response any, expectedStatuses ...int) error {
 	var body io.Reader
 	if requestBody != nil {
 		encoded, err := json.Marshal(requestBody)
@@ -347,7 +409,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, requestBody an
 	if httpResponse.StatusCode == http.StatusUnauthorized || httpResponse.StatusCode == http.StatusForbidden {
 		return ErrUnauthorized
 	}
-	if httpResponse.StatusCode != expectedStatus {
+	accepted := false
+	for _, status := range expectedStatuses {
+		accepted = accepted || httpResponse.StatusCode == status
+	}
+	if !accepted {
 		return &HTTPError{StatusCode: httpResponse.StatusCode}
 	}
 

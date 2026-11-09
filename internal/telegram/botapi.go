@@ -230,7 +230,8 @@ type inlineKeyboardMarkup struct {
 
 type inlineKeyboardButton struct {
 	Text         string `json:"text"`
-	CallbackData string `json:"callback_data"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
 }
 
 type replyKeyboardMarkup struct {
@@ -248,7 +249,7 @@ func keyboardWire(keyboard Keyboard) any {
 		for _, row := range keyboard.Inline {
 			buttons := make([]inlineKeyboardButton, 0, len(row))
 			for _, button := range row {
-				buttons = append(buttons, inlineKeyboardButton{Text: button.Text, CallbackData: button.CallbackData})
+				buttons = append(buttons, inlineKeyboardButton{Text: button.Text, CallbackData: button.CallbackData, URL: button.URL})
 			}
 			rows = append(rows, buttons)
 		}
