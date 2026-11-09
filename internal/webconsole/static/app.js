@@ -57,7 +57,7 @@
         <div class="node-address">${escapeHTML(node.address)}</div>
         <div class="node-address">Netplan: ${escapeHTML((node.networkAddresses || []).join(', ') || 'ещё не опрошен')}</div>
         <div class="node-meta"><span class="badge ${node.managed ? 'managed' : 'legacy'}">${node.managed ? 'Актуальная' : 'Legacy'}</span><span class="badge">${node.onlineKnown ? `${node.online} онлайн` : 'онлайн неизвестен'}</span>${node.disabled ? '<span class="badge">выключена</span>' : ''}</div>
-        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<div class="node-actions"><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать</button><button class="button secondary node-ip" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить IP</button><button class="button secondary node-move" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Перенести</button><button class="button secondary node-dns" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">DNS</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div></div>
+        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<div class="node-actions"><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать защиту</button><button class="button secondary node-ip" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить IP</button><button class="button secondary node-move" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Перенести</button><button class="button secondary node-dns" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">DNS</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div></div>
       </article>`).join('');
   }
 
@@ -129,7 +129,7 @@
       const failures = (result.failures || []).slice(0, 5).map((item) => `${item.PanelName}: ${item.NodeName} (${item.Reason})`).join('; ');
       showNotice(`Массовая синхронизация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
     } catch (error) { showNotice(error.message); }
-    finally { button.disabled = false; button.textContent = 'Синхронизировать все'; }
+    finally { button.disabled = false; button.textContent = 'Синхронизировать защиту на всех'; }
   }
 
   function openTerminal(node, ticket) {

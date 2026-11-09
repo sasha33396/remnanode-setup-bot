@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"remnanode-setup-bot/internal/abuse"
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/cherryip"
 	"remnanode-setup-bot/internal/config"
@@ -99,6 +100,7 @@ func run() int {
 	}
 
 	registry := metrics.New()
+	mailGuard := provisioner.MailGuardConfig{Enabled: cfg.MailGuardEnabled, Ports: cfg.MailGuardPorts}
 	distributor, err := certmanager.NewSSHDistributor(ssh, certmanager.SSHDistributorConfig{RepositoryURL: cfg.XraySNIRepoURL, Ref: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MaxConcurrent: cfg.MaxCertificateDistributions})
 	if err != nil {
 		logger.Error("certificate distributor initialization failed")
@@ -111,7 +113,7 @@ func run() int {
 	recoveredJobs := 0
 	for _, panel := range cfg.Panels {
 		nodeFirewallConfigs[panel.ID] = orchestrator.NodeFirewallConfig{PanelIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP}
-		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout})
+		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MailGuard: mailGuard})
 		if provisionerErr != nil {
 			logger.Error("VPS provisioner initialization failed", slog.String("panel_id", panel.ID))
 			return 1
@@ -232,7 +234,7 @@ func run() int {
 		logger.Error("Royal IP application initialization failed")
 		return 1
 	}
-	nodeMaintenance, err := orchestrator.NewNodeMaintenance(application, repository, ssh, serverIPSSH, nodeFirewallConfigs, cfg.SSHCommandTimeout, logger)
+	nodeMaintenance, err := orchestrator.NewNodeMaintenance(application, repository, ssh, serverIPSSH, nodeFirewallConfigs, cfg.SSHCommandTimeout, mailGuard, logger)
 	if err != nil {
 		logger.Error("node maintenance initialization failed")
 		return 1
@@ -255,10 +257,34 @@ func run() int {
 		CriticalOnlineThreshold: cfg.NodeCriticalOnlineThreshold,
 	}
 	controller.SetNodePolicy(nodePolicy)
-	nodeMonitor, err := telegram.NewNodeMonitor(cfg.TelegramAllowedUsers, application, bot, cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, nodePolicy)
-	if err != nil {
-		logger.Error("node monitor initialization failed")
-		return 1
+	var abuseMonitor *orchestrator.AbuseMonitor
+	if cfg.AbuseMonitorEnabled {
+		location, locationErr := time.LoadLocation(cfg.AbuseLogTimezone)
+		if locationErr != nil {
+			logger.Error("abuse log timezone initialization failed")
+			return 1
+		}
+		intelligence, intelligenceErr := abuse.LoadLocalIntelligence(cfg.AbuseIPIntelFile, cfg.AbuseASNOverrides)
+		if intelligenceErr != nil {
+			logger.Error("local IP intelligence initialization failed", slog.Any("error", intelligenceErr))
+			return 1
+		}
+		abuseMonitor, err = orchestrator.NewAbuseMonitor(application, repository, ssh, bot, cfg.TelegramAllowedUsers, orchestrator.AbuseMonitorConfig{
+			Interval: cfg.AbuseMonitorInterval, Cooldown: cfg.AbuseAlertCooldown, Retention: cfg.AbuseEventRetention,
+			LogPath: cfg.AbuseLogPath, LogLocation: location, MaxConcurrent: cfg.AbuseMaxConcurrentNodes,
+			Intelligence: intelligence,
+			Thresholds: abuse.Thresholds{
+				SMTP25Warn10M: cfg.AbuseSMTP25Warn10M, SMTP25High10M: cfg.AbuseSMTP25High10M,
+				SubmissionWarn1H: cfg.AbuseSubmissionWarn1H, SubmissionHigh1H: cfg.AbuseSubmissionHigh1H,
+				UniqueIPWarn1H: cfg.AbuseUniqueIPWarn1H, UniqueIPHigh24H: cfg.AbuseUniqueIPHigh24H,
+				UniqueASNWarn24H: cfg.AbuseUniqueASNWarn24H,
+			},
+		}, logger)
+		if err != nil {
+			logger.Error("abuse monitor initialization failed", slog.Any("error", err))
+			return 1
+		}
+		controller.SetAbuseIncidentApplication(abuseMonitor)
 	}
 	defer func() { controller.Close(); controller.Wait() }()
 	var webServer *webconsole.Server
@@ -284,8 +310,10 @@ func run() int {
 	group, runCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return healthServer.Run(runCtx) })
 	group.Go(func() error { return bot.Run(runCtx, controller) })
-	group.Go(func() error { return nodeMonitor.Run(runCtx) })
 	group.Go(func() error { return nodeMaintenance.Run(runCtx, cfg.NodeNetworkPollInterval) })
+	if abuseMonitor != nil {
+		group.Go(func() error { return abuseMonitor.Run(runCtx) })
+	}
 	if webServer != nil {
 		group.Go(func() error { return webServer.Run(runCtx) })
 	}

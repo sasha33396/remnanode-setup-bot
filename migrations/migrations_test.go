@@ -133,3 +133,21 @@ func TestNodeNetworkInventoryMigrationContainsNoCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestAbuseMonitorMigrationScopesIdentityAndStoresNoCredentials(t *testing.T) {
+	contents, err := Files.ReadFile("000009_abuse_monitor.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"abuse_log_checkpoints", "abuse_events", "abuse_user_aggregates", "abuse_ip_cache", "abuse_incidents", "panel_id", "user_id", "byte_offset", "inode", "unique (panel_id, user_id, anomaly_type)"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("abuse monitor migration does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"root_password", "private_key", "bot_token"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("abuse monitor migration contains forbidden credential %q", forbidden)
+		}
+	}
+}

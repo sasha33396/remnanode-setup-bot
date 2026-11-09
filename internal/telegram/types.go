@@ -62,6 +62,11 @@ type Messenger interface {
 	AnswerCallback(context.Context, string, string) error
 }
 
+type AbuseIncidentApplication interface {
+	IncidentText(context.Context, string, bool) (string, error)
+	IgnoreIncident(context.Context, string) error
+}
+
 // Readiness is a safe presentation value. It must never contain diagnostic or
 // secret material.
 type Readiness string

@@ -41,16 +41,17 @@ type NodeMaintenance struct {
 	nodeLocks   sync.Map
 	bulkMu      sync.Mutex
 	bulkRunning bool
+	mailGuard   provisioner.MailGuardConfig
 }
 
-func NewNodeMaintenance(app *TelegramApplication, store repository.NodeNetworkStore, managedSSH, legacySSH *sshclient.Client, firewall map[string]NodeFirewallConfig, timeout time.Duration, logger *slog.Logger) (*NodeMaintenance, error) {
+func NewNodeMaintenance(app *TelegramApplication, store repository.NodeNetworkStore, managedSSH, legacySSH *sshclient.Client, firewall map[string]NodeFirewallConfig, timeout time.Duration, mailGuard provisioner.MailGuardConfig, logger *slog.Logger) (*NodeMaintenance, error) {
 	if app == nil || store == nil || managedSSH == nil || legacySSH == nil || len(firewall) == 0 || timeout <= 0 {
 		return nil, errors.New("invalid node maintenance configuration")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &NodeMaintenance{app: app, store: store, managedSSH: managedSSH, legacySSH: legacySSH, firewall: firewall, timeout: timeout, logger: logger}, nil
+	return &NodeMaintenance{app: app, store: store, managedSSH: managedSSH, legacySSH: legacySSH, firewall: firewall, timeout: timeout, mailGuard: mailGuard, logger: logger}, nil
 }
 
 func (a *TelegramApplication) SetNodeMaintenance(service *NodeMaintenance) error {
@@ -140,8 +141,8 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if !ok {
 		return telegram.NodeActualizeResult{}, errors.New("panel firewall configuration is unavailable")
 	}
-	emitNodeActualizeProgress(input.Progress, "firewall", "Проверка и применение полного firewall, включая блокировку порта 25", base+2, total)
-	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout)
+	emitNodeActualizeProgress(input.Progress, "firewall", "Проверка и применение полного Mail Guard и firewall", base+2, total)
+	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout, m.mailGuard)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("firewall reconciliation failed")
 	}
@@ -219,7 +220,7 @@ func nodeActualizeProgressMessage(step, fallback string) string {
 		"provisioning/docker":             "Проверка и настройка Docker",
 		"provisioning/sysctl":             "Настройка параметров ядра",
 		"provisioning/limits":             "Настройка системных лимитов",
-		"provisioning/firewall":           "Применение firewall и блокировки порта 25",
+		"provisioning/firewall":           "Применение firewall и полного Mail Guard",
 		"provisioning/fail2ban":           "Настройка Fail2ban",
 		"provisioning/remnanode":          "Обновление Remnanode",
 		"provisioning/node_exporter":      "Настройка node_exporter",
@@ -346,7 +347,7 @@ func (m *NodeMaintenance) actualizeManagedTarget(ctx context.Context, target man
 	if !ok {
 		return false, "firewall_config"
 	}
-	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout)
+	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout, m.mailGuard)
 	if err != nil {
 		return false, "firewall_reconcile"
 	}

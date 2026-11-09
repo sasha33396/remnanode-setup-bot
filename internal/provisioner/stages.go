@@ -124,7 +124,10 @@ apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker`
 
-	firewallInspect, firewallApply, firewallValidate := firewallCommands(config.RemnawaveAPIIP.String(), config.MetricsIP.String())
+	firewallInspect, firewallApply, firewallValidate, err := firewallCommands(config.RemnawaveAPIIP.String(), config.MetricsIP.String(), config.MailGuard)
+	if err != nil {
+		return nil, err
+	}
 	nodeInspect := fmt.Sprintf(`if command -v node_exporter >/dev/null 2>&1 && node_exporter --version 2>&1 | grep -Fq 'version %s' && systemctl is-active --quiet node_exporter; then printf ready; else printf pending; fi`, config.NodeExporterVersion)
 	remnanodeValidate := `attempt=0
 while [ "$attempt" -lt 30 ]; do
@@ -216,14 +219,13 @@ func buildRemnanodeCompose(secret []byte) ([]byte, error) {
 	return []byte(content), nil
 }
 
-func firewallCommands(panelIP, metricsIP string) (string, string, string) {
+func firewallCommands(panelIP, metricsIP string, mailGuard MailGuardConfig) (string, string, string, error) {
 	rules := []struct{ marker, expected, command string }{
 		{"deployer-ssh", "22/tcp", "ufw allow 22/tcp comment 'deployer-ssh'"},
 		{"deployer-https", "443/tcp", "ufw allow 443/tcp comment 'deployer-https'"},
 		{"deployer-remnanode", panelIP, fmt.Sprintf("ufw allow from %s to any port 2222 proto tcp comment 'deployer-remnanode'", panelIP)},
 		{"deployer-node-metrics", metricsIP, fmt.Sprintf("ufw allow from %s to any port 9100 proto tcp comment 'deployer-node-metrics'", metricsIP)},
 		{"deployer-speedtest-metrics", metricsIP, fmt.Sprintf("ufw allow from %s to any port 9200 proto tcp comment 'deployer-speedtest-metrics'", metricsIP)},
-		{"deployer-smtp-block", "25/tcp", "ufw deny out 25/tcp comment 'deployer-smtp-block'"},
 	}
 	blocked := []string{"178.162.203.0/24", "45.159.79.0/24", "85.17.155.0/24", "185.221.222.0/24", "89.150.57.0/24", "46.165.199.0/24", "178.162.202.0/24", "85.17.70.0/24", "64.62.203.0/24"}
 	for index, cidr := range blocked {
@@ -246,13 +248,10 @@ func firewallCommands(panelIP, metricsIP string) (string, string, string) {
     status=$(ufw status numbered)
 fi`, rule.marker, rule.expected, rule.marker, rule.command))
 	}
-	smtpGuardCheck := `systemctl is-enabled --quiet smtp-guard.service 2>/dev/null &&
-systemctl is-active --quiet smtp-guard.service 2>/dev/null &&
-nft list chain inet smtp_guard input 2>/dev/null | grep -Eq 'hook input priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
-nft list chain inet smtp_guard output 2>/dev/null | grep -Eq 'hook output priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
-nft list chain inet smtp_guard forward 2>/dev/null | grep -Eq 'hook forward priority (-20|filter[[:space:]]*-[[:space:]]*20)' &&
-nft list table inet smtp_guard 2>/dev/null | grep -Fq 'tcp dport 25 counter packets' &&
-nft list table inet smtp_guard 2>/dev/null | grep -Fq 'udp dport 25 counter packets'`
+	smtpGuardCheck, smtpGuardApply, err := mailGuardCommands(mailGuard)
+	if err != nil {
+		return "", "", "", err
+	}
 	check := "status=$(ufw status numbered 2>/dev/null || true); if " + strings.Join(checks, " && ") + ` && printf '%s\n' "$status" | grep -q '^Status: active' &&
 ` + smtpGuardCheck + `; then printf ready; else printf pending; fi`
 	applyCommand := `set -eu
@@ -264,69 +263,24 @@ fi
 if ! ufw show added | grep -Fq 'deployer-ssh'; then ufw allow 22/tcp comment 'deployer-ssh'; fi
 ufw --force enable
 status=$(ufw status numbered)
-` + strings.Join(apply, "\n") + `
-
-# SMTP GUARD: block port 25 for IPv4/IPv6, TCP/UDP and every traffic direction.
-install -d -m 0755 /etc/nftables.d /usr/local/sbin
-cat > /etc/nftables.d/smtp-guard.nft <<'NFT'
-table inet smtp_guard {
-    chain input {
-        type filter hook input priority -20; policy accept;
-        tcp dport 25 counter drop
-        udp dport 25 counter drop
-    }
-
-    chain output {
-        type filter hook output priority -20; policy accept;
-        tcp dport 25 counter drop
-        udp dport 25 counter drop
-    }
-
-    chain forward {
-        type filter hook forward priority -20; policy accept;
-        tcp dport 25 counter drop
-        udp dport 25 counter drop
-    }
-}
-NFT
-
-cat > /usr/local/sbin/apply-smtp-guard <<'SH'
-#!/bin/sh
-set -eu
-CONFIG=/etc/nftables.d/smtp-guard.nft
-TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
-if nft list table inet smtp_guard >/dev/null 2>&1; then
-    echo "delete table inet smtp_guard" > "$TMP"
-fi
-cat "$CONFIG" >> "$TMP"
-nft -c -f "$TMP"
-nft -f "$TMP"
-SH
-chmod 0750 /usr/local/sbin/apply-smtp-guard
-
-cat > /etc/systemd/system/smtp-guard.service <<'UNIT'
-[Unit]
-Description=SMTP Port 25 Firewall Guard
-After=local-fs.target ufw.service nftables.service
-Before=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/apply-smtp-guard
-ExecReload=/usr/local/sbin/apply-smtp-guard
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-systemctl daemon-reload
-systemctl enable smtp-guard.service
-systemctl restart smtp-guard.service
-
-` + smtpGuardCheck
-	return check, applyCommand, check
+` + strings.Join(apply, "\n") + "\n" + smtpGuardApply + "\n" + smtpGuardCheck
+	applyCommand = strings.Replace(applyCommand, "status=$(ufw status numbered)\n", `status=$(ufw status numbered)
+# Remove the superseded single-port UFW rule; smtp_guard is the canonical guard.
+while number=$(printf '%s\n' "$status" | awk 'index($0, "deployer-smtp-block") {gsub(/[][]/, "", $1); print $1; exit}') && [ -n "$number" ]; do
+    ufw --force delete "$number"
+    status=$(ufw status numbered)
+done
+`, 1)
+	if mailGuard.Enabled {
+		applyCommand += `
+printf '%s\n' '✅ MAIL GUARD: ALL CHECKS PASSED'
+printf '%s\n' '✅ INPUT: TCP/UDP BLOCKED'
+printf '%s\n' '✅ OUTPUT: TCP/UDP BLOCKED'
+printf '%s\n' '✅ FORWARD: TCP/UDP BLOCKED'
+printf '%s\n' '✅ IPv4 / IPv6: ENABLED'
+printf '%s\n' '✅ AUTOSTART: ENABLED'`
+	}
+	return check, applyCommand, check, nil
 }
 
 const healthcheckCommand = `if systemctl is-active --quiet docker &&

@@ -75,9 +75,7 @@ type Config struct {
 	NodeConnectTimeout          time.Duration
 	TelegramPollTimeout         time.Duration
 	TelegramSessionTTL          time.Duration
-	NodeMonitorInterval         time.Duration
 	NodeNetworkPollInterval     time.Duration
-	NodeCriticalAlertInterval   time.Duration
 	CertificateRenewBefore      time.Duration
 	CertificateRenewInterval    time.Duration
 	CertificateIssueTimeout     time.Duration
@@ -85,8 +83,25 @@ type Config struct {
 	DNSPropagationInterval      time.Duration
 	MaxConcurrentDeployments    int
 	MaxCertificateDistributions int
-	NodeMonitorConfirmations    int
 	NodeCriticalOnlineThreshold int
+	MailGuardEnabled            bool
+	MailGuardPorts              []uint16
+	AbuseMonitorEnabled         bool
+	AbuseMonitorInterval        time.Duration
+	AbuseAlertCooldown          time.Duration
+	AbuseEventRetention         time.Duration
+	AbuseLogPath                string
+	AbuseLogTimezone            string
+	AbuseIPIntelFile            string
+	AbuseASNOverrides           map[uint32]string
+	AbuseMaxConcurrentNodes     int
+	AbuseSMTP25Warn10M          int
+	AbuseSMTP25High10M          int
+	AbuseSubmissionWarn1H       int
+	AbuseSubmissionHigh1H       int
+	AbuseUniqueIPWarn1H         int
+	AbuseUniqueIPHigh24H        int
+	AbuseUniqueASNWarn24H       int
 	WebEnabled                  bool
 	WebAddr                     string
 	WebPublicURL                string
@@ -153,9 +168,7 @@ func load(lookup lookupFunc) (Config, error) {
 		NodeConnectTimeout:          5 * time.Minute,
 		TelegramPollTimeout:         30 * time.Second,
 		TelegramSessionTTL:          15 * time.Minute,
-		NodeMonitorInterval:         5 * time.Minute,
 		NodeNetworkPollInterval:     5 * time.Minute,
-		NodeCriticalAlertInterval:   15 * time.Minute,
 		CertificateRenewBefore:      30 * 24 * time.Hour,
 		CertificateRenewInterval:    12 * time.Hour,
 		CertificateIssueTimeout:     2 * time.Minute,
@@ -163,8 +176,24 @@ func load(lookup lookupFunc) (Config, error) {
 		DNSPropagationInterval:      2 * time.Second,
 		MaxConcurrentDeployments:    2,
 		MaxCertificateDistributions: 4,
-		NodeMonitorConfirmations:    2,
 		NodeCriticalOnlineThreshold: 20,
+		MailGuardEnabled:            true,
+		MailGuardPorts:              []uint16{25, 26, 110, 143, 465, 587, 993, 995, 2525, 4190, 8025},
+		AbuseMonitorEnabled:         true,
+		AbuseMonitorInterval:        5 * time.Minute,
+		AbuseAlertCooldown:          time.Hour,
+		AbuseEventRetention:         7 * 24 * time.Hour,
+		AbuseLogPath:                "/var/log/remnanode/access.log",
+		AbuseLogTimezone:            "UTC",
+		AbuseASNOverrides:           make(map[uint32]string),
+		AbuseMaxConcurrentNodes:     4,
+		AbuseSMTP25Warn10M:          10,
+		AbuseSMTP25High10M:          50,
+		AbuseSubmissionWarn1H:       100,
+		AbuseSubmissionHigh1H:       300,
+		AbuseUniqueIPWarn1H:         10,
+		AbuseUniqueIPHigh24H:        25,
+		AbuseUniqueASNWarn24H:       5,
 		WebAddr:                     defaultWebAddr,
 		WebSessionTTL:               12 * time.Hour,
 		WebTerminalTimeout:          2 * time.Hour,
@@ -220,6 +249,37 @@ func load(lookup lookupFunc) (Config, error) {
 	if value, ok := lookup("TELEGRAM_OIDC_CLIENT_SECRET"); ok {
 		cfg.TelegramOIDCClientSecret = strings.TrimSpace(value)
 	}
+	if value, ok := lookup("MAIL_GUARD_ENABLED"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			validationErrors = append(validationErrors, errors.New("MAIL_GUARD_ENABLED must be true or false"))
+		} else {
+			cfg.MailGuardEnabled = parsed
+		}
+	}
+	if value, ok := lookup("MAIL_GUARD_PORTS"); ok && strings.TrimSpace(value) != "" {
+		cfg.MailGuardPorts, validationErrors = parsePorts("MAIL_GUARD_PORTS", value, validationErrors)
+	}
+	if value, ok := lookup("ABUSE_MONITOR_ENABLED"); ok && strings.TrimSpace(value) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			validationErrors = append(validationErrors, errors.New("ABUSE_MONITOR_ENABLED must be true or false"))
+		} else {
+			cfg.AbuseMonitorEnabled = parsed
+		}
+	}
+	if value, ok := lookup("ABUSE_LOG_PATH"); ok && strings.TrimSpace(value) != "" {
+		cfg.AbuseLogPath = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("ABUSE_LOG_TIMEZONE"); ok && strings.TrimSpace(value) != "" {
+		cfg.AbuseLogTimezone = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("ABUSE_IP_INTEL_FILE"); ok {
+		cfg.AbuseIPIntelFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("ABUSE_ASN_OVERRIDES"); ok && strings.TrimSpace(value) != "" {
+		cfg.AbuseASNOverrides, validationErrors = parseASNOverrides(value, validationErrors)
+	}
 
 	durations := []struct {
 		name   string
@@ -228,13 +288,13 @@ func load(lookup lookupFunc) (Config, error) {
 		{"HTTP_TIMEOUT", &cfg.HTTPTimeout}, {"SSH_CONNECT_TIMEOUT", &cfg.SSHConnectTimeout},
 		{"SSH_COMMAND_TIMEOUT", &cfg.SSHCommandTimeout}, {"NODE_CONNECT_TIMEOUT", &cfg.NodeConnectTimeout},
 		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
-		{"NODE_MONITOR_INTERVAL", &cfg.NodeMonitorInterval},
 		{"NODE_NETWORK_POLL_INTERVAL", &cfg.NodeNetworkPollInterval},
-		{"NODE_CRITICAL_ALERT_INTERVAL", &cfg.NodeCriticalAlertInterval},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
 		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
 		{"WEB_SESSION_TTL", &cfg.WebSessionTTL}, {"WEB_TERMINAL_TIMEOUT", &cfg.WebTerminalTimeout},
+		{"ABUSE_MONITOR_INTERVAL", &cfg.AbuseMonitorInterval}, {"ABUSE_ALERT_COOLDOWN", &cfg.AbuseAlertCooldown},
+		{"ABUSE_EVENT_RETENTION", &cfg.AbuseEventRetention},
 	}
 	for _, item := range durations {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -253,9 +313,16 @@ func load(lookup lookupFunc) (Config, error) {
 	}{
 		{"MAX_CONCURRENT_DEPLOYMENTS", &cfg.MaxConcurrentDeployments, 100},
 		{"MAX_CERTIFICATE_DISTRIBUTIONS", &cfg.MaxCertificateDistributions, 32},
-		{"NODE_MONITOR_CONFIRMATIONS", &cfg.NodeMonitorConfirmations, 10},
 		{"NODE_CRITICAL_ONLINE_THRESHOLD", &cfg.NodeCriticalOnlineThreshold, 100000},
 		{"WEB_MAX_SESSIONS", &cfg.WebMaxSessions, 100},
+		{"ABUSE_MAX_CONCURRENT_NODES", &cfg.AbuseMaxConcurrentNodes, 32},
+		{"ABUSE_SMTP25_WARN_10M", &cfg.AbuseSMTP25Warn10M, 1000000},
+		{"ABUSE_SMTP25_HIGH_10M", &cfg.AbuseSMTP25High10M, 1000000},
+		{"ABUSE_SUBMISSION_WARN_1H", &cfg.AbuseSubmissionWarn1H, 1000000},
+		{"ABUSE_SUBMISSION_HIGH_1H", &cfg.AbuseSubmissionHigh1H, 1000000},
+		{"ABUSE_UNIQUE_IP_WARN_1H", &cfg.AbuseUniqueIPWarn1H, 1000000},
+		{"ABUSE_UNIQUE_IP_HIGH_24H", &cfg.AbuseUniqueIPHigh24H, 1000000},
+		{"ABUSE_UNIQUE_ASN_WARN_24H", &cfg.AbuseUniqueASNWarn24H, 1000000},
 	}
 	for _, item := range integers {
 		if value, ok := lookup(item.name); ok && strings.TrimSpace(value) != "" {
@@ -266,6 +333,12 @@ func load(lookup lookupFunc) (Config, error) {
 				*item.target = parsed
 			}
 		}
+	}
+	if _, err := time.LoadLocation(cfg.AbuseLogTimezone); err != nil {
+		validationErrors = append(validationErrors, errors.New("ABUSE_LOG_TIMEZONE must be a valid IANA timezone"))
+	}
+	if cfg.AbuseSMTP25High10M < cfg.AbuseSMTP25Warn10M || cfg.AbuseSubmissionHigh1H < cfg.AbuseSubmissionWarn1H || cfg.AbuseUniqueIPHigh24H < cfg.AbuseUniqueIPWarn1H {
+		validationErrors = append(validationErrors, errors.New("abuse HIGH thresholds must not be below WARN thresholds"))
 	}
 	allowedUsers := required("TELEGRAM_ALLOWED_USERS")
 	if allowedUsers != "" {
@@ -538,6 +611,46 @@ func parseAllowedUsers(value string, validationErrors []error) ([]int64, []error
 		validationErrors = append(validationErrors, errors.New("TELEGRAM_ALLOWED_USERS must contain at least one ID"))
 	}
 	return users, validationErrors
+}
+
+func parsePorts(name, value string, validationErrors []error) ([]uint16, []error) {
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' || r == ' ' })
+	ports := make([]uint16, 0, len(parts))
+	seen := make(map[uint16]struct{}, len(parts))
+	for _, part := range parts {
+		parsed, err := strconv.ParseUint(part, 10, 16)
+		if err != nil || parsed == 0 {
+			return nil, append(validationErrors, fmt.Errorf("%s must contain ports between 1 and 65535", name))
+		}
+		port := uint16(parsed)
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	if len(ports) == 0 {
+		validationErrors = append(validationErrors, fmt.Errorf("%s must contain at least one port", name))
+	}
+	return ports, validationErrors
+}
+
+func parseASNOverrides(value string, validationErrors []error) (map[uint32]string, []error) {
+	result := make(map[uint32]string)
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' }) {
+		pair := strings.SplitN(part, "=", 2)
+		if len(pair) != 2 {
+			return nil, append(validationErrors, errors.New("ABUSE_ASN_OVERRIDES must use AS123=CATEGORY format"))
+		}
+		rawASN := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(pair[0])), "AS")
+		asn, err := strconv.ParseUint(rawASN, 10, 32)
+		category := strings.ToUpper(strings.TrimSpace(pair[1]))
+		if err != nil || asn == 0 || category == "" {
+			return nil, append(validationErrors, errors.New("ABUSE_ASN_OVERRIDES contains an invalid ASN or category"))
+		}
+		result[uint32(asn)] = category
+	}
+	return result, validationErrors
 }
 
 func parseIP(name, value string, validationErrors []error) (netip.Addr, []error) {

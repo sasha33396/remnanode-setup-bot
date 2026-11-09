@@ -25,6 +25,10 @@ Telegram user IDs. Each panel's `remnawave.api_ip` and the global `METRICS_IP`
 must be literal IPv4 or IPv6 addresses. API endpoints require HTTP(S) URLs, and `DATABASE_URL` requires a
 PostgreSQL URL.
 
+Mail Guard and access-log abuse monitoring are documented in
+[`docs/MAIL_GUARD_ABUSE.md`](docs/MAIL_GUARD_ABUSE.md). The protection port set,
+poll interval, thresholds, cooldown and retention are configurable in `.env`.
+
 `XRAY_SNI_REPO_URL` defaults to the external-certificate fork and must be a
 credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 `v0.1.0-external` tag; branch names such as `main` are rejected.
@@ -77,8 +81,9 @@ Managed Nodes are polled over the deployment key every
 `NODE_NETWORK_POLL_INTERVAL` (5 minutes by default). The inventory reads the
 interface `addresses` from `/etc/netplan/50-cloud-init.yaml`, persists only
 those non-secret IP addresses, and includes them in web and Telegram search.
-The **Синхронизировать настройки** action also reconciles and validates the
-complete firewall stage, including the IPv4/IPv6 TCP/UDP port 25 guard. For a
+The **🛡 Синхронизировать защиту** action also reconciles and validates the
+complete firewall stage, including the configurable IPv4/IPv6 TCP/UDP Mail
+Guard in INPUT, OUTPUT and FORWARD. For a
 Legacy Node the same action asks for a one-time root password and performs a
 full adoption through the standard deployment workflow: preflight and deploy
 key installation, Docker/Remnanode, exporters, logrotate, Xray SNI, netplan,
@@ -192,17 +197,10 @@ certificate and Remna-to-DNS workflows use the new subdomain.
 The Node IP is not changed. Hosts with disabled or incomplete mappings and
 Hosts that resolve to the already active profile/inbound are not offered.
 
-The critical threshold is fixed and configured by
-`NODE_CRITICAL_ONLINE_THRESHOLD` (20 by default). A connected, enabled Node is
-critical when its current online count is equal to or below this value; panel
-median and Node count do not affect classification. The background monitor
-samples every `NODE_MONITOR_INTERVAL` (5 minutes by default), requires
-`NODE_MONITOR_CONFIRMATIONS` consecutive critical samples (2 by default), and
-sends an incident alert to every `TELEGRAM_ALLOWED_USERS` operator. While the
-Node remains critical, the warning repeats every `NODE_CRITICAL_ALERT_INTERVAL`
-(15 minutes by default). A temporary connection or metrics gap does not create
-a duplicate warning; a recovery message is sent after online returns above the
-current threshold.
+The critical threshold is configured by `NODE_CRITICAL_ONLINE_THRESHOLD` and
+is still used to group Nodes in the interactive inventory. Online metrics and
+manual status remain available, but low-online, recovery and ordinary
+online/offline changes no longer generate automatic Telegram messages.
 
 The **Сменить IP** menu contains five workflows:
 
@@ -380,12 +378,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000005_certificate_legacy_
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.down.sql

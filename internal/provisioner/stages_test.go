@@ -109,7 +109,10 @@ func TestRemnanodeValidationWaitsForAPIReadiness(t *testing.T) {
 }
 
 func TestFirewallUsesConfiguredSourcesAndReplacesStaleManagedRules(t *testing.T) {
-	inspect, apply, _ := firewallCommands("192.0.2.10", "198.51.100.20")
+	inspect, apply, _, err := firewallCommands("192.0.2.10", "198.51.100.20", DefaultMailGuardConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, required := range []string{"192.0.2.10", "198.51.100.20", "2222", "9100", "9200"} {
 		if !strings.Contains(inspect+apply, required) {
 			t.Fatalf("firewall commands do not contain %q", required)
@@ -118,9 +121,40 @@ func TestFirewallUsesConfiguredSourcesAndReplacesStaleManagedRules(t *testing.T)
 	if !strings.Contains(apply, `ufw --force delete "$number"`) {
 		t.Fatal("firewall apply cannot remove a stale deployer-managed rule")
 	}
-	for _, required := range []string{"table inet smtp_guard", "hook input priority -20", "hook output priority -20", "hook forward priority -20", "tcp dport 25 counter drop", "udp dport 25 counter drop", "smtp-guard.service", "nft -c -f"} {
+	for _, required := range []string{"table inet smtp_guard", "hook input priority -20", "hook output priority -20", "hook forward priority -20", "tcp dport { 25, 26, 110, 143, 465, 587, 993, 995, 2525, 4190, 8025 } counter drop", "udp dport { 25, 26, 110, 143, 465, 587, 993, 995, 2525, 4190, 8025 } counter drop", "smtp-guard.service", "nft -c -f"} {
 		if !strings.Contains(inspect+apply, required) {
 			t.Fatalf("SMTP guard does not contain %q", required)
 		}
+	}
+	if strings.Count(apply, "tcp dport { 25, 26, 110, 143, 465, 587, 993, 995, 2525, 4190, 8025 } counter drop") != 3 || strings.Count(apply, "udp dport { 25, 26, 110, 143, 465, 587, 993, 995, 2525, 4190, 8025 } counter drop") != 3 {
+		t.Fatal("Mail Guard must install exactly six TCP/UDP direction rules")
+	}
+	if strings.Contains(apply, "flush ruleset") || !strings.Contains(apply, "delete table inet smtp_guard") {
+		t.Fatal("Mail Guard must replace only its own table without flushing unrelated rules")
+	}
+}
+
+func TestMailGuardCanUseConfiguredPorts(t *testing.T) {
+	_, apply, _, err := firewallCommands("192.0.2.10", "198.51.100.20", MailGuardConfig{Enabled: true, Ports: []uint16{587, 25, 587}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(apply, "tcp dport { 25, 587 } counter drop") {
+		t.Fatalf("custom sorted port set is absent: %s", apply)
+	}
+}
+
+func TestDisabledMailGuardRemovesOnlyOwnedTableAndService(t *testing.T) {
+	inspect, apply, _, err := firewallCommands("192.0.2.10", "198.51.100.20", MailGuardConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"nft delete table inet smtp_guard", "systemctl disable --now smtp-guard.service"} {
+		if !strings.Contains(inspect+apply, required) {
+			t.Fatalf("disabled Mail Guard does not contain %q", required)
+		}
+	}
+	if strings.Contains(apply, "flush ruleset") {
+		t.Fatal("disabled Mail Guard must not flush unrelated nftables state")
 	}
 }

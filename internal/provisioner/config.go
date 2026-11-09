@@ -14,6 +14,7 @@ type Config struct {
 	Timezone            string
 	NodeExporterVersion string
 	CommandTimeout      time.Duration
+	MailGuard           MailGuardConfig
 	remnanodeSecret     []byte
 }
 
@@ -27,6 +28,7 @@ func NewConfig(remnawaveAPIIP, metricsIP netip.Addr, remnanodeSecret []byte) (Co
 		Timezone:            "Europe/Moscow",
 		NodeExporterVersion: "1.8.2",
 		CommandTimeout:      5 * time.Minute,
+		MailGuard:           DefaultMailGuardConfig(),
 		remnanodeSecret:     append([]byte(nil), remnanodeSecret...),
 	}
 	return config, nil
@@ -52,6 +54,11 @@ func (c Config) normalized() (Config, error) {
 	}
 	if c.CommandTimeout <= 0 {
 		c.CommandTimeout = 5 * time.Minute
+	}
+	var err error
+	c.MailGuard, err = c.MailGuard.normalized()
+	if err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }

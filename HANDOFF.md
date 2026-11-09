@@ -1,5 +1,14 @@
 # Development handoff
 
+## Mail Guard / abuse-monitor branch update
+
+`feature/mail-guard-abuse-monitor` is based on the production
+`feature/web-console-smtp-guard` branch. It replaces the single-port guard with
+the configurable full mail-port set, adds migration `000009`, incremental
+access-log monitoring and persistent Telegram incidents. Automatic low-online
+and recovery alerts are intentionally not wired into the runtime; inventory
+classification and live metrics are preserved. See `docs/MAIL_GUARD_ABUSE.md`.
+
 This file contains safe, version-controlled context for continuing development
 on another device. It must never contain tokens, passwords, private keys, or
 other secret values.

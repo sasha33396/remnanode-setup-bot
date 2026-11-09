@@ -77,23 +77,28 @@ func New(pool *pgxpool.Pool) *Repository {
 // CheckSchema verifies all runtime-critical migration objects before the
 // service reports readiness.
 func (r *Repository) CheckSchema(ctx context.Context) error {
-	var deployments, certificateRecords, certificateVersions, certificateTargetReviews, nodeNetworkInventory *string
+	var deployments, certificateRecords, certificateVersions, certificateTargetReviews, nodeNetworkInventory, abuseCheckpoints, abuseEvents, abuseAggregates, abuseIPCache, abuseIncidents *string
 	var panelColumns, advancedColumns int
 	if err := r.pool.QueryRow(ctx, `
         SELECT to_regclass('public.deployments')::text,
                to_regclass('public.certificate_records')::text,
                to_regclass('public.certificate_versions')::text,
                to_regclass('public.certificate_target_reviews')::text,
-               to_regclass('public.node_network_inventory')::text,
+	           to_regclass('public.node_network_inventory')::text,
+	           to_regclass('public.abuse_log_checkpoints')::text,
+	           to_regclass('public.abuse_events')::text,
+	           to_regclass('public.abuse_user_aggregates')::text,
+	           to_regclass('public.abuse_ip_cache')::text,
+	           to_regclass('public.abuse_incidents')::text,
                (SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'public' AND column_name = 'panel_id'
 	                  AND table_name IN ('deployments', 'certificate_records', 'certificate_versions', 'certificate_distributions', 'certificate_target_reviews')),
 	               (SELECT count(*) FROM information_schema.columns
 	                WHERE table_schema = 'public' AND table_name = 'deployments'
-	                  AND column_name IN ('deployment_kind', 'advanced_balancer_tag', 'advanced_egress_ip', 'advanced_internal_squad_uuid', 'advanced_config_profile_uuid', 'advanced_config_profile_name', 'advanced_inbound_uuid'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &nodeNetworkInventory, &panelColumns, &advancedColumns); err != nil {
+	                  AND column_name IN ('deployment_kind', 'advanced_balancer_tag', 'advanced_egress_ip', 'advanced_internal_squad_uuid', 'advanced_config_profile_uuid', 'advanced_config_profile_name', 'advanced_inbound_uuid'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &nodeNetworkInventory, &abuseCheckpoints, &abuseEvents, &abuseAggregates, &abuseIPCache, &abuseIncidents, &panelColumns, &advancedColumns); err != nil {
 		return errors.New("verify PostgreSQL schema failed")
 	}
-	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || nodeNetworkInventory == nil || panelColumns != 5 || advancedColumns != 7 {
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || nodeNetworkInventory == nil || abuseCheckpoints == nil || abuseEvents == nil || abuseAggregates == nil || abuseIPCache == nil || abuseIncidents == nil || panelColumns != 5 || advancedColumns != 7 {
 		return errors.New("required PostgreSQL migrations are not applied")
 	}
 	return nil

@@ -26,28 +26,50 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
 		t.Fatalf("legacy panel = %#v", cfg.Panels)
 	}
-	if cfg.NodeMonitorInterval != 5*time.Minute || cfg.NodeCriticalAlertInterval != 15*time.Minute || cfg.NodeMonitorConfirmations != 2 || cfg.NodeCriticalOnlineThreshold != 20 {
-		t.Fatalf("node monitor defaults = interval %s, alert interval %s, confirmations %d, threshold %d", cfg.NodeMonitorInterval, cfg.NodeCriticalAlertInterval, cfg.NodeMonitorConfirmations, cfg.NodeCriticalOnlineThreshold)
+	if cfg.NodeCriticalOnlineThreshold != 20 {
+		t.Fatalf("node policy threshold = %d", cfg.NodeCriticalOnlineThreshold)
+	}
+	if !cfg.MailGuardEnabled || len(cfg.MailGuardPorts) != 11 {
+		t.Fatalf("mail guard defaults = enabled %v ports %v", cfg.MailGuardEnabled, cfg.MailGuardPorts)
 	}
 }
 
-func TestLoadNodeMonitorOverrides(t *testing.T) {
+func TestLoadNodePolicyAndMailGuardOverrides(t *testing.T) {
 	values := validValues()
-	values["NODE_MONITOR_INTERVAL"] = "45s"
-	values["NODE_CRITICAL_ALERT_INTERVAL"] = "10m"
-	values["NODE_MONITOR_CONFIRMATIONS"] = "3"
 	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "65"
+	values["MAIL_GUARD_ENABLED"] = "true"
+	values["MAIL_GUARD_PORTS"] = "25, 587;993"
 	cfg, err := load(mapLookup(values))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.NodeMonitorInterval != 45*time.Second || cfg.NodeCriticalAlertInterval != 10*time.Minute || cfg.NodeMonitorConfirmations != 3 || cfg.NodeCriticalOnlineThreshold != 65 {
-		t.Fatalf("node monitor overrides were not loaded: %#v", cfg)
+	if cfg.NodeCriticalOnlineThreshold != 65 || len(cfg.MailGuardPorts) != 3 || cfg.MailGuardPorts[1] != 587 {
+		t.Fatalf("node policy/mail guard overrides were not loaded: %#v", cfg)
 	}
 
 	values["NODE_CRITICAL_ONLINE_THRESHOLD"] = "0"
 	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_CRITICAL_ONLINE_THRESHOLD") {
 		t.Fatalf("invalid node monitor threshold error = %v", err)
+	}
+}
+
+func TestLoadAbuseMonitorOverrides(t *testing.T) {
+	values := validValues()
+	values["ABUSE_MONITOR_INTERVAL"] = "2m"
+	values["ABUSE_ALERT_COOLDOWN"] = "90m"
+	values["ABUSE_SMTP25_WARN_10M"] = "20"
+	values["ABUSE_SMTP25_HIGH_10M"] = "80"
+	values["ABUSE_ASN_OVERRIDES"] = "AS64500=HOSTING,64501=PROXY"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AbuseMonitorInterval != 2*time.Minute || cfg.AbuseAlertCooldown != 90*time.Minute || cfg.AbuseSMTP25Warn10M != 20 || cfg.AbuseSMTP25High10M != 80 || cfg.AbuseASNOverrides[64501] != "PROXY" {
+		t.Fatalf("abuse monitor overrides = %#v", cfg)
+	}
+	values["ABUSE_SMTP25_HIGH_10M"] = "10"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "HIGH thresholds") {
+		t.Fatalf("invalid abuse thresholds error = %v", err)
 	}
 }
 

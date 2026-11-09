@@ -247,7 +247,7 @@ func (c *Controller) showNodeCard(ctx context.Context, chatID int64, messageID i
 				if !node.Managed {
 					rows = append(rows, []Button{{Text: "✅ Сделать актуальной", CallbackData: "nodes:promote:" + node.UUID}})
 				}
-				rows = append(rows, []Button{{Text: "🛡 Синхронизировать настройки", CallbackData: "nodes:actualize:" + node.UUID}})
+				rows = append(rows, []Button{{Text: "🛡 Синхронизировать защиту", CallbackData: "nodes:actualize:" + node.UUID}})
 			}
 			rows = append(rows,
 				[]Button{{Text: "🔄 Обновить", CallbackData: "nodes:o:" + node.UUID}},
@@ -563,7 +563,7 @@ func (c *Controller) confirmManagedNodesActualize(ctx context.Context, callback 
 	if managed == 0 {
 		return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, "Актуальные ноды не найдены.", Keyboard{Inline: [][]Button{{{Text: "⬅️ К нодам", CallbackData: "nodes:root"}}}})
 	}
-	text := fmt.Sprintf("⚠️ Синхронизировать %d актуальных нод?\n\nДля каждой ноды будут прочитаны IP из netplan, проверены и при необходимости применены полные правила firewall, включая блокировку порта 25.", managed)
+	text := fmt.Sprintf("⚠️ Синхронизировать защиту на %d актуальных нодах?\n\nДля каждой ноды будут прочитаны IP из netplan и проверен Mail Guard: TCP/UDP, INPUT/OUTPUT/FORWARD, IPv4/IPv6 и автозапуск systemd.", managed)
 	return c.sendOrEdit(ctx, callback.Message.ChatID, callback.Message.ID, text, Keyboard{Inline: [][]Button{
 		{{Text: "✅ Запустить", CallbackData: "nodes:actualize-all-confirm"}},
 		{{Text: "❌ Отмена", CallbackData: "nodes:root"}},

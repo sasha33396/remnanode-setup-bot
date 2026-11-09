@@ -11,11 +11,14 @@ import (
 
 // ReconcileFirewall reapplies the same idempotent firewall stage used during
 // provisioning and validates both UFW and the full nftables port 25 guard.
-func ReconcileFirewall(ctx context.Context, runner sshclient.CommandRunner, panelIP, metricsIP netip.Addr, timeout time.Duration) (bool, error) {
+func ReconcileFirewall(ctx context.Context, runner sshclient.CommandRunner, panelIP, metricsIP netip.Addr, timeout time.Duration, mailGuard MailGuardConfig) (bool, error) {
 	if runner == nil || !panelIP.IsValid() || !metricsIP.IsValid() || timeout <= 0 {
 		return false, errors.New("invalid firewall reconciliation configuration")
 	}
-	inspect, apply, validate := firewallCommands(panelIP.Unmap().String(), metricsIP.Unmap().String())
+	inspect, apply, validate, err := firewallCommands(panelIP.Unmap().String(), metricsIP.Unmap().String(), mailGuard)
+	if err != nil {
+		return false, err
+	}
 	stage := &remoteStage{name: "firewall", runner: runner, timeout: timeout, inspectCommand: inspect, applyCommand: apply, validateCommand: validate}
 	state, err := stage.Inspect(ctx)
 	if err != nil {

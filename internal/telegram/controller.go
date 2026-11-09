@@ -33,6 +33,7 @@ type Controller struct {
 	now        func() time.Time
 	nonce      func() (string, error)
 	nodePolicy NodePolicy
+	abuse      AbuseIncidentApplication
 
 	mu       sync.Mutex
 	sessions map[int64]*wizard
@@ -74,6 +75,10 @@ func newController(allowedUsers []int64, app Application, messenger Messenger, s
 // SetNodePolicy configures how the Nodes screen classifies low online counts.
 func (c *Controller) SetNodePolicy(policy NodePolicy) {
 	c.nodePolicy = normalizeNodePolicy(policy)
+}
+
+func (c *Controller) SetAbuseIncidentApplication(app AbuseIncidentApplication) {
+	c.abuse = app
 }
 
 // Handle processes one update. Callers may invoke Handle concurrently.
@@ -351,6 +356,9 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	if callback.Message == nil || callback.Message.ChatID == 0 {
 		return c.messenger.AnswerCallback(ctx, callback.ID, "This action is no longer available.")
 	}
+	if strings.HasPrefix(callback.Data, "abuse:") {
+		return c.handleAbuseCallback(ctx, callback)
+	}
 	if action, valid := parseNodesCallback(callback.Data); valid {
 		_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 		switch action.action {
@@ -613,6 +621,34 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		}
 		removed.clear()
 		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID, "Синхронизация DNS отменена.", Keyboard{})
+	default:
+		return c.expiredCallback(ctx, callback)
+	}
+}
+
+func (c *Controller) handleAbuseCallback(ctx context.Context, callback *CallbackQuery) error {
+	parts := strings.Split(callback.Data, ":")
+	if c.abuse == nil || len(parts) != 3 || len(parts[2]) != 24 {
+		return c.expiredCallback(ctx, callback)
+	}
+	for _, char := range parts[2] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return c.expiredCallback(ctx, callback)
+		}
+	}
+	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
+	switch parts[1] {
+	case "details", "stats":
+		text, err := c.abuse.IncidentText(ctx, parts[2], parts[1] == "stats")
+		if err != nil {
+			return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Инцидент больше недоступен.", Keyboard{})
+		}
+		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, text, Keyboard{Inline: [][]Button{{{Text: "🔕 Игнорировать 24 часа", CallbackData: "abuse:ignore:" + parts[2]}}}})
+	case "ignore":
+		if err := c.abuse.IgnoreIncident(ctx, parts[2]); err != nil {
+			return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "Не удалось изменить инцидент.", Keyboard{})
+		}
+		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "🔕 Уведомления по этому инциденту отключены на 24 часа.", Keyboard{})
 	default:
 		return c.expiredCallback(ctx, callback)
 	}

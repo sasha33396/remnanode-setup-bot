@@ -18,6 +18,7 @@ type SSHProvisionerConfig struct {
 	XrayRepository string
 	XrayRef        string
 	CommandTimeout time.Duration
+	MailGuard      provisioner.MailGuardConfig
 }
 
 // SSHProvisioner connects the orchestration VPS port to the verified SSH,
@@ -135,6 +136,7 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 		return provisioningPhase("Provisioner configuration could not be created")
 	}
 	defer config.Destroy()
+	config.MailGuard = v.config.MailGuard
 	xray, err := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{
 		RepositoryURL: v.config.XrayRepository,
 		Ref:           v.config.XrayRef,

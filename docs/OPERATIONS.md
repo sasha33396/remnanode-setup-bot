@@ -8,7 +8,7 @@
 3. Generate a dedicated Ed25519 deployment SSH key and set the host path in
    `DEPLOY_SSH_PRIVATE_KEY`.
 4. Grant the Cloudflare token only DNS record read/edit access to SNI zones.
-5. Apply migrations `000001` through `000006` in numeric order.
+5. Apply migrations `000001` through `000009` in numeric order.
 6. Run `docker compose up -d --build`; verify `/healthz`, `/readyz`, `/metrics`,
    container health, and Telegram `/start`.
 
@@ -135,7 +135,7 @@ Do not run destructive down migrations merely to roll back an application image.
 
 ## Troubleshooting
 
-- `readyz` is 503: check PostgreSQL and migrations `000001`–`000006`.
+- `readyz` is 503: check PostgreSQL and migrations `000001`–`000009`.
 - ACME fails: check email, directory, Cloudflare scope, zone discovery, TXT
   propagation, CAA, and clock. The failed `prepare_certificate` step records a
   safe phase-specific message and, when Cloudflare supplies one, only its
