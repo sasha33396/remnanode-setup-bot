@@ -317,10 +317,9 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 		if loadErr != nil {
 			continue
 		}
-		intel := make(map[netip.Addr]abuse.Intelligence)
-		for _, event := range events {
-			intel[event.ClientIP] = abuse.Intelligence{ASN: event.ASN, Provider: event.Provider, Category: event.Category}
-		}
+		intel := enrichUnknownEvents(events, func(ip netip.Addr) abuse.Intelligence {
+			return m.lookupIntelligence(ctx, ip)
+		})
 		observedIPs, fromAPI := m.apiSnapshot(identity[0], identity[1])
 		if fromAPI {
 			for ip := range observedIPs {
@@ -343,6 +342,34 @@ func (m *AbuseMonitor) analyze(ctx context.Context) {
 		}
 		m.notify(ctx, incident, assessment, events)
 	}
+}
+
+// enrichUnknownEvents refreshes historical UNKNOWN rows in memory before
+// scoring and rendering. The persisted access log remains immutable, while a
+// single lookup per unique IP is enough to make old incidents useful after
+// IPinfo is enabled.
+func enrichUnknownEvents(events []abuse.Event, resolve func(netip.Addr) abuse.Intelligence) map[netip.Addr]abuse.Intelligence {
+	intel := make(map[netip.Addr]abuse.Intelligence)
+	for _, event := range events {
+		if event.ClientIP.IsValid() && event.ASN != 0 {
+			intel[event.ClientIP] = abuse.Intelligence{ASN: event.ASN, Provider: event.Provider, Category: event.Category}
+		}
+	}
+	for index := range events {
+		ip := events[index].ClientIP
+		if !ip.IsValid() {
+			continue
+		}
+		info, found := intel[ip]
+		if !found {
+			info = resolve(ip)
+			intel[ip] = info
+		}
+		if events[index].ASN == 0 && info.ASN != 0 {
+			events[index].ASN, events[index].Provider, events[index].Category = info.ASN, info.Provider, info.Category
+		}
+	}
+	return intel
 }
 
 func (m *AbuseMonitor) apiSnapshot(panelID, userID string) (map[netip.Addr]time.Time, bool) {
