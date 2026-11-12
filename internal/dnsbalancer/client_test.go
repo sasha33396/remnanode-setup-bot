@@ -80,6 +80,81 @@ func TestAddIPPreservesCompleteList(t *testing.T) {
 	}
 }
 
+func TestEnsureZoneCreatesSubdomainBelowLongestConfiguredParent(t *testing.T) {
+	var postCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/config/domains":
+			fmt.Fprint(w, `[{"domain":"example.com","zones":[]},{"domain":"nodes.example.com","zones":[]}]`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/config/domains/nodes.example.com/zones":
+			postCalls.Add(1)
+			var request createZoneRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request.Name != "de" || request.TTL != 60 || request.Proxied || strings.Join(request.IPs, ",") != "192.0.2.44" {
+				t.Fatalf("create zone request = %#v", request)
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"status":"ok"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+
+	result, err := client.EnsureZone(context.Background(), "DE.NODES.EXAMPLE.COM.", netip.MustParseAddr("192.0.2.44"), 60)
+	if err != nil || !result.ZoneCreated || !result.IPAdded || result.FQDN != "de.nodes.example.com" || postCalls.Load() != 1 {
+		t.Fatalf("EnsureZone() = %#v, %v; POST calls=%d", result, err, postCalls.Load())
+	}
+}
+
+func TestEnsureZoneAddsIPToExistingZone(t *testing.T) {
+	var patchCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			fmt.Fprint(w, domainsJSON([]string{"192.0.2.1"}))
+		case http.MethodPatch:
+			patchCalls.Add(1)
+			var request patchZoneRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(request.IPs, ",") != "192.0.2.1,192.0.2.2" {
+				t.Fatalf("PATCH ips = %v", request.IPs)
+			}
+			fmt.Fprint(w, `{"status":"ok"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+
+	result, err := client.EnsureZone(context.Background(), "de.example.com", netip.MustParseAddr("192.0.2.2"), 60)
+	if err != nil || result.ZoneCreated || !result.IPAdded || patchCalls.Load() != 1 {
+		t.Fatalf("EnsureZone() = %#v, %v; PATCH calls=%d", result, err, patchCalls.Load())
+	}
+}
+
+func TestEnsureZoneRejectsUnknownParentDomain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"domain":"example.com","zones":[]}]`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+
+	_, err := client.EnsureZone(context.Background(), "de.example.net", netip.MustParseAddr("192.0.2.44"), 60)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("EnsureZone() error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestReplaceIPPreservesOtherAddresses(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

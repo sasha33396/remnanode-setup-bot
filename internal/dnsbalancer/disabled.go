@@ -14,6 +14,9 @@ func (Disabled) FindZone(context.Context, string) (ZoneMatch, error) { return Zo
 func (Disabled) FindZonesByIP(context.Context, netip.Addr) ([]ZoneMatch, error) {
 	return []ZoneMatch{}, nil
 }
+func (Disabled) EnsureZone(context.Context, string, netip.Addr, int) (EnsureZoneResult, error) {
+	return EnsureZoneResult{}, ErrInvalidInput
+}
 func (Disabled) AddIP(context.Context, string, netip.Addr) (AddIPResult, error) {
 	return AddIPResult{}, ErrInvalidInput
 }

@@ -1486,11 +1486,35 @@ func (f *fakeCertificateProvider) Bootstrap(context.Context, string, int64) (cer
 type fakeDNS struct {
 	mu sync.Mutex
 
-	events    *eventLog
-	addErr    error
-	addCalls  int
-	moveCalls int
-	zones     []dnsbalancer.ZoneMatch
+	events      *eventLog
+	addErr      error
+	addCalls    int
+	moveCalls   int
+	zones       []dnsbalancer.ZoneMatch
+	ensureCalls int
+}
+
+func (f *fakeDNS) EnsureZone(_ context.Context, fqdn string, ip netip.Addr, _ int) (dnsbalancer.EnsureZoneResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureCalls++
+	f.events.add("dns.ensure")
+	if f.addErr != nil {
+		return dnsbalancer.EnsureZoneResult{}, f.addErr
+	}
+	for index := range f.zones {
+		if strings.EqualFold(f.zones[index].FQDN, fqdn) {
+			for _, value := range f.zones[index].Zone.IPs {
+				if value == ip.String() {
+					return dnsbalancer.EnsureZoneResult{FQDN: fqdn, IPs: append([]string(nil), f.zones[index].Zone.IPs...)}, nil
+				}
+			}
+			f.zones[index].Zone.IPs = append(f.zones[index].Zone.IPs, ip.String())
+			return dnsbalancer.EnsureZoneResult{FQDN: fqdn, IPAdded: true, IPs: append([]string(nil), f.zones[index].Zone.IPs...)}, nil
+		}
+	}
+	f.zones = append(f.zones, dnsbalancer.ZoneMatch{FQDN: fqdn, Zone: dnsbalancer.Zone{TTL: 60, IPs: []string{ip.String()}}})
+	return dnsbalancer.EnsureZoneResult{FQDN: fqdn, ZoneCreated: true, IPAdded: true, IPs: []string{ip.String()}}, nil
 }
 
 func (f *fakeDNS) MoveIP(_ context.Context, sourceFQDN, targetFQDN string, ip netip.Addr) (dnsbalancer.MoveIPResult, error) {

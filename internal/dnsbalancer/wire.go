@@ -91,3 +91,10 @@ func (r patchZoneRequest) MarshalJSON() ([]byte, error) {
 type statusResponse struct {
 	Status *string `json:"status"`
 }
+
+type createZoneRequest struct {
+	Name    string   `json:"name"`
+	TTL     int      `json:"ttl"`
+	Proxied bool     `json:"proxied"`
+	IPs     []string `json:"ips"`
+}

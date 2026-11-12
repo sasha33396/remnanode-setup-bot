@@ -228,8 +228,8 @@ func (s *Server) handleProfileHostDeployment(w http.ResponseWriter, r *http.Requ
 	password := []byte(body.Password)
 	body.Password = ""
 	jobID, err := s.startBackgroundJob(user.UserID, "profile-host:"+body.PanelID, body.NodeName, password, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
-		progress(telegram.NodeActualizeProgress{Step: "host", Message: "Проверка профиля и создание видимого Host", Completed: 0, Total: 3})
-		host, err := profileApp.EnsureProfileHost(ctx, telegram.ProfileHostCreateInput{PanelID: body.PanelID, ProfileID: body.ProfileID, InboundID: body.InboundID, Domain: body.Domain})
+		progress(telegram.NodeActualizeProgress{Step: "host", Message: "Создание DNS-поддомена и видимого Host", Completed: 0, Total: 3})
+		host, err := profileApp.EnsureProfileHost(ctx, telegram.ProfileHostCreateInput{PanelID: body.PanelID, ProfileID: body.ProfileID, InboundID: body.InboundID, Domain: body.Domain, VPSIP: address})
 		if err != nil || strings.TrimSpace(host.ID) == "" {
 			if err == nil {
 				err = errors.New("Host was not created")

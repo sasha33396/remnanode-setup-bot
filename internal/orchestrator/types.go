@@ -127,6 +127,7 @@ type ProfileHostRemnawaveAPI interface {
 type DNSAPI interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
+	EnsureZone(context.Context, string, netip.Addr, int) (dnsbalancer.EnsureZoneResult, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 	MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)

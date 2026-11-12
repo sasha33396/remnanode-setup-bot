@@ -1257,7 +1257,7 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 		}
 		host, hostErr := profileApp.EnsureProfileHost(ctx, ProfileHostCreateInput{
 			PanelID: current.panel.ID, ProfileID: current.selectedProfile.ProfileID,
-			InboundID: current.selectedProfile.InboundID, Domain: current.profileDomain,
+			InboundID: current.selectedProfile.InboundID, Domain: current.profileDomain, VPSIP: current.vpsIP,
 		})
 		if hostErr != nil || strings.TrimSpace(host.ID) == "" {
 			clearBytes(requestPassword)
@@ -1265,7 +1265,12 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 			if removed != nil {
 				removed.clear()
 			}
-			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось безопасно создать Host. Проверьте домен и отсутствие Host с конфликтующими настройками.", mainKeyboard())
+			errorMessage := "Не удалось безопасно создать DNS-поддомен и Host. Проверьте домен, DNS и отсутствие Host с конфликтующими настройками."
+			var operatorError interface{ OperatorMessage() string }
+			if errors.As(hostErr, &operatorError) && strings.TrimSpace(operatorError.OperatorMessage()) != "" {
+				errorMessage = operatorError.OperatorMessage()
+			}
+			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, errorMessage, mainKeyboard())
 			return sendErr
 		}
 		if !c.updateSession(message.FromUserID, current.nonce, statePreflighting, func(active *wizard) { active.selected = host }) {

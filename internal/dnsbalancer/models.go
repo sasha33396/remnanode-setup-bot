@@ -40,6 +40,17 @@ type AddIPResult struct {
 	IPs   []string
 }
 
+// EnsureZoneResult reports whether a DNS zone was created or an address was
+// added to an existing zone. Repeated calls with the same FQDN and IP are a
+// no-op.
+type EnsureZoneResult struct {
+	FQDN        string
+	ZoneCreated bool
+	IPAdded     bool
+	IPs         []string
+	Nodes       []ZoneNode
+}
+
 // ReplaceIPResult reports an idempotent simple or advanced IP replacement.
 type ReplaceIPResult struct {
 	FQDN    string

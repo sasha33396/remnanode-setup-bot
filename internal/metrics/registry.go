@@ -231,6 +231,7 @@ type DNSClient struct {
 	next interface {
 		FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
 		FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
+		EnsureZone(context.Context, string, netip.Addr, int) (dnsbalancer.EnsureZoneResult, error)
 		AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 		ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 		MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
@@ -241,6 +242,7 @@ type DNSClient struct {
 func ObserveDNS(next interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)
+	EnsureZone(context.Context, string, netip.Addr, int) (dnsbalancer.EnsureZoneResult, error)
 	AddIP(context.Context, string, netip.Addr) (dnsbalancer.AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (dnsbalancer.ReplaceIPResult, error)
 	MoveIP(context.Context, string, string, netip.Addr) (dnsbalancer.MoveIPResult, error)
@@ -255,6 +257,11 @@ func (c *DNSClient) FindZone(ctx context.Context, sni string) (dnsbalancer.ZoneM
 }
 func (c *DNSClient) FindZonesByIP(ctx context.Context, ip netip.Addr) ([]dnsbalancer.ZoneMatch, error) {
 	value, err := c.next.FindZonesByIP(ctx, ip)
+	c.observe(err)
+	return value, err
+}
+func (c *DNSClient) EnsureZone(ctx context.Context, sni string, ip netip.Addr, ttl int) (dnsbalancer.EnsureZoneResult, error) {
+	value, err := c.next.EnsureZone(ctx, sni, ip, ttl)
 	c.observe(err)
 	return value, err
 }

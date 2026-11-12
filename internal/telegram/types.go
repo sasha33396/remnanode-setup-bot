@@ -126,6 +126,7 @@ type ProfileHostCreateInput struct {
 	ProfileID string
 	InboundID string
 	Domain    string
+	VPSIP     netip.Addr
 }
 
 type AdvancedBalancerPreflightInput struct {

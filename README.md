@@ -110,7 +110,13 @@ The web toolbar and Telegram main menu include **Host из профиля + но
 This wizard reads existing Remnawave Config Profiles, lets the operator select
 one inbound, offers its Reality `serverNames` values or a manually entered
 FQDN, creates a visible Host, and then runs the ordinary managed-Node
-deployment. The selected domain is written to both Host `address` and `sni`.
+deployment. Before the Host is created, the wizard idempotently creates the
+selected FQDN as an unproxied 60-second zone in the panel's
+`remnawave-cloudflare-nodes` configuration and adds the VPS IP. If the zone
+already exists, its other IPs are preserved. The parent domain must already be
+present in that service's `domains` list; this avoids guessing registrable
+domains such as `example.co.uk`. The selected domain is written to both Host
+`address` and `sni`.
 The Host is tagged `SETUP_BOT_PROFILE_NODE` and, after Node creation, is
 idempotently bound to that Node with the Remnawave 2.8.1 partial Host update
 API. Repeating a failed attempt reuses only an exact matching generated Host;
@@ -170,7 +176,8 @@ executable starts authorized Telegram long polling and graceful shutdown.
 
 The **Host из профиля + нода** wizard is shared with the web console. It takes
 the port from the selected inbound, validates profile and Host state again
-immediately before mutation, creates/reuses a regular visible Host, and then
+immediately before mutation, creates/reuses the DNS-balancer subdomain and a
+regular visible Host, and then
 uses the standard preflight/provisioning workflow including firewall and Mail
 Guard. Remnawave 2.8.1 limits Host remarks to 40 characters, so this wizard
 accepts FQDNs up to that length.

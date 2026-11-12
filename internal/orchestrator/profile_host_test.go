@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"testing"
 
 	"remnanode-setup-bot/internal/remnawave"
@@ -28,7 +29,7 @@ func TestProfileHostOptionsAndIdempotentCreation(t *testing.T) {
 	if len(options.Inbounds) != 1 || options.Inbounds[0].Port != 443 || len(options.Inbounds[0].ServerNames) != 1 || options.Inbounds[0].ServerNames[0] != "de-modx.nodexphere.net" {
 		t.Fatalf("profile Host options = %#v", options)
 	}
-	input := telegram.ProfileHostCreateInput{PanelID: "default", ProfileID: testProfileUUID, InboundID: testInboundUUID, Domain: "DE-MODX.NODEXPHERE.NET."}
+	input := telegram.ProfileHostCreateInput{PanelID: "default", ProfileID: testProfileUUID, InboundID: testInboundUUID, Domain: "DE-MODX.NODEXPHERE.NET.", VPSIP: netip.MustParseAddr("8.8.8.8")}
 	first, err := app.EnsureProfileHost(context.Background(), input)
 	if err != nil || first.Address != "de-modx.nodexphere.net" {
 		t.Fatalf("first EnsureProfileHost() = %#v, %v", first, err)
@@ -39,6 +40,9 @@ func TestProfileHostOptionsAndIdempotentCreation(t *testing.T) {
 	}
 	if len(fixture.remnawave.visibleHostInputs) != 1 {
 		t.Fatalf("visible Host create calls = %d", len(fixture.remnawave.visibleHostInputs))
+	}
+	if fixture.dns.ensureCalls != 2 {
+		t.Fatalf("DNS ensure calls = %d, want 2 idempotent calls", fixture.dns.ensureCalls)
 	}
 }
 
@@ -87,7 +91,7 @@ func TestProfileHostCreationRejectsAddressConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = app.EnsureProfileHost(context.Background(), telegram.ProfileHostCreateInput{PanelID: "default", ProfileID: testProfileUUID, InboundID: testInboundUUID, Domain: "de-modx.nodexphere.net"})
+	_, err = app.EnsureProfileHost(context.Background(), telegram.ProfileHostCreateInput{PanelID: "default", ProfileID: testProfileUUID, InboundID: testInboundUUID, Domain: "de-modx.nodexphere.net", VPSIP: netip.MustParseAddr("8.8.8.8")})
 	if !errors.Is(err, errProfileHostConflict) || len(fixture.remnawave.visibleHostInputs) != 0 {
 		t.Fatalf("EnsureProfileHost() error = %v, creates = %d", err, len(fixture.remnawave.visibleHostInputs))
 	}

@@ -32,9 +32,130 @@ type API interface {
 	GetDomains(context.Context) ([]Domain, error)
 	FindZone(context.Context, string) (ZoneMatch, error)
 	FindZonesByIP(context.Context, netip.Addr) ([]ZoneMatch, error)
+	EnsureZone(context.Context, string, netip.Addr, int) (EnsureZoneResult, error)
 	AddIP(context.Context, string, netip.Addr) (AddIPResult, error)
 	ReplaceIP(context.Context, string, netip.Addr, netip.Addr) (ReplaceIPResult, error)
 	MoveIP(context.Context, string, string, netip.Addr) (MoveIPResult, error)
+}
+
+// EnsureZone creates a missing subdomain zone below an already configured
+// parent domain, or adds ip to the existing zone without removing any current
+// entries. The parent domain is selected by the longest exact DNS suffix, so
+// this method never guesses an effective TLD from the requested hostname.
+func (c *Client) EnsureZone(ctx context.Context, fqdn string, ip netip.Addr, ttl int) (EnsureZoneResult, error) {
+	key := normalizeFQDN(fqdn)
+	if key == "" || !ip.IsValid() || ttl < 1 {
+		return EnsureZoneResult{}, fmt.Errorf("FQDN, IP or TTL: %w", ErrInvalidInput)
+	}
+	ip = ip.Unmap()
+	unlock, err := c.locker.Lock(ctx, key)
+	if err != nil {
+		return EnsureZoneResult{}, fmt.Errorf("lock DNS zone: %w", err)
+	}
+	defer unlock()
+
+	domains, err := c.GetDomains(ctx)
+	if err != nil {
+		return EnsureZoneResult{}, fmt.Errorf("read DNS configuration: %w", err)
+	}
+	if match, locateErr := LocateZone(domains, key); locateErr == nil {
+		return c.ensureZoneIP(ctx, match, ip)
+	} else if !errors.Is(locateErr, ErrNotFound) {
+		return EnsureZoneResult{}, locateErr
+	}
+
+	domain, zoneName, err := parentDomainForFQDN(domains, key)
+	if err != nil {
+		return EnsureZoneResult{}, err
+	}
+	var response statusResponse
+	endpoint := c.domainZonesEndpoint(domain.Name)
+	err = c.doJSON(ctx, http.MethodPost, endpoint, createZoneRequest{
+		Name: zoneName, TTL: ttl, Proxied: false, IPs: []string{ip.String()},
+	}, http.StatusCreated, &response)
+	if err == nil {
+		if response.Status == nil || *response.Status != "ok" {
+			return EnsureZoneResult{}, invalidResponse("POST status is missing or not ok")
+		}
+		return EnsureZoneResult{FQDN: key, ZoneCreated: true, IPAdded: true, IPs: []string{ip.String()}}, nil
+	}
+	if !errors.Is(err, ErrConflict) {
+		return EnsureZoneResult{}, err
+	}
+
+	// Another writer may have created the same zone after our GET. Refresh and
+	// converge to the requested state instead of exposing a spurious conflict.
+	domains, refreshErr := c.GetDomains(ctx)
+	if refreshErr != nil {
+		return EnsureZoneResult{}, refreshErr
+	}
+	match, locateErr := LocateZone(domains, key)
+	if locateErr != nil {
+		return EnsureZoneResult{}, err
+	}
+	return c.ensureZoneIP(ctx, match, ip)
+}
+
+func (c *Client) ensureZoneIP(ctx context.Context, match ZoneMatch, ip netip.Addr) (EnsureZoneResult, error) {
+	result := EnsureZoneResult{FQDN: match.FQDN, IPs: append([]string(nil), match.Zone.IPs...), Nodes: append([]ZoneNode(nil), match.Zone.Nodes...)}
+	for _, value := range match.Zone.IPs {
+		parsed, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			return EnsureZoneResult{}, invalidResponse("zone contains an invalid IP")
+		}
+		if parsed.Unmap() == ip {
+			return result, nil
+		}
+	}
+	for _, item := range match.Zone.Nodes {
+		parsed, err := netip.ParseAddr(strings.TrimSpace(item.IP))
+		if err != nil {
+			return EnsureZoneResult{}, invalidResponse("zone contains an invalid advanced-node IP")
+		}
+		if parsed.Unmap() == ip {
+			return result, nil
+		}
+	}
+	request := patchZoneRequest{}
+	if match.Zone.Nodes != nil {
+		result.Nodes = append(result.Nodes, ZoneNode{IP: ip.String(), Address: ip.String()})
+		request.Nodes = result.Nodes
+	} else {
+		result.IPs = append(result.IPs, ip.String())
+		request.IPs = result.IPs
+	}
+	if err := c.patchZone(ctx, match, request); err != nil {
+		return EnsureZoneResult{}, err
+	}
+	result.IPAdded = true
+	return result, nil
+}
+
+func parentDomainForFQDN(domains []Domain, fqdn string) (Domain, string, error) {
+	target := normalizeFQDN(fqdn)
+	var selected *Domain
+	selectedName := ""
+	for index := range domains {
+		name := normalizeFQDN(domains[index].Name)
+		if name == "" || (target != name && !strings.HasSuffix(target, "."+name)) {
+			continue
+		}
+		if len(name) > len(selectedName) {
+			selected = &domains[index]
+			selectedName = name
+		}
+	}
+	if selected == nil {
+		return Domain{}, "", fmt.Errorf("parent domain for %q: %w", fqdn, ErrNotFound)
+	}
+	if target == selectedName {
+		return *selected, "@", nil
+	}
+	zone := strings.TrimSuffix(target, "."+selectedName)
+	if zone == "" {
+		return Domain{}, "", fmt.Errorf("zone name: %w", ErrInvalidInput)
+	}
+	return *selected, zone, nil
 }
 
 // FindZonesByIP returns every simple or advanced zone containing ip.
@@ -459,6 +580,13 @@ func (c *Client) zoneEndpoint(domain, zone string) *url.URL {
 		escapedZone = "%40"
 	}
 	result.RawPath = "/api/config/domains/" + url.PathEscape(domain) + "/zones/" + escapedZone
+	return &result
+}
+
+func (c *Client) domainZonesEndpoint(domain string) *url.URL {
+	result := *c.baseURL
+	result.Path = "/api/config/domains/" + domain + "/zones"
+	result.RawPath = "/api/config/domains/" + url.PathEscape(domain) + "/zones"
 	return &result
 }
 

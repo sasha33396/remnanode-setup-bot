@@ -831,7 +831,7 @@ func TestProfileHostWizardCreatesHostBeforeStandardPreflight(t *testing.T) {
 	handleMessage(t, controller, 2, "de-node")
 	handleMessage(t, controller, 3, "8.8.8.8")
 	handleMessage(t, controller, 4, "temporary-password")
-	if application.ensureCalls != 1 || application.ensureInput.ProfileID != "profile" || application.ensureInput.InboundID != "inbound" || application.ensureInput.Domain != "de-modx.nodexphere.net" {
+	if application.ensureCalls != 1 || application.ensureInput.ProfileID != "profile" || application.ensureInput.InboundID != "inbound" || application.ensureInput.Domain != "de-modx.nodexphere.net" || application.ensureInput.VPSIP.String() != "8.8.8.8" {
 		t.Fatalf("EnsureProfileHost input = %#v, calls=%d", application.ensureInput, application.ensureCalls)
 	}
 	if base.preflightCalls != 1 || base.preflightInput.HostID != "created-host" {

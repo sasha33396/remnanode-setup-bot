@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"remnanode-setup-bot/internal/certmanager"
+	"remnanode-setup-bot/internal/dnsbalancer"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -18,6 +19,8 @@ var (
 	errProfileHostUnavailable = errors.New("profile Host creation is unavailable")
 	errProfileHostConflict    = errors.New("a Host with this address already has different settings")
 )
+
+const profileHostDNSTTL = 60
 
 type profileConfigDocument struct {
 	Inbounds []profileConfigInbound `json:"inbounds"`
@@ -170,9 +173,10 @@ func (a *TelegramApplication) EnsureProfileHost(ctx context.Context, input teleg
 		return telegram.Host{}, errProfileHostUnavailable
 	}
 	domain, err := certmanager.NormalizeSNI(input.Domain)
-	if err != nil || len(domain) > 40 {
+	if err != nil || len(domain) > 40 || !input.VPSIP.IsValid() {
 		return telegram.Host{}, ErrInvalidInput
 	}
+	input.VPSIP = input.VPSIP.Unmap()
 	options, err := a.ListProfileHostOptions(ctx, input.PanelID)
 	if err != nil {
 		return telegram.Host{}, err
@@ -210,6 +214,15 @@ func (a *TelegramApplication) EnsureProfileHost(ctx context.Context, input teleg
 	if conflict {
 		return telegram.Host{}, errProfileHostConflict
 	}
+	if !panel.DNSEnabled {
+		return telegram.Host{}, safeError("PROFILE_HOST_DNS_DISABLED", "Для этой панели DNS-балансировщик отключён; создать поддомен автоматически нельзя.", ErrDNSUpdateFailed)
+	}
+	if _, err := panel.Service.dns.EnsureZone(ctx, domain, input.VPSIP, profileHostDNSTTL); err != nil {
+		if panel.Service.logger != nil {
+			panel.Service.logger.Warn("profile Host DNS zone ensure failed", "panel_id", panel.ID, "fqdn", domain, "category", profileHostDNSErrorCategory(err), "http_status", dnsHTTPStatus(err))
+		}
+		return telegram.Host{}, profileHostDNSError(err)
+	}
 	if reusable != nil {
 		return profileHostProjection(*reusable), nil
 	}
@@ -221,6 +234,51 @@ func (a *TelegramApplication) EnsureProfileHost(ctx context.Context, input teleg
 		return telegram.Host{}, errors.New("create Host failed")
 	}
 	return profileHostProjection(created), nil
+}
+
+func profileHostDNSError(err error) error {
+	message, code := "Не удалось создать DNS-поддомен через DNS-балансировщик.", "PROFILE_HOST_DNS_FAILED"
+	switch {
+	case errors.Is(err, dnsbalancer.ErrUnauthorized):
+		message, code = "DNS-балансировщик отклонил API-ключ. Проверьте DNS API token панели.", "PROFILE_HOST_DNS_FORBIDDEN"
+	case errors.Is(err, dnsbalancer.ErrNotFound):
+		message, code = "Родительский домен не настроен в remnawave-cloudflare-nodes. Сначала добавьте его в domains.", "PROFILE_HOST_DNS_PARENT_NOT_FOUND"
+	case errors.Is(err, dnsbalancer.ErrUnprocessable):
+		message, code = "DNS-балансировщик отклонил параметры нового поддомена.", "PROFILE_HOST_DNS_INVALID"
+	case errors.Is(err, dnsbalancer.ErrInvalidResponse):
+		message, code = "DNS-балансировщик вернул некорректный ответ при создании поддомена.", "PROFILE_HOST_DNS_INVALID_RESPONSE"
+	default:
+		if status := dnsHTTPStatus(err); status != 0 {
+			message, code = fmt.Sprintf("DNS-балансировщик вернул HTTP %d при создании поддомена.", status), "PROFILE_HOST_DNS_HTTP_ERROR"
+		}
+	}
+	return safeError(code, message, ErrDNSUpdateFailed)
+}
+
+func profileHostDNSErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, dnsbalancer.ErrUnauthorized):
+		return "authorization"
+	case errors.Is(err, dnsbalancer.ErrNotFound):
+		return "parent_not_found"
+	case errors.Is(err, dnsbalancer.ErrUnprocessable):
+		return "validation"
+	case errors.Is(err, dnsbalancer.ErrInvalidResponse):
+		return "invalid_response"
+	default:
+		if dnsHTTPStatus(err) != 0 {
+			return "http"
+		}
+		return "transport"
+	}
+}
+
+func dnsHTTPStatus(err error) int {
+	var httpErr *dnsbalancer.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
 }
 
 func profileInboundPort(raw json.RawMessage) (int, bool) {
