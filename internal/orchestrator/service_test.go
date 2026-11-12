@@ -52,7 +52,7 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 		t.Fatalf("status history = %v, want %v", got, wantStatuses)
 	}
 	events := fixture.events.snapshot()
-	assertBefore(t, events, "certificate.prepare-new", "vps.provision")
+	assertBefore(t, events, "certificate.prepare", "vps.provision")
 	assertBefore(t, events, "vps.provision", "remnawave.create")
 	assertBefore(t, events, "remnawave.connected", "dns.add")
 	if fixture.remnawave.createCalls != 1 || fixture.dns.addCalls != 1 || fixture.vps.provisionCalls != 1 {
@@ -1217,6 +1217,7 @@ func (f *fakeRemnawave) UpdateHostNodes(_ context.Context, input remnawave.Updat
 	for index := range f.hosts {
 		if f.hosts[index].UUID == input.UUID {
 			f.hosts[index].Nodes = append([]string(nil), input.Nodes...)
+			f.hosts[index].Tags = []string{remnawave.ProfileHostTag}
 			return f.hosts[index], nil
 		}
 	}

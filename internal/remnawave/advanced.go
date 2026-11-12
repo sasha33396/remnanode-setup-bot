@@ -192,7 +192,8 @@ func (c *Client) UpdateHostNodes(ctx context.Context, input UpdateHostNodesInput
 	var envelope struct {
 		Response *hostWire `json:"response"`
 	}
-	request := updateHostNodesRequest{UUID: input.UUID, Nodes: nodes}
+	legacyTag := ProfileHostTag
+	request := updateHostNodesRequest{UUID: input.UUID, Nodes: nodes, Tag: &legacyTag, Tags: []string{ProfileHostTag}}
 	if err := c.doJSON(ctx, http.MethodPatch, "/api/hosts", request, http.StatusOK, &envelope); err != nil {
 		return Host{}, err
 	}
@@ -209,6 +210,24 @@ func IsProfileHost(host Host) bool {
 		}
 	}
 	return false
+}
+
+// IsGeneratedProfileHost also recognizes the exact shape emitted by older
+// deployer builds against Remnawave 2.7.4. Those builds sent the 2.8.x `tags`
+// array, which 2.7.4 discarded, but they still created a visible, enabled,
+// unassigned Host whose remark, address and SNI were the same FQDN.
+func IsGeneratedProfileHost(host Host) bool {
+	if IsProfileHost(host) {
+		return true
+	}
+	if host.IsDisabled || host.IsHidden || len(host.Nodes) != 0 || host.SNI == nil {
+		return false
+	}
+	normalize := func(value string) string {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	}
+	address := normalize(host.Address)
+	return address != "" && normalize(host.Remark) == address && normalize(*host.SNI) == address
 }
 
 // AdvancedBalancerConfig builds the one-inbound server profile used by each

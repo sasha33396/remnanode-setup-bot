@@ -445,7 +445,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	}
 
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsProfileHost(host) || len(host.Nodes) == 0); err != nil {
+		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsGeneratedProfileHost(host)); err != nil {
 			return err
 		}
 		current, err = s.repository.GetDeployment(runCtx, current.ID)
@@ -628,11 +628,10 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 	}
 	// Remnawave 2.7.4 used the singular `tag` field. Deployments created by an
 	// older client that sent only the 2.8.x `tags` array therefore have no
-	// marker, but their freshly generated Host still has no Node assignments.
-	// Treat that empty assignment as the same recovery signal already used by
-	// certificate preparation, so an in-flight deployment is not left with an
-	// unusable unbound Host after upgrading the deployer.
-	profileHost := current.Kind != deployment.KindAdvancedBalancer && (remnawave.IsProfileHost(host) || len(host.Nodes) == 0)
+	// marker. IsGeneratedProfileHost recognizes the remaining exact wizard
+	// shape so an in-flight deployment is not left with an unusable unbound
+	// Host after upgrading the deployer.
+	profileHost := current.Kind != deployment.KindAdvancedBalancer && remnawave.IsGeneratedProfileHost(host)
 	if profileHost && current.RemnawaveNodeUUID != nil && !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
 		binder, ok := s.remnawave.(interface {
 			UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
@@ -737,11 +736,49 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 			_, dnsErr = s.config.DNSRecords.EnsureARecord(ctx, current.SNIDomain, current.TargetVPSIP)
 		}
 	} else {
-		_, dnsErr = s.dns.AddIP(ctx, current.SNIDomain, current.TargetVPSIP)
+		// Profile-host deployments create their DNS zone before the Node exists.
+		// A DNS-balancer reconciliation may remove that not-yet-active target
+		// during a long certificate/provisioning run. Re-ensure the zone after
+		// the Node becomes healthy instead of requiring it to still exist.
+		// IsGeneratedProfileHost also recognizes the exact legacy 2.7.4 wizard
+		// shape from builds that sent only the 2.8.x `tags` field.
+		host, _, hostErr := s.selectedHost(ctx, current.SelectedRemnawaveHostUUID)
+		if hostErr == nil && remnawave.IsGeneratedProfileHost(host) {
+			// A deployment that reached DNS_FAILED on an older 2.7-compatible
+			// build may also have skipped the Host-to-Node binding. Repair it as
+			// part of the same idempotent retry before publishing the target.
+			if !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
+				binder, ok := s.remnawave.(interface {
+					UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
+				})
+				if !ok {
+					dnsErr = ErrRemnawaveCreationFailed
+				} else {
+					nodes := append(append([]string(nil), host.Nodes...), *current.RemnawaveNodeUUID)
+					_, dnsErr = binder.UpdateHostNodes(ctx, remnawave.UpdateHostNodesInput{UUID: host.UUID, Nodes: nodes})
+				}
+			}
+			if dnsErr == nil {
+				_, dnsErr = s.dns.EnsureZone(ctx, current.SNIDomain, current.TargetVPSIP, profileHostDNSTTL)
+			}
+		} else if hostErr != nil {
+			dnsErr = hostErr
+		} else {
+			_, dnsErr = s.dns.AddIP(ctx, current.SNIDomain, current.TargetVPSIP)
+		}
 	}
 	if dnsErr != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if s.logger != nil {
+			s.logger.Error("deployment DNS update failed",
+				"panel_id", s.config.PanelID,
+				"deployment_id", current.ID,
+				"fqdn", current.SNIDomain,
+				"category", profileHostDNSErrorCategory(dnsErr),
+				"http_status", dnsHTTPStatus(dnsErr),
+			)
 		}
 		return s.failStage(ctx, current.ID, stepAddDNS, deployment.StatusDNSFailed, "DNS_UPDATE_FAILED", "Node is healthy but DNS update failed", ErrDNSUpdateFailed)
 	}

@@ -148,7 +148,7 @@ func TestUpdateHostNodesUsesRemnawave27And28PartialPatch(t *testing.T) {
 			t.Errorf("decode update Host: %v", err)
 			return
 		}
-		if body["uuid"] != hostUUID || len(body) != 2 || len(body["nodes"].([]any)) != 1 || body["nodes"].([]any)[0] != testNodeUUID {
+		if body["uuid"] != hostUUID || len(body) != 4 || len(body["nodes"].([]any)) != 1 || body["nodes"].([]any)[0] != testNodeUUID || body["tag"] != ProfileHostTag || len(body["tags"].([]any)) != 1 || body["tags"].([]any)[0] != ProfileHostTag {
 			t.Errorf("update Host body = %#v", body)
 		}
 		w.Header().Set("Content-Type", "application/json")

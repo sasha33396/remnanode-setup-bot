@@ -347,7 +347,7 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 			// misleading here.
 			if hosts, hostsErr := panel.Service.remnawave.GetHosts(ctx); hostsErr == nil {
 				for _, host := range hosts {
-					if host.UUID == item.SelectedRemnawaveHostUUID && (remnawave.IsProfileHost(host) || len(host.Nodes) == 0) {
+					if host.UUID == item.SelectedRemnawaveHostUUID && remnawave.IsGeneratedProfileHost(host) {
 						details.CanRepairCert = false
 						break
 					}

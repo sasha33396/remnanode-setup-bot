@@ -162,6 +162,9 @@ func TestProfileHostDeploymentBindsCreatedNodeToHost(t *testing.T) {
 	if len(fixture.remnawave.updatedHostNodes) != 1 || fixture.remnawave.updatedHostNodes[0].UUID != testHostUUID || len(fixture.remnawave.updatedHostNodes[0].Nodes) != 1 || fixture.remnawave.updatedHostNodes[0].Nodes[0] != testNodeUUID {
 		t.Fatalf("Host node updates = %#v", fixture.remnawave.updatedHostNodes)
 	}
+	if fixture.dns.ensureCalls != 1 || fixture.dns.addCalls != 0 {
+		t.Fatalf("profile Host DNS calls = ensure:%d add:%d", fixture.dns.ensureCalls, fixture.dns.addCalls)
+	}
 	events := fixture.events.snapshot()
 	if !slices.Contains(events, "certificate.prepare-new") || slices.Contains(events, "certificate.prepare") {
 		t.Fatalf("profile Host certificate path = %v", events)
@@ -195,6 +198,9 @@ func TestProfileHostCertificateFailureOffersDirectRetry(t *testing.T) {
 
 func TestEmptyVisibleHostUsesNewTargetCertificateWithoutTag(t *testing.T) {
 	fixture := newFixture(t)
+	legacySNI := fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].Remark = fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].SNI = &legacySNI
 	fixture.remnawave.hosts[0].Tags = nil
 	fixture.remnawave.hosts[0].Nodes = nil
 	prepared := fixture.prepare(t, "empty-host-node", "8.8.4.6")
@@ -207,5 +213,40 @@ func TestEmptyVisibleHostUsesNewTargetCertificateWithoutTag(t *testing.T) {
 	}
 	if len(fixture.remnawave.updatedHostNodes) != 1 || fixture.remnawave.updatedHostNodes[0].UUID != testHostUUID || len(fixture.remnawave.updatedHostNodes[0].Nodes) != 1 || fixture.remnawave.updatedHostNodes[0].Nodes[0] != testNodeUUID {
 		t.Fatalf("legacy 2.7 Host node updates = %#v", fixture.remnawave.updatedHostNodes)
+	}
+	if fixture.dns.ensureCalls != 1 || fixture.dns.addCalls != 0 {
+		t.Fatalf("legacy 2.7 Host DNS calls = ensure:%d add:%d", fixture.dns.ensureCalls, fixture.dns.addCalls)
+	}
+}
+
+func TestLegacyProfileHostDNSRetryRestoresZoneAndBinding(t *testing.T) {
+	fixture := newFixture(t)
+	legacySNI := fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].Remark = fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].SNI = &legacySNI
+	fixture.remnawave.hosts[0].Tags = nil
+	fixture.dns.addErr = errors.New("zone was removed before Node became healthy")
+	prepared := fixture.prepare(t, "legacy-profile-dns-retry", "8.8.4.8")
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); !errors.Is(err, ErrDNSUpdateFailed) {
+		t.Fatalf("Deploy() error = %v, want DNS failure", err)
+	}
+
+	// Reproduce a deployment completed by the older 2.7-incompatible build:
+	// its Host had neither the retained tag nor the Node assignment.
+	fixture.remnawave.hosts[0].Tags = nil
+	fixture.remnawave.hosts[0].Nodes = nil
+	fixture.remnawave.updatedHostNodes = nil
+	fixture.dns.addErr = nil
+	if err := fixture.service.RetryDNS(context.Background(), prepared.Deployment.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.dns.ensureCalls != 2 || fixture.dns.addCalls != 0 {
+		t.Fatalf("legacy DNS retry calls = ensure:%d add:%d", fixture.dns.ensureCalls, fixture.dns.addCalls)
+	}
+	if len(fixture.remnawave.updatedHostNodes) != 1 || len(fixture.remnawave.updatedHostNodes[0].Nodes) != 1 || fixture.remnawave.updatedHostNodes[0].Nodes[0] != testNodeUUID {
+		t.Fatalf("legacy Host repair = %#v", fixture.remnawave.updatedHostNodes)
+	}
+	if stored := fixture.repo.mustGet(prepared.Deployment.ID); stored.Status != deployment.StatusCompleted {
+		t.Fatalf("deployment status after DNS retry = %s", stored.Status)
 	}
 }
