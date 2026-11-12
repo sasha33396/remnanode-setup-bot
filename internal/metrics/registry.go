@@ -110,6 +110,8 @@ type RemnawaveClient struct {
 		GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error)
 		AddInboundToInternalSquad(context.Context, string, string) (remnawave.InternalSquad, error)
 		CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
+		CreateVisibleHost(context.Context, remnawave.CreateVisibleHostInput) (remnawave.Host, error)
+		UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
 		GenerateSecretKey(context.Context) (string, error)
 		GetNodes(context.Context) ([]remnawave.Node, error)
 		GetNode(context.Context, string) (remnawave.Node, error)
@@ -129,6 +131,8 @@ func ObserveRemnawave(next interface {
 	GetInternalSquads(context.Context) ([]remnawave.InternalSquad, error)
 	AddInboundToInternalSquad(context.Context, string, string) (remnawave.InternalSquad, error)
 	CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
+	CreateVisibleHost(context.Context, remnawave.CreateVisibleHostInput) (remnawave.Host, error)
+	UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
 	GenerateSecretKey(context.Context) (string, error)
 	GetNodes(context.Context) ([]remnawave.Node, error)
 	GetNode(context.Context, string) (remnawave.Node, error)
@@ -172,6 +176,16 @@ func (c *RemnawaveClient) AddInboundToInternalSquad(ctx context.Context, squad, 
 }
 func (c *RemnawaveClient) CreateHost(ctx context.Context, input remnawave.CreateHostInput) (remnawave.Host, error) {
 	value, err := c.next.CreateHost(ctx, input)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) CreateVisibleHost(ctx context.Context, input remnawave.CreateVisibleHostInput) (remnawave.Host, error) {
+	value, err := c.next.CreateVisibleHost(ctx, input)
+	c.observe(err)
+	return value, err
+}
+func (c *RemnawaveClient) UpdateHostNodes(ctx context.Context, input remnawave.UpdateHostNodesInput) (remnawave.Host, error) {
+	value, err := c.next.UpdateHostNodes(ctx, input)
 	c.observe(err)
 	return value, err
 }

@@ -43,7 +43,10 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 	}
 	api, ok := panel.Service.remnawave.(ProfileHostRemnawaveAPI)
 	if !ok {
-		return telegram.ProfileHostOptions{}, errProfileHostUnavailable
+		if panel.Service.logger != nil {
+			panel.Service.logger.Error("profile Host API is unavailable", "panel_id", panel.ID, "code", "PROFILE_HOST_API_UNAVAILABLE")
+		}
+		return telegram.ProfileHostOptions{}, safeError("PROFILE_HOST_API_UNAVAILABLE", "Функция создания Host из профиля недоступна в текущей сборке.", errProfileHostUnavailable)
 	}
 	profiles, err := api.GetConfigProfiles(ctx)
 	if err != nil {
