@@ -3,6 +3,8 @@ package remnawave
 import (
 	"encoding/json"
 	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -202,7 +204,7 @@ type configProfileWire struct {
 type configProfileInboundWire struct {
 	UUID       *string         `json:"uuid"`
 	Tag        *string         `json:"tag"`
-	Port       *int            `json:"port"`
+	Port       json.RawMessage `json:"port"`
 	RawInbound json.RawMessage `json:"rawInbound"`
 }
 
@@ -216,11 +218,30 @@ func (p configProfileWire) model() (ConfigProfile, error) {
 			return ConfigProfile{}, ErrInvalidResponse
 		}
 		result.Inbounds = append(result.Inbounds, ConfigProfileInbound{
-			UUID: *inbound.UUID, Tag: *inbound.Tag, Port: inbound.Port,
+			UUID: *inbound.UUID, Tag: *inbound.Tag, Port: optionalInboundPort(inbound.Port),
 			RawInbound: append(json.RawMessage(nil), inbound.RawInbound...),
 		})
 	}
 	return result, nil
+}
+
+func optionalInboundPort(raw json.RawMessage) *int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var value int
+	if json.Unmarshal(raw, &value) == nil {
+		return &value
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil {
+		return nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 type internalSquadsEnvelope struct {

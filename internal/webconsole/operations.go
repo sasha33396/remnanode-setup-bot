@@ -124,7 +124,12 @@ func (s *Server) handleProfileHostOptions(w http.ResponseWriter, r *http.Request
 	}
 	options, err := app.ListProfileHostOptions(r.Context(), panelID)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось загрузить Config Profiles"})
+		message := "Не удалось загрузить Config Profiles"
+		var operatorError interface{ OperatorMessage() string }
+		if errors.As(err, &operatorError) && strings.TrimSpace(operatorError.OperatorMessage()) != "" {
+			message = operatorError.OperatorMessage()
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": message})
 		return
 	}
 	writeJSON(w, http.StatusOK, options)

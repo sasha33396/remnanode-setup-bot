@@ -206,7 +206,7 @@
   async function loadProfileHostOptions(panelId) {
     const result = await request(`/api/options/profile-host?panel=${encodeURIComponent(panelId)}`);
     state.profileHostInbounds = result.Inbounds || [];
-    if (!state.profileHostInbounds.length) throw new Error('В панели нет inbound с корректным портом');
+    if (!state.profileHostInbounds.length) throw new Error(`Профили получены, но подходящих inbound нет. Профилей: ${result.TotalProfiles || 0}, inbound: ${result.TotalInbounds || 0}, без корректного порта: ${result.SkippedWithoutPort || 0}`);
     $('#profile-host-inbound').innerHTML = state.profileHostInbounds.map((inbound, index) => option(index, `${inbound.ProfileName} · ${inbound.InboundTag} · :${inbound.Port}`)).join('');
     renderProfileHostDomains();
   }

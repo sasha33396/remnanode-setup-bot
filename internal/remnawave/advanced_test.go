@@ -40,7 +40,7 @@ func TestGetConfigProfilesKeepsRemnawave281InboundMetadata(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"response":{"total":1,"configProfiles":[{"uuid":"`+testProfileUUID+`","name":"Snippet Profile","config":{"log":{}},"inbounds":[{"uuid":"`+testInboundUUID+`","tag":"VLESS_SNIPPET","port":8443,"rawInbound":{"tag":"VLESS_SNIPPET","port":8443}}]}]}}`)
+		fmt.Fprint(w, `{"response":{"total":1,"configProfiles":[{"uuid":"`+testProfileUUID+`","name":"Snippet Profile","config":{"log":{}},"inbounds":[{"uuid":"`+testInboundUUID+`","tag":"VLESS_SNIPPET","port":"8443","rawInbound":{"tag":"VLESS_SNIPPET","port":8443}}]}]}}`)
 	}))
 	defer server.Close()
 	client := newTestClient(t, server.URL, time.Second)

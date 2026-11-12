@@ -115,7 +115,10 @@ type ProfileHostInbound struct {
 }
 
 type ProfileHostOptions struct {
-	Inbounds []ProfileHostInbound
+	Inbounds           []ProfileHostInbound
+	TotalProfiles      int
+	TotalInbounds      int
+	SkippedWithoutPort int
 }
 
 type ProfileHostCreateInput struct {

@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -55,9 +56,20 @@ func (c *Controller) selectProfileHostPanel(ctx context.Context, callback *Callb
 
 func (c *Controller) showProfileHostInbounds(ctx context.Context, session *wizard, messageID int) error {
 	options, err := c.app.(ProfileHostApplication).ListProfileHostOptions(ctx, session.panel.ID)
-	if err != nil || len(options.Inbounds) == 0 {
+	if err != nil {
 		c.cancelExisting(ctx, session.userID)
-		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, "В панели нет доступных inbound с корректным портом.", mainKeyboard())
+		message := "Не удалось загрузить Config Profiles из Remnawave."
+		var operatorError interface{ OperatorMessage() string }
+		if errors.As(err, &operatorError) && strings.TrimSpace(operatorError.OperatorMessage()) != "" {
+			message = operatorError.OperatorMessage()
+		}
+		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, message, mainKeyboard())
+		return sendErr
+	}
+	if len(options.Inbounds) == 0 {
+		c.cancelExisting(ctx, session.userID)
+		message := fmt.Sprintf("Профили получены, но подходящих inbound нет. Профилей: %d, inbound: %d, без корректного порта: %d.", options.TotalProfiles, options.TotalInbounds, options.SkippedWithoutPort)
+		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, message, mainKeyboard())
 		return sendErr
 	}
 	if len(options.Inbounds) > maxTelegramProfileInbounds {

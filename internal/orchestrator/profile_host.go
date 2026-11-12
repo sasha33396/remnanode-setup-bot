@@ -43,10 +43,17 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 	}
 	profiles, err := api.GetConfigProfiles(ctx)
 	if err != nil {
-		return telegram.ProfileHostOptions{}, errors.New("list config profiles failed")
+		message, code := "Не удалось загрузить Config Profiles из Remnawave.", "PROFILE_LIST_FAILED"
+		if errors.Is(err, remnawave.ErrUnauthorized) {
+			message, code = "Remnawave API запретил чтение профилей. Проверьте scope config-profiles:list у токена панели.", "PROFILE_LIST_FORBIDDEN"
+		} else if errors.Is(err, remnawave.ErrInvalidResponse) {
+			message, code = "Remnawave вернул несовместимый ответ списка Config Profiles.", "PROFILE_LIST_INVALID_RESPONSE"
+		}
+		return telegram.ProfileHostOptions{}, &SafeError{Code: code, SafeMessage: message, Kind: err}
 	}
-	result := telegram.ProfileHostOptions{}
+	result := telegram.ProfileHostOptions{TotalProfiles: len(profiles)}
 	for _, profile := range profiles {
+		result.TotalInbounds += len(profile.Inbounds)
 		var document profileConfigDocument
 		_ = unmarshalProfileConfig(profile.Config, &document)
 		configByTag := make(map[string]profileConfigInbound, len(document.Inbounds))
@@ -64,6 +71,9 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 				port, valid = profileInboundPort(fallback.Port)
 			}
 			if apiInbound.UUID == "" || !valid {
+				if !valid {
+					result.SkippedWithoutPort++
+				}
 				continue
 			}
 			serverNames := rawInboundServerNames(apiInbound.RawInbound)
@@ -106,7 +116,7 @@ func apiInboundPort(port *int) (int, bool) {
 
 func rawInboundPort(raw json.RawMessage) (int, bool) {
 	var inbound profileConfigInbound
-	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &inbound) != nil {
+	if !unmarshalRawInbound(raw, &inbound) {
 		return 0, false
 	}
 	return profileInboundPort(inbound.Port)
@@ -114,10 +124,21 @@ func rawInboundPort(raw json.RawMessage) (int, bool) {
 
 func rawInboundServerNames(raw json.RawMessage) []string {
 	var inbound profileConfigInbound
-	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &inbound) != nil {
+	if !unmarshalRawInbound(raw, &inbound) {
 		return nil
 	}
 	return normalizedServerNames(inbound.StreamSettings.RealitySettings.ServerNames)
+}
+
+func unmarshalRawInbound(raw json.RawMessage, target *profileConfigInbound) bool {
+	if len(raw) == 0 || string(raw) == "null" || target == nil {
+		return false
+	}
+	if json.Unmarshal(raw, target) == nil {
+		return true
+	}
+	var encoded string
+	return json.Unmarshal(raw, &encoded) == nil && json.Unmarshal([]byte(encoded), target) == nil
 }
 
 func (a *TelegramApplication) EnsureProfileHost(ctx context.Context, input telegram.ProfileHostCreateInput) (telegram.Host, error) {
