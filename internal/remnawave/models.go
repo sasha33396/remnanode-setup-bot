@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const ProfileHostTag = "SETUP_BOT_PROFILE_NODE"
+
 // Host contains the Remnawave Host fields needed to deploy a Node.
 type Host struct {
 	UUID                 string
@@ -131,6 +133,22 @@ type CreateHostInput struct {
 	ConfigProfileUUID string
 	InboundUUID       string
 	NodeUUID          string
+}
+
+// CreateVisibleHostInput is the Remnawave 2.8.1 payload used for a regular
+// subscription Host. A Node is attached later by the standard deployment
+// workflow, so nodes is intentionally sent as an empty array.
+type CreateVisibleHostInput struct {
+	Remark            string
+	Address           string
+	Port              int
+	ConfigProfileUUID string
+	InboundUUID       string
+}
+
+type UpdateHostNodesInput struct {
+	UUID  string
+	Nodes []string
 }
 
 // UpdateNodeAddressInput changes only the address of an existing Node.

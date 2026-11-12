@@ -10,7 +10,7 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">R</span><span>Remnanode Console</span></div>
-    <div class="top-actions"><button id="add-node" class="button primary">Добавить ноду</button><button id="add-balancer" class="button secondary">Добавить балансировщик</button><button id="bulk-ip" class="button secondary">Массовая смена IP</button><button id="deployments-button" class="button secondary">Развёртывания</button><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Синхронизировать защиту на всех</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
+    <div class="top-actions"><button id="add-node" class="button primary">Добавить ноду</button><button id="add-profile-host" class="button secondary">Host из профиля + нода</button><button id="add-balancer" class="button secondary">Добавить балансировщик</button><button id="bulk-ip" class="button secondary">Массовая смена IP</button><button id="deployments-button" class="button secondary">Развёртывания</button><span id="operator" class="operator"></span><button id="actualize-managed" class="button secondary">Синхронизировать защиту на всех</button><button id="refresh" class="button secondary">Обновить</button><button id="logout" class="button ghost">Выйти</button></div>
   </header>
   <main class="shell">
     <section class="hero">
@@ -51,6 +51,24 @@
         <label class="full">Временный root-пароль<input id="node-password" type="password" required maxlength="1024" autocomplete="new-password"></label>
       </div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="add-node-dialog">Отмена</button><button type="submit" class="button primary">Начать установку</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="add-profile-host-dialog" class="dialog wide-dialog">
+    <form id="add-profile-host-form" method="dialog">
+      <p class="eyebrow">REMNAWAVE 2.8.1</p><h2>Создать Host из профиля и добавить ноду</h2>
+      <p class="muted">Создаёт обычный видимый Host на выбранном inbound существующего Config Profile, затем запускает типовую установку ноды с firewall и Mail Guard.</p>
+      <div class="form-grid">
+        <label>Панель<select id="profile-host-panel" required></select></label>
+        <label>Config Profile / inbound<select id="profile-host-inbound" required></select></label>
+        <label>Домен из serverNames<select id="profile-host-domain-choice" required></select></label>
+        <label id="profile-host-domain-manual-label" class="hidden">FQDN вручную<input id="profile-host-domain-manual" maxlength="40" autocomplete="off" placeholder="node.example.com"></label>
+        <label>Имя ноды<input id="profile-host-name" required maxlength="120" autocomplete="off"></label>
+        <label>Публичный IPv4<input id="profile-host-ip" required autocomplete="off"></label>
+        <label class="full">Временный root-пароль<input id="profile-host-password" type="password" required maxlength="1024" autocomplete="new-password"></label>
+      </div>
+      <p class="muted">Если Host уже существует с тем же доменом, профилем и inbound, он будет переиспользован. Конфликтующие настройки не перезаписываются.</p>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="add-profile-host-dialog">Отмена</button><button type="submit" class="button primary">Создать и установить</button></div>
     </form>
   </dialog>
 

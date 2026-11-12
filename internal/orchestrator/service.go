@@ -626,6 +626,21 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 		}
 		current.RemnawaveNodeUUID = &node.UUID
 	}
+	if remnawave.IsProfileHost(host) && current.RemnawaveNodeUUID != nil && !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
+		binder, ok := s.remnawave.(interface {
+			UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
+		})
+		if !ok {
+			return s.failStage(ctx, current.ID, stepCreateNode, deployment.StatusFailed, "HOST_NODE_BIND_UNAVAILABLE", "Created Node could not be assigned to its Host", ErrRemnawaveCreationFailed)
+		}
+		nodes := append(append([]string(nil), host.Nodes...), *current.RemnawaveNodeUUID)
+		if _, err := binder.UpdateHostNodes(ctx, remnawave.UpdateHostNodesInput{UUID: host.UUID, Nodes: nodes}); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return s.failStage(ctx, current.ID, stepCreateNode, deployment.StatusFailed, "HOST_NODE_BIND_FAILED", "Created Node could not be assigned to its Host", ErrRemnawaveCreationFailed)
+		}
+	}
 	if err := s.completeStage(ctx, current.ID, stepCreateNode, "Remnawave Node created"); err != nil {
 		return err
 	}

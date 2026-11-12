@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const state = { csrf: '', nodes: [], panels: [], capabilities: {}, filter: 'all', query: '', selected: null, passwordAction: 'ssh', nodeOperation: '', bulkIPPayload: null, socket: null, terminal: null };
+  const state = { csrf: '', nodes: [], panels: [], capabilities: {}, profileHostInbounds: [], filter: 'all', query: '', selected: null, passwordAction: 'ssh', nodeOperation: '', bulkIPPayload: null, socket: null, terminal: null };
   const $ = (selector) => document.querySelector(selector);
   const nodesEl = $('#nodes');
   const notice = $('#notice');
@@ -168,12 +168,16 @@
     state.panels = result.panels || [];
     const html = state.panels.map((panel) => option(panel.ID, panel.Name)).join('');
     $('#node-panel').innerHTML = html;
+    $('#profile-host-panel').innerHTML = html;
     $('#balancer-panel').innerHTML = html;
     $('#bulk-ip-panel').innerHTML = html;
     return state.panels;
   }
 
-  async function loadCapabilities() { state.capabilities = await request('/api/options/capabilities'); }
+  async function loadCapabilities() {
+    state.capabilities = await request('/api/options/capabilities');
+    $('#add-profile-host').classList.toggle('hidden', !state.capabilities.profileHost);
+  }
 
   async function loadHosts(panelId) {
     const result = await request(`/api/options/hosts?panel=${encodeURIComponent(panelId)}`);
@@ -184,6 +188,27 @@
     const result = await request(`/api/options/balancer?panel=${encodeURIComponent(panelId)}`);
     $('#balancer-squad').innerHTML = (result.Squads || []).map((squad) => option(squad.ID, squad.Name)).join('');
     $('#balancer-tag').innerHTML = (result.Tags || []).map((tag) => option(tag, tag)).join('');
+  }
+
+  function renderProfileHostDomains() {
+    const inbound = state.profileHostInbounds[Number($('#profile-host-inbound').value)];
+    const domains = inbound ? (inbound.ServerNames || []) : [];
+    $('#profile-host-domain-choice').innerHTML = domains.map((domain) => option(domain, domain)).join('') + option('__manual__', 'Ввести FQDN вручную');
+    updateProfileHostManualDomain();
+  }
+
+  function updateProfileHostManualDomain() {
+    const manual = $('#profile-host-domain-choice').value === '__manual__';
+    $('#profile-host-domain-manual-label').classList.toggle('hidden', !manual);
+    $('#profile-host-domain-manual').required = manual;
+  }
+
+  async function loadProfileHostOptions(panelId) {
+    const result = await request(`/api/options/profile-host?panel=${encodeURIComponent(panelId)}`);
+    state.profileHostInbounds = result.Inbounds || [];
+    if (!state.profileHostInbounds.length) throw new Error('В панели нет inbound с корректным портом');
+    $('#profile-host-inbound').innerHTML = state.profileHostInbounds.map((inbound, index) => option(index, `${inbound.ProfileName} · ${inbound.InboundTag} · :${inbound.Port}`)).join('');
+    renderProfileHostDomains();
   }
 
   async function openAddNode() {
@@ -203,6 +228,16 @@
       if (!state.panels.length) throw new Error('Нет доступных панелей');
       await loadBalancerOptions($('#balancer-panel').value);
       $('#add-balancer-dialog').showModal();
+    } catch (error) { showNotice(error.message); }
+  }
+
+  async function openAddProfileHost() {
+    clearNotice();
+    try {
+      if (!state.panels.length) await loadPanels();
+      if (!state.panels.length) throw new Error('Нет доступных панелей');
+      await loadProfileHostOptions($('#profile-host-panel').value);
+      $('#add-profile-host-dialog').showModal();
     } catch (error) { showNotice(error.message); }
   }
 
@@ -359,6 +394,16 @@
     try { await runOperation('/api/deployments/standard', { panelId: $('#node-panel').value, hostId: $('#node-host').value, nodeName: $('#node-name').value.trim(), vpsIp: $('#node-ip').value.trim(), password }, `Установка ${$('#node-name').value.trim()}`); }
     catch (error) { showNotice(error.message); }
   });
+  $('#add-profile-host-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const dialog = $('#add-profile-host-dialog');
+    const inbound = state.profileHostInbounds[Number($('#profile-host-inbound').value)];
+    const domain = $('#profile-host-domain-choice').value === '__manual__' ? $('#profile-host-domain-manual').value.trim() : $('#profile-host-domain-choice').value;
+    const password = $('#profile-host-password').value; $('#profile-host-password').value = ''; dialog.close();
+    if (!inbound) { showNotice('Выбранный inbound больше недоступен'); return; }
+    try { await runOperation('/api/deployments/profile-host', { panelId: $('#profile-host-panel').value, profileId: inbound.ProfileID, inboundId: inbound.InboundID, domain, nodeName: $('#profile-host-name').value.trim(), vpsIp: $('#profile-host-ip').value.trim(), password }, `Создание Host и установка ${$('#profile-host-name').value.trim()}`); }
+    catch (error) { showNotice(error.message); }
+  });
   $('#add-balancer-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const dialog = $('#add-balancer-dialog');
     const password = $('#balancer-password').value; $('#balancer-password').value = ''; dialog.close();
@@ -402,10 +447,14 @@
   $('#refresh').addEventListener('click', loadNodes);
   $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
   $('#add-node').addEventListener('click', openAddNode);
+  $('#add-profile-host').addEventListener('click', openAddProfileHost);
   $('#add-balancer').addEventListener('click', openAddBalancer);
   $('#bulk-ip').addEventListener('click', openBulkIP);
   $('#deployments-button').addEventListener('click', openDeployments);
   $('#node-panel').addEventListener('change', (event) => loadHosts(event.target.value).catch((error) => showNotice(error.message)));
+  $('#profile-host-panel').addEventListener('change', (event) => loadProfileHostOptions(event.target.value).catch((error) => showNotice(error.message)));
+  $('#profile-host-inbound').addEventListener('change', renderProfileHostDomains);
+  $('#profile-host-domain-choice').addEventListener('change', updateProfileHostManualDomain);
   $('#balancer-panel').addEventListener('change', (event) => loadBalancerOptions(event.target.value).catch((error) => showNotice(error.message)));
   $('#search').addEventListener('input', (event) => { state.query = event.target.value; render(); });
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; render(); }));

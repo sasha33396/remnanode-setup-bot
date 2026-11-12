@@ -86,3 +86,55 @@ func TestAdvancedAPIContractPathsAndPayloads(t *testing.T) {
 		t.Fatalf("CreateHost() = %#v, %v", host, err)
 	}
 }
+
+func TestCreateVisibleHostUsesRemnawave281Payload(t *testing.T) {
+	const hostUUID = "99999999-9999-4999-8999-999999999999"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/hosts" {
+			http.NotFound(w, r)
+			return
+		}
+		var body createHostRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Remark != "de-modx.nodexphere.net" || body.Address != body.Remark || body.SNI == nil || *body.SNI != body.Address || body.Port != 443 || body.IsHidden || body.IsDisabled || body.Inbound.ConfigProfileUUID != testProfileUUID || body.Inbound.InboundUUID != testInboundUUID || len(body.Tags) != 1 || body.Tags[0] != ProfileHostTag || body.Nodes == nil || len(body.Nodes) != 0 {
+			t.Errorf("visible Host body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"response":{"uuid":"`+hostUUID+`","remark":"de-modx.nodexphere.net","address":"de-modx.nodexphere.net","isDisabled":false,"isHidden":false,"tags":["`+ProfileHostTag+`"],"nodes":[],"inbound":{"configProfileUuid":"`+testProfileUUID+`","configProfileInboundUuid":"`+testInboundUUID+`"}}}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	host, err := client.CreateVisibleHost(context.Background(), CreateVisibleHostInput{Remark: "de-modx.nodexphere.net", Address: "de-modx.nodexphere.net", Port: 443, ConfigProfileUUID: testProfileUUID, InboundUUID: testInboundUUID})
+	if err != nil || host.UUID != hostUUID || host.IsHidden {
+		t.Fatalf("CreateVisibleHost() = %#v, %v", host, err)
+	}
+}
+
+func TestUpdateHostNodesUsesRemnawave281PartialPatch(t *testing.T) {
+	const hostUUID = "99999999-9999-4999-8999-999999999999"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/hosts" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode update Host: %v", err)
+			return
+		}
+		if body["uuid"] != hostUUID || len(body) != 2 || len(body["nodes"].([]any)) != 1 || body["nodes"].([]any)[0] != testNodeUUID {
+			t.Errorf("update Host body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":{"uuid":"`+hostUUID+`","remark":"de-modx.nodexphere.net","address":"de-modx.nodexphere.net","isDisabled":false,"isHidden":false,"tags":["`+ProfileHostTag+`"],"nodes":["`+testNodeUUID+`"],"inbound":{"configProfileUuid":"`+testProfileUUID+`","configProfileInboundUuid":"`+testInboundUUID+`"}}}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	host, err := client.UpdateHostNodes(context.Background(), UpdateHostNodesInput{UUID: hostUUID, Nodes: []string{testNodeUUID}})
+	if err != nil || len(host.Nodes) != 1 || host.Nodes[0] != testNodeUUID {
+		t.Fatalf("UpdateHostNodes() = %#v, %v", host, err)
+	}
+}

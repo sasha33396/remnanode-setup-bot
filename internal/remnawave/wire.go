@@ -267,10 +267,16 @@ type createHostRequest struct {
 	Remark     string   `json:"remark"`
 	Address    string   `json:"address"`
 	Port       int      `json:"port"`
+	SNI        *string  `json:"sni,omitempty"`
 	Tags       []string `json:"tags"`
 	IsHidden   bool     `json:"isHidden"`
 	IsDisabled bool     `json:"isDisabled"`
 	Nodes      []string `json:"nodes"`
+}
+
+type updateHostNodesRequest struct {
+	UUID  string   `json:"uuid"`
+	Nodes []string `json:"nodes"`
 }
 
 type updateInternalSquadRequest struct {

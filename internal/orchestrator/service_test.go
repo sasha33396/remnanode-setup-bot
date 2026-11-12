@@ -1122,6 +1122,8 @@ type fakeRemnawave struct {
 	profiles          []remnawave.ConfigProfile
 	squads            []remnawave.InternalSquad
 	lastProfileConfig any
+	visibleHostInputs []remnawave.CreateVisibleHostInput
+	updatedHostNodes  []remnawave.UpdateHostNodesInput
 }
 
 func (f *fakeRemnawave) GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error) {
@@ -1184,6 +1186,27 @@ func (f *fakeRemnawave) CreateHost(_ context.Context, input remnawave.CreateHost
 	f.hosts = append(f.hosts, host)
 	f.events.add("remnawave.host")
 	return host, nil
+}
+func (f *fakeRemnawave) CreateVisibleHost(_ context.Context, input remnawave.CreateVisibleHostInput) (remnawave.Host, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.visibleHostInputs = append(f.visibleHostInputs, input)
+	hostUUID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	host := remnawave.Host{UUID: hostUUID, Remark: input.Remark, Address: input.Address, Tags: []string{remnawave.ProfileHostTag}, Inbound: remnawave.HostInbound{ConfigProfileUUID: stringPtr(input.ConfigProfileUUID), ConfigProfileInboundUUID: stringPtr(input.InboundUUID)}}
+	f.hosts = append(f.hosts, host)
+	return host, nil
+}
+func (f *fakeRemnawave) UpdateHostNodes(_ context.Context, input remnawave.UpdateHostNodesInput) (remnawave.Host, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updatedHostNodes = append(f.updatedHostNodes, input)
+	for index := range f.hosts {
+		if f.hosts[index].UUID == input.UUID {
+			f.hosts[index].Nodes = append([]string(nil), input.Nodes...)
+			return f.hosts[index], nil
+		}
+	}
+	return remnawave.Host{}, errors.New("Host not found")
 }
 
 func (f *fakeRemnawave) GetHosts(context.Context) ([]remnawave.Host, error) {

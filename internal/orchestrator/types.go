@@ -118,6 +118,12 @@ type AdvancedRemnawaveAPI interface {
 	CreateHost(context.Context, remnawave.CreateHostInput) (remnawave.Host, error)
 }
 
+type ProfileHostRemnawaveAPI interface {
+	GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error)
+	CreateVisibleHost(context.Context, remnawave.CreateVisibleHostInput) (remnawave.Host, error)
+	UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
+}
+
 type DNSAPI interface {
 	FindZone(context.Context, string) (dnsbalancer.ZoneMatch, error)
 	FindZonesByIP(context.Context, netip.Addr) ([]dnsbalancer.ZoneMatch, error)

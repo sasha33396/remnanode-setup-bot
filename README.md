@@ -106,6 +106,19 @@ console polls the job and shows a progress bar with the current deployment
 stage and its operator-safe description. Repeating the action for the same
 Node attaches to the already running job instead of starting a second deploy.
 
+The web toolbar and Telegram main menu include **Host из профиля + нода**.
+This wizard reads existing Remnawave Config Profiles, lets the operator select
+one inbound, offers its Reality `serverNames` values or a manually entered
+FQDN, creates a visible Host, and then runs the ordinary managed-Node
+deployment. The selected domain is written to both Host `address` and `sni`.
+The Host is tagged `SETUP_BOT_PROFILE_NODE` and, after Node creation, is
+idempotently bound to that Node with the Remnawave 2.8.1 partial Host update
+API. Repeating a failed attempt reuses only an exact matching generated Host;
+a Host with the same address and different settings is never overwritten.
+The panel API token therefore needs `config-profiles:list`, `hosts:list`,
+`hosts:create`, `hosts:update`, and the existing Node/deployment scopes (or the
+corresponding wildcard scopes). No additional `.env` variable is required.
+
 The web toolbar and Telegram Nodes menu also provide **Синхронизировать все**.
 After confirmation it processes only managed Nodes, with at most eight SSH
 operations at once, and reports successful Nodes, failures, and how many
@@ -154,6 +167,13 @@ Temporary root passwords are deleted from Telegram when possible, retained only
 in clearable in-memory wizard state, and never placed in callback data. The
 orchestration package supplies the Telegram `Application` adapter. The current
 executable starts authorized Telegram long polling and graceful shutdown.
+
+The **Host из профиля + нода** wizard is shared with the web console. It takes
+the port from the selected inbound, validates profile and Host state again
+immediately before mutation, creates/reuses a regular visible Host, and then
+uses the standard preflight/provisioning workflow including firewall and Mail
+Guard. Remnawave 2.8.1 limits Host remarks to 40 characters, so this wizard
+accepts FQDNs up to that length.
 
 The **Add balancer** wizard creates a separate Xray JSON config profile, Node,
 hidden Host, and inbound-to-internal-squad association for every physical

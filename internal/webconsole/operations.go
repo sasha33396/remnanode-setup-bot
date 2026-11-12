@@ -72,7 +72,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	_, cherry := s.nodes.(telegram.CherryIPApplication)
 	_, royal := s.nodes.(telegram.RoyalIPApplication)
 	_, bulk := s.nodes.(telegram.BulkNodeIPApplication)
-	writeJSON(w, http.StatusOK, map[string]bool{"cherryIp": cherry, "royalIp": royal, "bulkIp": bulk})
+	_, profileHost := s.nodes.(telegram.ProfileHostApplication)
+	writeJSON(w, http.StatusOK, map[string]bool{"cherryIp": cherry, "royalIp": royal, "bulkIp": bulk, "profileHost": profileHost})
 }
 
 func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +112,24 @@ func (s *Server) handleBalancerOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, options)
 }
 
+func (s *Server) handleProfileHostOptions(w http.ResponseWriter, r *http.Request) {
+	if !s.authenticated(w, r) {
+		return
+	}
+	app, ok := s.nodes.(telegram.ProfileHostApplication)
+	panelID := strings.TrimSpace(r.URL.Query().Get("panel"))
+	if !ok || panelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Создание Host из профиля недоступно"})
+		return
+	}
+	options, err := app.ListProfileHostOptions(r.Context(), panelID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Не удалось загрузить Config Profiles"})
+		return
+	}
+	writeJSON(w, http.StatusOK, options)
+}
+
 type standardDeploymentRequest struct {
 	PanelID  string `json:"panelId"`
 	HostID   string `json:"hostId"`
@@ -128,6 +147,16 @@ type balancerDeploymentRequest struct {
 	IngressIP       string `json:"ingressIp"`
 	EgressIP        string `json:"egressIp"`
 	Password        string `json:"password"`
+}
+
+type profileHostDeploymentRequest struct {
+	PanelID   string `json:"panelId"`
+	ProfileID string `json:"profileId"`
+	InboundID string `json:"inboundId"`
+	Domain    string `json:"domain"`
+	NodeName  string `json:"nodeName"`
+	VPSIP     string `json:"vpsIp"`
+	Password  string `json:"password"`
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, target any) bool {
@@ -163,7 +192,67 @@ func (s *Server) handleDeploymentAction(w http.ResponseWriter, r *http.Request) 
 		s.handleBalancerDeployment(w, r)
 		return
 	}
+	if r.URL.Path == "/api/deployments/profile-host" {
+		s.handleProfileHostDeployment(w, r)
+		return
+	}
 	s.handleRecoveryAction(w, r)
+}
+
+func (s *Server) handleProfileHostDeployment(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.mutationUser(w, r)
+	if !ok {
+		return
+	}
+	app, baseOK := s.deploymentApp()
+	profileApp, profileOK := s.nodes.(telegram.ProfileHostApplication)
+	if !baseOK || !profileOK {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Создание Host из профиля недоступно"})
+		return
+	}
+	var body profileHostDeploymentRequest
+	if !decodeJSON(w, r, 8192, &body) {
+		return
+	}
+	address, addressOK := publicIPv4(body.VPSIP)
+	if !validDeploymentText(body.PanelID, 128) || !validDeploymentText(body.ProfileID, 128) || !validDeploymentText(body.InboundID, 128) || !validDeploymentText(body.Domain, 40) || !validDeploymentText(body.NodeName, 120) || !addressOK || body.Password == "" || len(body.Password) > 1024 {
+		body.Password = ""
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Проверьте профиль, inbound, домен до 40 символов, имя, IPv4 и root-пароль"})
+		return
+	}
+	password := []byte(body.Password)
+	body.Password = ""
+	jobID, err := s.startBackgroundJob(user.UserID, "profile-host:"+body.PanelID, body.NodeName, password, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
+		progress(telegram.NodeActualizeProgress{Step: "host", Message: "Проверка профиля и создание видимого Host", Completed: 0, Total: 3})
+		host, err := profileApp.EnsureProfileHost(ctx, telegram.ProfileHostCreateInput{PanelID: body.PanelID, ProfileID: body.ProfileID, InboundID: body.InboundID, Domain: body.Domain})
+		if err != nil || strings.TrimSpace(host.ID) == "" {
+			if err == nil {
+				err = errors.New("Host was not created")
+			}
+			return nil, err
+		}
+		progress(telegram.NodeActualizeProgress{Step: "preflight", Message: "Проверка SSH, портов и готовности нового Host", Completed: 1, Total: 3})
+		prepared, err := app.Preflight(ctx, telegram.PreflightInput{PanelID: body.PanelID, OperatorUserID: user.UserID, HostID: host.ID, NodeName: body.NodeName, VPSIP: address, Password: password})
+		if err != nil || strings.TrimSpace(prepared.PreparedDeploymentID) == "" {
+			if strings.TrimSpace(prepared.PreparedDeploymentID) != "" {
+				_ = app.CancelDeployment(ctx, prepared.PreparedDeploymentID)
+			}
+			if err == nil {
+				err = errors.New("preflight did not prepare deployment")
+			}
+			return nil, err
+		}
+		progress(telegram.NodeActualizeProgress{Step: "deploy", Message: "Типовая настройка сервера и создание ноды", Completed: 2, Total: 3})
+		if err := app.StartDeployment(ctx, telegram.DeploymentInput{PanelID: body.PanelID, PreparedDeploymentID: prepared.PreparedDeploymentID, OperatorUserID: user.UserID, HostID: host.ID, NodeName: body.NodeName, VPSIP: address, Password: password}, deploymentProgress(progress)); err != nil {
+			return nil, err
+		}
+		return map[string]any{"deploymentId": prepared.PreparedDeploymentID, "hostId": host.ID, "host": host.Address, "nodeName": body.NodeName}, nil
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Такая операция уже выполняется"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
 }
 
 func (s *Server) handleStandardDeployment(w http.ResponseWriter, r *http.Request) {

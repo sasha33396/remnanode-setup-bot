@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	MenuAddNode     = "➕ Добавить ноду"
-	MenuAddBalancer = "⚖️ Добавить балансировщик"
-	MenuNodes       = "📡 Ноды"
-	MenuDeployments = "📜 Развёртывания"
-	MenuChangeIP    = "🔄 Сменить IP"
+	MenuAddNode        = "➕ Добавить ноду"
+	MenuAddProfileHost = "🌐 Host из профиля + нода"
+	MenuAddBalancer    = "⚖️ Добавить балансировщик"
+	MenuNodes          = "📡 Ноды"
+	MenuDeployments    = "📜 Развёртывания"
+	MenuChangeIP       = "🔄 Сменить IP"
 )
 
 var (
@@ -100,6 +101,28 @@ type InternalSquad struct {
 type AdvancedBalancerOptions struct {
 	Squads []InternalSquad
 	Tags   []string
+}
+
+// ProfileHostInbound is a safe, operator-facing projection of one inbound
+// from an existing Remnawave config profile.
+type ProfileHostInbound struct {
+	ProfileID   string
+	ProfileName string
+	InboundID   string
+	InboundTag  string
+	Port        int
+	ServerNames []string
+}
+
+type ProfileHostOptions struct {
+	Inbounds []ProfileHostInbound
+}
+
+type ProfileHostCreateInput struct {
+	PanelID   string
+	ProfileID string
+	InboundID string
+	Domain    string
 }
 
 type AdvancedBalancerPreflightInput struct {
@@ -463,6 +486,13 @@ type Application interface {
 type AdvancedBalancerApplication interface {
 	ListAdvancedBalancerOptions(context.Context, string) (AdvancedBalancerOptions, error)
 	PreflightAdvancedBalancer(context.Context, AdvancedBalancerPreflightInput) (PreflightResult, error)
+}
+
+// ProfileHostApplication powers creation of a visible Remnawave 2.8.1 Host
+// from an existing profile before the ordinary Node deployment is started.
+type ProfileHostApplication interface {
+	ListProfileHostOptions(context.Context, string) (ProfileHostOptions, error)
+	EnsureProfileHost(context.Context, ProfileHostCreateInput) (Host, error)
 }
 
 // RecoveryApplication is optional. Controller exposes these operations only

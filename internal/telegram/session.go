@@ -60,6 +60,10 @@ const (
 	stateAwaitingBalancerPassword
 	stateBalancerPreflighting
 	stateAwaitingBalancerConfirmation
+	stateSelectingProfileHostPanel
+	stateSelectingProfileHostInbound
+	stateSelectingProfileHostDomain
+	stateAwaitingProfileHostDomain
 )
 
 type wizard struct {
@@ -98,6 +102,10 @@ type wizard struct {
 	hostFQDN          string
 	egressIP          netip.Addr
 	dualIP            bool
+	profileHost       bool
+	profileInbounds   []ProfileHostInbound
+	selectedProfile   ProfileHostInbound
+	profileDomain     string
 	expiryTimer       *time.Timer
 }
 
@@ -110,6 +118,8 @@ func (w *wizard) clone() *wizard {
 	result.panels = append([]Panel(nil), w.panels...)
 	result.squads = append([]InternalSquad(nil), w.squads...)
 	result.balancerTags = append([]string(nil), w.balancerTags...)
+	result.profileInbounds = cloneProfileHostInbounds(w.profileInbounds)
+	result.selectedProfile.ServerNames = append([]string(nil), w.selectedProfile.ServerNames...)
 	// Ordinary state snapshots intentionally never duplicate the password.
 	result.password = nil
 	result.expiryTimer = nil
@@ -120,6 +130,14 @@ func (w *wizard) clone() *wizard {
 	result.bulkIPPlan = cloneBulkNodeIPPlan(w.bulkIPPlan)
 	result.bulkIPResult = cloneBulkNodeIPResult(w.bulkIPResult)
 	return &result
+}
+
+func cloneProfileHostInbounds(values []ProfileHostInbound) []ProfileHostInbound {
+	result := append([]ProfileHostInbound(nil), values...)
+	for index := range result {
+		result[index].ServerNames = append([]string(nil), values[index].ServerNames...)
+	}
+	return result
 }
 
 func (w *wizard) clear() {

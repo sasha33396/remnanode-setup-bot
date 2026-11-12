@@ -42,7 +42,7 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 	menu := mainKeyboard()
 	wantReply := [][]string{{"➕ Добавить ноду", "🔄 Сменить IP"}, {"📡 Ноды", "📜 Развёртывания"}}
-	wantReply = [][]string{{MenuAddNode, MenuAddBalancer}, {MenuChangeIP, MenuNodes}, {MenuDeployments}}
+	wantReply = [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}}
 	if fmt.Sprint(menu.Reply) != fmt.Sprint(wantReply) {
 		t.Fatalf("main keyboard = %#v, want %#v", menu.Reply, wantReply)
 	}
@@ -815,6 +815,39 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	}
 }
 
+func TestProfileHostWizardCreatesHostBeforeStandardPreflight(t *testing.T) {
+	deploymentID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	base := &fakeApplication{preflightResult: PreflightResult{PreparedDeploymentID: deploymentID, CertificateReadiness: ReadinessReady, ConfigProfileReadiness: ReadinessReady}}
+	application := &fakeProfileHostApplication{
+		fakeApplication: base,
+		options:         ProfileHostOptions{Inbounds: []ProfileHostInbound{{ProfileID: "profile", ProfileName: "DE Reality", InboundID: "inbound", InboundTag: "VLESS_REALITY", Port: 443, ServerNames: []string{"de-modx.nodexphere.net"}}}},
+		host:            Host{ID: "created-host", Remark: "de-modx.nodexphere.net", Address: "de-modx.nodexphere.net", ConfigProfileReadiness: ReadinessReady},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuAddProfileHost)
+	handleCallback(t, controller, "inbound", "ph:inbound:fixed-nonce:0", messenger.lastSent().message)
+	handleCallback(t, controller, "domain", "ph:domain:fixed-nonce:0", messenger.lastSent().message)
+	handleMessage(t, controller, 2, "de-node")
+	handleMessage(t, controller, 3, "8.8.8.8")
+	handleMessage(t, controller, 4, "temporary-password")
+	if application.ensureCalls != 1 || application.ensureInput.ProfileID != "profile" || application.ensureInput.InboundID != "inbound" || application.ensureInput.Domain != "de-modx.nodexphere.net" {
+		t.Fatalf("EnsureProfileHost input = %#v, calls=%d", application.ensureInput, application.ensureCalls)
+	}
+	if base.preflightCalls != 1 || base.preflightInput.HostID != "created-host" {
+		t.Fatalf("preflight input = %#v, calls=%d", base.preflightInput, base.preflightCalls)
+	}
+	confirmation := messenger.lastSent()
+	if !strings.Contains(confirmation.text, "de-modx.nodexphere.net") {
+		t.Fatalf("confirmation = %q", confirmation.text)
+	}
+	handleCallback(t, controller, "deploy", "add:deploy:fixed-nonce", confirmation.message)
+	controller.Wait()
+	if base.deploymentInput.HostID != "created-host" || base.deploymentInput.PreparedDeploymentID != deploymentID {
+		t.Fatalf("deployment input = %#v", base.deploymentInput)
+	}
+}
+
 func TestExpiredWizardClearsPasswordAndRejectsIncompleteConversation(t *testing.T) {
 	now := time.Unix(100, 0)
 	application := &fakeApplication{hosts: []Host{{ID: "host", Remark: "Host", Address: "host.example.com"}}}
@@ -1000,6 +1033,7 @@ type fakeApplication struct {
 	listNodeCalls       int
 	listDeploymentCalls int
 	preflightPassword   []byte
+	preflightInput      PreflightInput
 	deploymentPassword  []byte
 	deploymentInput     DeploymentInput
 	deployments         []DeploymentSummary
@@ -1022,6 +1056,24 @@ type fakeAdvancedApplication struct {
 	options       AdvancedBalancerOptions
 	advancedInput AdvancedBalancerPreflightInput
 	advancedCalls int
+}
+
+type fakeProfileHostApplication struct {
+	*fakeApplication
+	options     ProfileHostOptions
+	host        Host
+	ensureInput ProfileHostCreateInput
+	ensureCalls int
+}
+
+func (f *fakeProfileHostApplication) ListProfileHostOptions(context.Context, string) (ProfileHostOptions, error) {
+	return f.options, nil
+}
+
+func (f *fakeProfileHostApplication) EnsureProfileHost(_ context.Context, input ProfileHostCreateInput) (Host, error) {
+	f.ensureCalls++
+	f.ensureInput = input
+	return f.host, nil
 }
 
 func (f *fakeAdvancedApplication) ListAdvancedBalancerOptions(context.Context, string) (AdvancedBalancerOptions, error) {
@@ -1291,6 +1343,8 @@ func (f *fakeApplication) Preflight(_ context.Context, input PreflightInput) (Pr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.preflightCalls++
+	f.preflightInput = input
+	f.preflightInput.Password = nil
 	f.preflightPassword = append([]byte(nil), input.Password...)
 	return f.preflightResult, f.preflightErr
 }

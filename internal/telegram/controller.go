@@ -133,6 +133,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.cancelFromMessage(ctx, message)
 	case MenuAddNode, legacyMenuAddNode:
 		return c.beginAddNode(ctx, message)
+	case MenuAddProfileHost:
+		return c.beginProfileHost(ctx, message)
 	case MenuAddBalancer:
 		return c.beginAdvancedBalancer(ctx, message)
 	case MenuNodes, legacyMenuNodes:
@@ -155,7 +157,7 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel, stateSelectingBalancerPanel, stateSelectingBalancerSquad, stateSelectingBalancerIPMode:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel, stateSelectingBalancerPanel, stateSelectingBalancerSquad, stateSelectingBalancerIPMode, stateSelectingProfileHostPanel, stateSelectingProfileHostInbound, stateSelectingProfileHostDomain:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
 	case stateSelectingBalancerTag:
@@ -183,6 +185,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptBalancerEgressIP(ctx, message, session)
 	case stateAwaitingBalancerPassword:
 		return c.acceptBalancerPassword(ctx, message, session)
+	case stateAwaitingProfileHostDomain:
+		return c.acceptProfileHostDomain(ctx, message, session)
 	case stateBalancerPreflighting:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Проверка VPS уже выполняется.", Keyboard{})
 		return err
@@ -407,6 +411,12 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	_ = c.messenger.AnswerCallback(ctx, callback.ID, "")
 
 	switch action {
+	case "ph_panel":
+		return c.selectProfileHostPanel(ctx, callback, session, index)
+	case "ph_inbound":
+		return c.selectProfileHostInbound(ctx, callback, session, index)
+	case "ph_domain":
+		return c.selectProfileHostDomain(ctx, callback, session, index)
 	case "bal_panel":
 		return c.selectBalancerPanel(ctx, callback, session, index)
 	case "bal_squad":
@@ -1239,6 +1249,31 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 	if !copied {
 		return c.sendExpired(ctx, message.ChatID)
 	}
+	if current.profileHost {
+		profileApp, ok := c.app.(ProfileHostApplication)
+		if !ok {
+			clearBytes(requestPassword)
+			return c.sendExpired(ctx, message.ChatID)
+		}
+		host, hostErr := profileApp.EnsureProfileHost(ctx, ProfileHostCreateInput{
+			PanelID: current.panel.ID, ProfileID: current.selectedProfile.ProfileID,
+			InboundID: current.selectedProfile.InboundID, Domain: current.profileDomain,
+		})
+		if hostErr != nil || strings.TrimSpace(host.ID) == "" {
+			clearBytes(requestPassword)
+			removed := c.takeSession(message.FromUserID, current.nonce, statePreflighting)
+			if removed != nil {
+				removed.clear()
+			}
+			_, sendErr := c.messenger.SendMessage(ctx, message.ChatID, "Не удалось безопасно создать Host. Проверьте домен и отсутствие Host с конфликтующими настройками.", mainKeyboard())
+			return sendErr
+		}
+		if !c.updateSession(message.FromUserID, current.nonce, statePreflighting, func(active *wizard) { active.selected = host }) {
+			clearBytes(requestPassword)
+			return c.sendExpired(ctx, message.ChatID)
+		}
+		current.selected = host
+	}
 	result, err := c.app.Preflight(ctx, PreflightInput{
 		PanelID:        current.panel.ID,
 		OperatorUserID: current.userID,
@@ -1651,7 +1686,7 @@ func (c *Controller) sendExpired(ctx context.Context, chatID int64) error {
 }
 
 func mainKeyboard() Keyboard {
-	return Keyboard{Reply: [][]string{{MenuAddNode, MenuAddBalancer}, {MenuChangeIP, MenuNodes}, {MenuDeployments}}}
+	return Keyboard{Reply: [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
 }
 
 func ipChangeKeyboard(nonce string) Keyboard {
@@ -1814,6 +1849,13 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	parts := strings.Split(data, ":")
 	if len(parts) < 3 || parts[2] == "" {
 		return "", "", 0, false
+	}
+	if parts[0] == "ph" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "inbound" || parts[1] == "domain") {
+		parsed, err := strconv.Atoi(parts[3])
+		if err != nil || parsed < 0 {
+			return "", "", 0, false
+		}
+		return "ph_" + parts[1], parts[2], parsed, true
 	}
 	if parts[0] == "bal" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "squad" || parts[1] == "tag" || parts[1] == "ipmode") {
 		parsed, err := strconv.Atoi(parts[3])

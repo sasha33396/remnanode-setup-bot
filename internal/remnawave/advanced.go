@@ -139,6 +139,76 @@ func (c *Client) CreateHost(ctx context.Context, input CreateHostInput) (Host, e
 	return envelope.Response.model()
 }
 
+// CreateVisibleHost creates a regular Host using the Remnawave 2.8.1 hosts
+// contract. The advanced-balancer CreateHost path remains deliberately
+// separate because it creates a hidden Host already bound to a Node.
+func (c *Client) CreateVisibleHost(ctx context.Context, input CreateVisibleHostInput) (Host, error) {
+	input.Remark = strings.TrimSpace(input.Remark)
+	input.Address = strings.TrimSpace(input.Address)
+	if input.Remark == "" || len(input.Remark) > 40 || input.Address == "" || input.Port < 1 || input.Port > 65535 || !validUUID(input.ConfigProfileUUID) || !validUUID(input.InboundUUID) {
+		return Host{}, fmt.Errorf("visible Host: %w", ErrInvalidInput)
+	}
+	request := createHostRequest{
+		Remark: input.Remark, Address: input.Address, Port: input.Port,
+		Tags: []string{ProfileHostTag}, IsHidden: false, IsDisabled: false, Nodes: []string{},
+	}
+	request.SNI = &input.Address
+	request.Inbound.ConfigProfileUUID = input.ConfigProfileUUID
+	request.Inbound.InboundUUID = input.InboundUUID
+	var envelope struct {
+		Response *hostWire `json:"response"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/hosts", request, http.StatusCreated, &envelope); err != nil {
+		return Host{}, err
+	}
+	if envelope.Response == nil {
+		return Host{}, invalidResponse("created visible Host response is missing")
+	}
+	return envelope.Response.model()
+}
+
+// UpdateHostNodes binds a generated profile Host to its deployed Nodes using
+// the partial PATCH contract available in Remnawave 2.8.1.
+func (c *Client) UpdateHostNodes(ctx context.Context, input UpdateHostNodesInput) (Host, error) {
+	input.UUID = strings.TrimSpace(input.UUID)
+	if !validUUID(input.UUID) || len(input.Nodes) == 0 {
+		return Host{}, fmt.Errorf("Host nodes: %w", ErrInvalidInput)
+	}
+	nodes := make([]string, 0, len(input.Nodes))
+	seen := make(map[string]struct{}, len(input.Nodes))
+	for _, uuid := range input.Nodes {
+		uuid = strings.TrimSpace(uuid)
+		if !validUUID(uuid) {
+			return Host{}, fmt.Errorf("Host node UUID: %w", ErrInvalidInput)
+		}
+		if _, exists := seen[uuid]; exists {
+			continue
+		}
+		seen[uuid] = struct{}{}
+		nodes = append(nodes, uuid)
+	}
+	var envelope struct {
+		Response *hostWire `json:"response"`
+	}
+	request := updateHostNodesRequest{UUID: input.UUID, Nodes: nodes}
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/hosts", request, http.StatusOK, &envelope); err != nil {
+		return Host{}, err
+	}
+	if envelope.Response == nil {
+		return Host{}, invalidResponse("updated Host response is missing")
+	}
+	return envelope.Response.model()
+}
+
+func IsProfileHost(host Host) bool {
+	for _, tag := range host.Tags {
+		if tag == ProfileHostTag {
+			return true
+		}
+	}
+	return false
+}
+
 // AdvancedBalancerConfig builds the one-inbound server profile used by each
 // injected Host. sendThrough is intentionally omitted in single-IP mode.
 func AdvancedBalancerConfig(inboundTag, fqdn, privateKey string, egressIP *netip.Addr) map[string]any {

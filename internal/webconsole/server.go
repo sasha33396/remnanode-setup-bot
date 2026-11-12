@@ -130,6 +130,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /api/options/capabilities", server.handleCapabilities)
 	mux.HandleFunc("GET /api/options/hosts", server.handleHosts)
 	mux.HandleFunc("GET /api/options/balancer", server.handleBalancerOptions)
+	mux.HandleFunc("GET /api/options/profile-host", server.handleProfileHostOptions)
 	mux.HandleFunc("GET /api/deployments", server.handleDeployments)
 	mux.HandleFunc("GET /api/deployments/", server.handleDeploymentRead)
 	mux.HandleFunc("POST /api/deployments/", server.handleDeploymentAction)
