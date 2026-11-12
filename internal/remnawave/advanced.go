@@ -2,6 +2,7 @@ package remnawave
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -194,13 +195,30 @@ func (c *Client) UpdateHostNodes(ctx context.Context, input UpdateHostNodesInput
 	}
 	legacyTag := ProfileHostTag
 	request := updateHostNodesRequest{UUID: input.UUID, Nodes: nodes, Tag: &legacyTag, Tags: []string{ProfileHostTag}}
-	if err := c.doJSON(ctx, http.MethodPatch, "/api/hosts", request, http.StatusOK, &envelope); err != nil {
+	err := c.doJSON(ctx, http.MethodPatch, "/api/hosts", request, http.StatusOK, &envelope)
+	if isHostContractRejection(err) {
+		// Some 2.7.x installations reject unknown 2.8.x fields instead of
+		// stripping them. Retry the exact legacy contract, then the exact modern
+		// contract, while keeping network/authentication failures single-shot.
+		envelope.Response = nil
+		err = c.doJSON(ctx, http.MethodPatch, "/api/hosts", updateHostNodesRequest{UUID: input.UUID, Nodes: nodes, Tag: &legacyTag}, http.StatusOK, &envelope)
+		if isHostContractRejection(err) {
+			envelope.Response = nil
+			err = c.doJSON(ctx, http.MethodPatch, "/api/hosts", updateHostNodesRequest{UUID: input.UUID, Nodes: nodes, Tags: []string{ProfileHostTag}}, http.StatusOK, &envelope)
+		}
+	}
+	if err != nil {
 		return Host{}, err
 	}
 	if envelope.Response == nil {
 		return Host{}, invalidResponse("updated Host response is missing")
 	}
 	return envelope.Response.model()
+}
+
+func isHostContractRejection(err error) bool {
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusBadRequest || httpErr.StatusCode == http.StatusUnprocessableEntity)
 }
 
 func IsProfileHost(host Host) bool {

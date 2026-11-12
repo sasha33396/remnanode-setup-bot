@@ -161,3 +161,33 @@ func TestUpdateHostNodesUsesRemnawave27And28PartialPatch(t *testing.T) {
 		t.Fatalf("UpdateHostNodes() = %#v, %v", host, err)
 	}
 }
+
+func TestUpdateHostNodesFallsBackToStrictRemnawave274Contract(t *testing.T) {
+	const hostUUID = "99999999-9999-4999-8999-999999999999"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if body["tag"] != ProfileHostTag || body["tags"] == nil {
+				t.Errorf("combined Host body = %#v", body)
+			}
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		if calls != 2 || body["tag"] != ProfileHostTag || body["tags"] != nil {
+			t.Errorf("legacy Host body = %#v, calls=%d", body, calls)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":{"uuid":"`+hostUUID+`","remark":"de-modx.nodexphere.net","address":"de-modx.nodexphere.net","sni":"de-modx.nodexphere.net","isDisabled":false,"isHidden":false,"tag":"`+ProfileHostTag+`","nodes":["`+testNodeUUID+`"],"inbound":{"configProfileUuid":"`+testProfileUUID+`","configProfileInboundUuid":"`+testInboundUUID+`"}}}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	host, err := client.UpdateHostNodes(context.Background(), UpdateHostNodesInput{UUID: hostUUID, Nodes: []string{testNodeUUID}})
+	if err != nil || calls != 2 || !IsProfileHost(host) || len(host.Nodes) != 1 {
+		t.Fatalf("UpdateHostNodes() = %#v, %v; calls=%d", host, err, calls)
+	}
+}

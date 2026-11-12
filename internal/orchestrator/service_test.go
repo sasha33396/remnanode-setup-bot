@@ -1121,23 +1121,24 @@ func cloneString(value *string) *string {
 type fakeRemnawave struct {
 	mu sync.Mutex
 
-	events            *eventLog
-	hosts             []remnawave.Host
-	nodes             []remnawave.Node
-	secret            string
-	createErr         error
-	pollStates        []remnawave.Node
-	pollIndex         int
-	alwaysConnecting  bool
-	createCalls       int
-	profileUpdates    []remnawave.UpdateNodeProfileInput
-	disabledUpdates   []remnawave.SetNodeDisabledInput
-	disableErr        error
-	profiles          []remnawave.ConfigProfile
-	squads            []remnawave.InternalSquad
-	lastProfileConfig any
-	visibleHostInputs []remnawave.CreateVisibleHostInput
-	updatedHostNodes  []remnawave.UpdateHostNodesInput
+	events             *eventLog
+	hosts              []remnawave.Host
+	nodes              []remnawave.Node
+	secret             string
+	createErr          error
+	pollStates         []remnawave.Node
+	pollIndex          int
+	alwaysConnecting   bool
+	createCalls        int
+	profileUpdates     []remnawave.UpdateNodeProfileInput
+	disabledUpdates    []remnawave.SetNodeDisabledInput
+	disableErr         error
+	profiles           []remnawave.ConfigProfile
+	squads             []remnawave.InternalSquad
+	lastProfileConfig  any
+	visibleHostInputs  []remnawave.CreateVisibleHostInput
+	updatedHostNodes   []remnawave.UpdateHostNodesInput
+	updateHostNodesErr error
 }
 
 func (f *fakeRemnawave) GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error) {
@@ -1214,6 +1215,9 @@ func (f *fakeRemnawave) UpdateHostNodes(_ context.Context, input remnawave.Updat
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updatedHostNodes = append(f.updatedHostNodes, input)
+	if f.updateHostNodesErr != nil {
+		return remnawave.Host{}, f.updateHostNodesErr
+	}
 	for index := range f.hosts {
 		if f.hosts[index].UUID == input.UUID {
 			f.hosts[index].Nodes = append([]string(nil), input.Nodes...)

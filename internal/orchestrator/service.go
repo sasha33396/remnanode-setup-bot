@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"regexp"
 	"strconv"
@@ -728,8 +729,10 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	if err != nil || !node.IsConnected {
 		return s.failStage(ctx, current.ID, stepAddDNS, deployment.StatusFailed, "NODE_NOT_HEALTHY", "DNS was not changed because the Node is not connected", ErrNodeConnectionFailed)
 	}
-	var dnsErr error
+	var dnsErr, bindErr error
+	dnsSource, dnsOperation := "dns_balancer", "add_ip"
 	if current.Kind == deployment.KindAdvancedBalancer {
+		dnsSource, dnsOperation = "cloudflare", "ensure_a_record"
 		if s.config.DNSRecords == nil {
 			dnsErr = ErrDNSUpdateFailed
 		} else {
@@ -744,6 +747,7 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 		// shape from builds that sent only the 2.8.x `tags` field.
 		host, _, hostErr := s.selectedHost(ctx, current.SelectedRemnawaveHostUUID)
 		if hostErr == nil && remnawave.IsGeneratedProfileHost(host) {
+			dnsOperation = "ensure_profile_zone"
 			// A deployment that reached DNS_FAILED on an older 2.7-compatible
 			// build may also have skipped the Host-to-Node binding. Repair it as
 			// part of the same idempotent retry before publishing the target.
@@ -752,17 +756,18 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 					UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
 				})
 				if !ok {
-					dnsErr = ErrRemnawaveCreationFailed
+					bindErr = ErrRemnawaveCreationFailed
 				} else {
 					nodes := append(append([]string(nil), host.Nodes...), *current.RemnawaveNodeUUID)
-					_, dnsErr = binder.UpdateHostNodes(ctx, remnawave.UpdateHostNodesInput{UUID: host.UUID, Nodes: nodes})
+					_, bindErr = binder.UpdateHostNodes(ctx, remnawave.UpdateHostNodesInput{UUID: host.UUID, Nodes: nodes})
 				}
 			}
-			if dnsErr == nil {
-				_, dnsErr = s.dns.EnsureZone(ctx, current.SNIDomain, current.TargetVPSIP, profileHostDNSTTL)
-			}
+			// DNS restoration is independent from the Remnawave Host repair. Run
+			// it even when binding failed so the next retry has only one remaining
+			// idempotent side effect.
+			_, dnsErr = s.dns.EnsureZone(ctx, current.SNIDomain, current.TargetVPSIP, profileHostDNSTTL)
 		} else if hostErr != nil {
-			dnsErr = hostErr
+			bindErr = hostErr
 		} else {
 			_, dnsErr = s.dns.AddIP(ctx, current.SNIDomain, current.TargetVPSIP)
 		}
@@ -776,11 +781,30 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 				"panel_id", s.config.PanelID,
 				"deployment_id", current.ID,
 				"fqdn", current.SNIDomain,
+				"source", dnsSource,
+				"operation", dnsOperation,
 				"category", profileHostDNSErrorCategory(dnsErr),
 				"http_status", dnsHTTPStatus(dnsErr),
 			)
 		}
 		return s.failStage(ctx, current.ID, stepAddDNS, deployment.StatusDNSFailed, "DNS_UPDATE_FAILED", "Node is healthy but DNS update failed", ErrDNSUpdateFailed)
+	}
+	if bindErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if s.logger != nil {
+			s.logger.Error("deployment Host binding failed",
+				"panel_id", s.config.PanelID,
+				"deployment_id", current.ID,
+				"fqdn", current.SNIDomain,
+				"source", "remnawave",
+				"operation", "bind_profile_host",
+				"category", remnawaveErrorCategory(bindErr),
+				"http_status", remnawaveHTTPStatus(bindErr),
+			)
+		}
+		return s.failStage(ctx, current.ID, stepAddDNS, deployment.StatusFailed, "HOST_NODE_BIND_FAILED", "DNS was restored but the Node could not be assigned to its Host", ErrRemnawaveCreationFailed)
 	}
 	if err := s.completeStage(ctx, current.ID, stepAddDNS, "DNS updated"); err != nil {
 		return err
@@ -794,6 +818,32 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 	}
 	emit(progress, Progress{Step: stepAddDNS, Completed: workflowStepCount, Total: workflowStepCount, SafeMessage: "DNS updated", Status: deployment.StepStatusCompleted})
 	return nil
+}
+
+func remnawaveErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, remnawave.ErrUnauthorized):
+		return "authorization"
+	case errors.Is(err, remnawave.ErrInvalidResponse):
+		return "invalid_response"
+	default:
+		var httpErr *remnawave.HTTPError
+		if errors.As(err, &httpErr) {
+			return "http"
+		}
+		return "transport"
+	}
+}
+
+func remnawaveHTTPStatus(err error) int {
+	if errors.Is(err, remnawave.ErrUnauthorized) {
+		return http.StatusUnauthorized
+	}
+	var httpErr *remnawave.HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode
+	}
+	return 0
 }
 
 func (s *DeploymentService) deployAdvanced(ctx context.Context, current *deployment.Deployment, progress ProgressSink) error {

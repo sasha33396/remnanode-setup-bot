@@ -250,3 +250,31 @@ func TestLegacyProfileHostDNSRetryRestoresZoneAndBinding(t *testing.T) {
 		t.Fatalf("deployment status after DNS retry = %s", stored.Status)
 	}
 }
+
+func TestLegacyProfileHostDNSRetryRestoresDNSWhenBindingFails(t *testing.T) {
+	fixture := newFixture(t)
+	legacySNI := fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].Remark = fixture.remnawave.hosts[0].Address
+	fixture.remnawave.hosts[0].SNI = &legacySNI
+	fixture.remnawave.hosts[0].Tags = nil
+	fixture.dns.addErr = errors.New("zone missing")
+	prepared := fixture.prepare(t, "legacy-profile-bind-retry", "8.8.4.9")
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); !errors.Is(err, ErrDNSUpdateFailed) {
+		t.Fatalf("Deploy() error = %v, want DNS failure", err)
+	}
+	fixture.remnawave.hosts[0].Tags = nil
+	fixture.remnawave.hosts[0].Nodes = nil
+	fixture.remnawave.updateHostNodesErr = remnawave.ErrUnauthorized
+	fixture.dns.addErr = nil
+	err := fixture.service.RetryDNS(context.Background(), prepared.Deployment.ID, nil)
+	if !errors.Is(err, ErrRemnawaveCreationFailed) {
+		t.Fatalf("RetryDNS() error = %v, want Host binding failure", err)
+	}
+	if fixture.dns.ensureCalls != 2 {
+		t.Fatalf("DNS was not restored independently: ensure calls=%d", fixture.dns.ensureCalls)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.Status != deployment.StatusFailed || stored.SafeErrorCode == nil || *stored.SafeErrorCode != "HOST_NODE_BIND_FAILED" {
+		t.Fatalf("binding failure deployment = %#v", stored)
+	}
+}

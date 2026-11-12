@@ -324,7 +324,7 @@ type updateHostNodesRequest struct {
 	UUID  string   `json:"uuid"`
 	Nodes []string `json:"nodes"`
 	Tag   *string  `json:"tag,omitempty"`
-	Tags  []string `json:"tags"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 type updateInternalSquadRequest struct {
