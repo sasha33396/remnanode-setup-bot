@@ -192,3 +192,17 @@ func TestProfileHostCertificateFailureOffersDirectRetry(t *testing.T) {
 		t.Fatalf("profile Host recovery actions = retry:%t repair:%t", details.CanRetryStep, details.CanRepairCert)
 	}
 }
+
+func TestEmptyVisibleHostUsesNewTargetCertificateWithoutTag(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.hosts[0].Tags = nil
+	fixture.remnawave.hosts[0].Nodes = nil
+	prepared := fixture.prepare(t, "empty-host-node", "8.8.4.6")
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatal(err)
+	}
+	events := fixture.events.snapshot()
+	if !slices.Contains(events, "certificate.prepare-new") || slices.Contains(events, "certificate.prepare") {
+		t.Fatalf("empty Host certificate path = %v", events)
+	}
+}

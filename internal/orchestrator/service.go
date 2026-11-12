@@ -445,7 +445,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	}
 
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsProfileHost(host)); err != nil {
+		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsProfileHost(host) || len(host.Nodes) == 0); err != nil {
 			return err
 		}
 		current, err = s.repository.GetDeployment(runCtx, current.ID)
@@ -1000,6 +1000,9 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 	if current.Status != deployment.StatusFailed {
 		return ErrDeploymentNotRunnable
 	}
+	if s.logger != nil {
+		s.logger.Info("deployment retry requested", "panel_id", s.config.PanelID, "deployment_id", current.ID, "step", current.CurrentStep)
+	}
 	var resume deployment.Status
 	switch current.CurrentStep {
 	case stepPrepareCertificate:
@@ -1027,7 +1030,16 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 	if err := s.setState(ctx, current.ID, resume, current.CurrentStep, "", ""); err != nil {
 		return err
 	}
-	return s.Deploy(ctx, StartInput{DeploymentID: current.ID, OperatorUserID: current.TelegramOperatorUserID, HostID: current.SelectedRemnawaveHostUUID, NodeName: current.NodeName, VPSIP: current.TargetVPSIP}, progress)
+	err = s.Deploy(ctx, StartInput{DeploymentID: current.ID, OperatorUserID: current.TelegramOperatorUserID, HostID: current.SelectedRemnawaveHostUUID, NodeName: current.NodeName, VPSIP: current.TargetVPSIP}, progress)
+	if err != nil && s.logger != nil {
+		code, message := "DEPLOYMENT_RETRY_FAILED", "Deployment retry failed"
+		var safeErr *SafeError
+		if errors.As(err, &safeErr) {
+			code, message = safeErr.Code, safeErr.SafeMessage
+		}
+		s.logger.Warn("deployment retry failed", "panel_id", s.config.PanelID, "deployment_id", current.ID, "step", current.CurrentStep, "code", code, "safe_message", message)
+	}
+	return err
 }
 
 func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {

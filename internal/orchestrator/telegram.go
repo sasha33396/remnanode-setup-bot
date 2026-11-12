@@ -347,11 +347,13 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 			// misleading here.
 			if hosts, hostsErr := panel.Service.remnawave.GetHosts(ctx); hostsErr == nil {
 				for _, host := range hosts {
-					if host.UUID == item.SelectedRemnawaveHostUUID && remnawave.IsProfileHost(host) {
+					if host.UUID == item.SelectedRemnawaveHostUUID && (remnawave.IsProfileHost(host) || len(host.Nodes) == 0) {
 						details.CanRepairCert = false
 						break
 					}
 				}
+			} else if panel.Service.logger != nil {
+				panel.Service.logger.Warn("deployment certificate recovery host lookup failed", "panel_id", panel.ID, "deployment_id", item.ID)
 			}
 		}
 	}

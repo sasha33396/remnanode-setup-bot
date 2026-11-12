@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 		t.Fatalf("status history = %v, want %v", got, wantStatuses)
 	}
 	events := fixture.events.snapshot()
-	assertBefore(t, events, "certificate.prepare", "vps.provision")
+	assertBefore(t, events, "certificate.prepare-new", "vps.provision")
 	assertBefore(t, events, "vps.provision", "remnawave.create")
 	assertBefore(t, events, "remnawave.connected", "dns.add")
 	if fixture.remnawave.createCalls != 1 || fixture.dns.addCalls != 1 || fixture.vps.provisionCalls != 1 {
@@ -62,6 +63,19 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 	}
 	if len(progress) == 0 || progress[len(progress)-1].Completed != workflowStepCount {
 		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestDeploymentToPopulatedStandardHostKeepsDistributionPath(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.hosts[0].Nodes = []string{"55555555-5555-4555-8555-555555555555"}
+	prepared := fixture.prepare(t, "shared-host-node", "8.8.4.7")
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatal(err)
+	}
+	events := fixture.events.snapshot()
+	if !slices.Contains(events, "certificate.prepare") || slices.Contains(events, "certificate.prepare-new") {
+		t.Fatalf("populated Host certificate path = %v", events)
 	}
 }
 
