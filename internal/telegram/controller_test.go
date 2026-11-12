@@ -638,6 +638,28 @@ func TestDeploymentCardRepairsCertificateWithoutManualUUIDOrSNI(t *testing.T) {
 	}
 }
 
+func TestStaleCertificateRepairButtonRetriesProfileHostDirectly(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	base := &fakeApplication{deployments: []DeploymentSummary{{ID: deploymentID, PanelName: "Полюс", NodeName: "nl-datalix-0", Status: "FAILED"}}}
+	application := &fakeRecoveryApplication{
+		fakeApplication: base,
+		details: DeploymentDetails{
+			DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Полюс", NodeName: "nl-datalix-0", Status: "FAILED", CurrentStep: "prepare_certificate"},
+			SNI:               "nl-datalix.example.com", CanRetryStep: true, CanRepairCert: false,
+		},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	callback := &CallbackQuery{ID: "stale-repair", FromUserID: testAllowedUser, Message: &Message{ID: 10, ChatID: testChatID}, Data: "dep:repair_cert:" + deploymentID}
+	if err := controller.Handle(context.Background(), Update{CallbackQuery: callback}); err != nil {
+		t.Fatal(err)
+	}
+	controller.Wait()
+	if application.bootstrapCalls != 0 || application.retryCalls != 1 {
+		t.Fatalf("stale repair calls bootstrap=%d retry=%d", application.bootstrapCalls, application.retryCalls)
+	}
+}
+
 func TestDeploymentLogsButtonShowsDetailedJournalAndBackNavigation(t *testing.T) {
 	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
 	started := time.Date(2026, 8, 17, 18, 20, 0, 0, time.UTC)

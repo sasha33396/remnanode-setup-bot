@@ -1459,7 +1459,14 @@ func (c *Controller) handleDeploymentCallback(ctx context.Context, callback *Cal
 		return c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, renderDeploymentLogs(details, entries), deploymentLogsKeyboard(deploymentID))
 	case "retry", "dns", "recheck", "repair_cert", "cancel":
 		if action == "repair_cert" && (!details.CanRepairCert || strings.TrimSpace(details.SNI) == "") {
-			return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Исправление сертификата неприменимо к текущему состоянию.")
+			if details.CanRetryStep {
+				// Old deployment cards may still contain the former repair button.
+				// A generated profile Host must retry its new-target certificate
+				// path directly and must not run legacy-target bootstrap.
+				action = "retry"
+			} else {
+				return c.showDeploymentCard(ctx, recoveryApp, callback.Message.ChatID, callback.Message.ID, deploymentID, "❌ Исправление сертификата неприменимо к текущему состоянию.")
+			}
 		}
 		if err := c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "⏳ Выполняю безопасное восстановление…", Keyboard{}); err != nil {
 			return err

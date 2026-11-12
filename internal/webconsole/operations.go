@@ -935,11 +935,15 @@ func (s *Server) handleRecoveryAction(w http.ResponseWriter, r *http.Request) {
 		case "repair-certificate":
 			var details telegram.DeploymentDetails
 			details, err = recovery.GetDeploymentDetails(ctx, id)
-			if err == nil {
-				result, err = recovery.BootstrapCertificate(ctx, details.SNI, user.UserID)
-			}
-			if err == nil {
+			if err == nil && !details.CanRepairCert && details.CanRetryStep {
 				err = recovery.RetryFailedStep(ctx, id)
+			} else if err == nil && details.CanRepairCert {
+				result, err = recovery.BootstrapCertificate(ctx, details.SNI, user.UserID)
+				if err == nil {
+					err = recovery.RetryFailedStep(ctx, id)
+				}
+			} else if err == nil {
+				err = errors.New("certificate repair is not applicable")
 			}
 		case "cancel":
 			err = app.CancelDeployment(ctx, id)
