@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"slices"
 	"testing"
 
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/telegram"
 )
@@ -111,5 +113,34 @@ func TestProfileHostDeploymentBindsCreatedNodeToHost(t *testing.T) {
 	}
 	if len(fixture.remnawave.updatedHostNodes) != 1 || fixture.remnawave.updatedHostNodes[0].UUID != testHostUUID || len(fixture.remnawave.updatedHostNodes[0].Nodes) != 1 || fixture.remnawave.updatedHostNodes[0].Nodes[0] != testNodeUUID {
 		t.Fatalf("Host node updates = %#v", fixture.remnawave.updatedHostNodes)
+	}
+	events := fixture.events.snapshot()
+	if !slices.Contains(events, "certificate.prepare-new") || slices.Contains(events, "certificate.prepare") {
+		t.Fatalf("profile Host certificate path = %v", events)
+	}
+}
+
+func TestProfileHostCertificateFailureOffersDirectRetry(t *testing.T) {
+	fixture := newFixture(t)
+	profileUUID, inboundUUID := testProfileUUID, testInboundUUID
+	fixture.remnawave.hosts = []remnawave.Host{{
+		UUID: testHostUUID, Remark: "de-modx.nodexphere.net", Address: "de-modx.nodexphere.net",
+		Tags:    []string{remnawave.ProfileHostTag},
+		Inbound: remnawave.HostInbound{ConfigProfileUUID: &profileUUID, ConfigProfileInboundUUID: &inboundUUID},
+	}}
+	prepared := fixture.prepare(t, "profile-node-retry", "8.8.4.5")
+	if err := fixture.service.setState(context.Background(), prepared.Deployment.ID, deployment.StatusFailed, stepPrepareCertificate, "CERTIFICATE_DISTRIBUTION_FAILED", "DNS-balancer certificate zone is unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, err := app.GetDeploymentDetails(context.Background(), prepared.Deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !details.CanRetryStep || details.CanRepairCert {
+		t.Fatalf("profile Host recovery actions = retry:%t repair:%t", details.CanRetryStep, details.CanRepairCert)
 	}
 }

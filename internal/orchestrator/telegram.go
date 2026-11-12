@@ -340,6 +340,20 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 			details.CanRecheck = true
 		}
 		details.CanRepairCert = item.CurrentStep == stepPrepareCertificate && strings.TrimSpace(item.SNIDomain) != ""
+		if details.CanRepairCert {
+			// A generated profile Host is a new certificate target. Its retry path
+			// activates a valid staged certificate without fleet distribution, so
+			// the legacy-target bootstrap action would be both unnecessary and
+			// misleading here.
+			if hosts, hostsErr := panel.Service.remnawave.GetHosts(ctx); hostsErr == nil {
+				for _, host := range hosts {
+					if host.UUID == item.SelectedRemnawaveHostUUID && remnawave.IsProfileHost(host) {
+						details.CanRepairCert = false
+						break
+					}
+				}
+			}
+		}
 	}
 	if item.Status == deployment.StatusManualReview {
 		details.CanRecheck = true

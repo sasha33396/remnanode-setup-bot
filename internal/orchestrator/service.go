@@ -445,7 +445,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	}
 
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != ""); err != nil {
+		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsProfileHost(host)); err != nil {
 			return err
 		}
 		current, err = s.repository.GetDeployment(runCtx, current.ID)
@@ -488,7 +488,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	return ErrDeploymentNotRunnable
 }
 
-func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink, existingTarget bool) error {
+func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink, existingTarget, newTarget bool) error {
 	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Preparing certificate", Status: deployment.StepStatusRunning})
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusPreparingCertificate, stepPrepareCertificate); err != nil {
@@ -503,7 +503,7 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "EXISTING_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for an existing Node is unavailable", ErrCertificateUnavailable)
 		}
 		material, err = provider.PrepareForExistingTarget(ctx, current.SNIDomain)
-	} else if current.Kind == deployment.KindAdvancedBalancer {
+	} else if newTarget || current.Kind == deployment.KindAdvancedBalancer {
 		provider, ok := s.certificates.(NewTargetCertificateProvider)
 		if !ok {
 			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "NEW_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for a new DNS target is unavailable", ErrCertificateUnavailable)
@@ -762,7 +762,7 @@ func (s *DeploymentService) deployAdvanced(ctx context.Context, current *deploym
 	}
 	var err error
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(ctx, current, progress, false); err != nil {
+		if err := s.prepareAndProvision(ctx, current, progress, false, true); err != nil {
 			return err
 		}
 		*current, err = s.repository.GetDeployment(ctx, current.ID)
