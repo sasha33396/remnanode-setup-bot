@@ -185,6 +185,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptBalancerEgressIP(ctx, message, session)
 	case stateAwaitingBalancerPassword:
 		return c.acceptBalancerPassword(ctx, message, session)
+	case stateAwaitingProfileHostSearch:
+		return c.acceptProfileHostSearch(ctx, message, session)
 	case stateAwaitingProfileHostDomain:
 		return c.acceptProfileHostDomain(ctx, message, session)
 	case stateBalancerPreflighting:
@@ -413,6 +415,10 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 	switch action {
 	case "ph_panel":
 		return c.selectProfileHostPanel(ctx, callback, session, index)
+	case "ph_search":
+		return c.beginProfileHostSearch(ctx, callback, session)
+	case "ph_reset":
+		return c.resetProfileHostSearch(ctx, callback, session)
 	case "ph_inbound":
 		return c.selectProfileHostInbound(ctx, callback, session, index)
 	case "ph_domain":
@@ -1861,6 +1867,9 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 	parts := strings.Split(data, ":")
 	if len(parts) < 3 || parts[2] == "" {
 		return "", "", 0, false
+	}
+	if parts[0] == "ph" && len(parts) == 3 && (parts[1] == "search" || parts[1] == "reset") {
+		return "ph_" + parts[1], parts[2], 0, true
 	}
 	if parts[0] == "ph" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "inbound" || parts[1] == "domain") {
 		parsed, err := strconv.Atoi(parts[3])

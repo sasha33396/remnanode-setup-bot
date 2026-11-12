@@ -62,51 +62,54 @@ const (
 	stateAwaitingBalancerConfirmation
 	stateSelectingProfileHostPanel
 	stateSelectingProfileHostInbound
+	stateAwaitingProfileHostSearch
 	stateSelectingProfileHostDomain
 	stateAwaitingProfileHostDomain
 )
 
 type wizard struct {
-	userID            int64
-	chatID            int64
-	nonce             string
-	state             wizardState
-	expiresAt         time.Time
-	hosts             []Host
-	panels            []Panel
-	panel             Panel
-	selected          Host
-	nodeName          string
-	vpsIP             netip.Addr
-	password          []byte
-	preflight         PreflightResult
-	statusMsgID       int
-	ipTarget          NodeIPChangeTarget
-	dnsSyncTarget     NodeDNSSyncTarget
-	dnsSyncResult     string
-	nodeMoveTarget    NodeHostMoveTarget
-	actualizePanelID  string
-	actualizeNodeUUID string
-	serverIPProvider  serverIPProvider
-	serverCurrentIP   netip.Addr
-	serverNewIP       netip.Addr
-	serverUpdateNode  bool
-	bulkIPPlan        BulkNodeIPPlan
-	bulkIPResult      BulkNodeIPResult
-	bulkEnableNodes   bool
-	advancedBalancer  bool
-	squads            []InternalSquad
-	balancerTags      []string
-	selectedSquad     InternalSquad
-	balancerTag       string
-	hostFQDN          string
-	egressIP          netip.Addr
-	dualIP            bool
-	profileHost       bool
-	profileInbounds   []ProfileHostInbound
-	selectedProfile   ProfileHostInbound
-	profileDomain     string
-	expiryTimer       *time.Timer
+	userID             int64
+	chatID             int64
+	nonce              string
+	state              wizardState
+	expiresAt          time.Time
+	hosts              []Host
+	panels             []Panel
+	panel              Panel
+	selected           Host
+	nodeName           string
+	vpsIP              netip.Addr
+	password           []byte
+	preflight          PreflightResult
+	statusMsgID        int
+	ipTarget           NodeIPChangeTarget
+	dnsSyncTarget      NodeDNSSyncTarget
+	dnsSyncResult      string
+	nodeMoveTarget     NodeHostMoveTarget
+	actualizePanelID   string
+	actualizeNodeUUID  string
+	serverIPProvider   serverIPProvider
+	serverCurrentIP    netip.Addr
+	serverNewIP        netip.Addr
+	serverUpdateNode   bool
+	bulkIPPlan         BulkNodeIPPlan
+	bulkIPResult       BulkNodeIPResult
+	bulkEnableNodes    bool
+	advancedBalancer   bool
+	squads             []InternalSquad
+	balancerTags       []string
+	selectedSquad      InternalSquad
+	balancerTag        string
+	hostFQDN           string
+	egressIP           netip.Addr
+	dualIP             bool
+	profileHost        bool
+	profileAllInbounds []ProfileHostInbound
+	profileInbounds    []ProfileHostInbound
+	profileSearchQuery string
+	selectedProfile    ProfileHostInbound
+	profileDomain      string
+	expiryTimer        *time.Timer
 }
 
 func (w *wizard) clone() *wizard {
@@ -118,6 +121,7 @@ func (w *wizard) clone() *wizard {
 	result.panels = append([]Panel(nil), w.panels...)
 	result.squads = append([]InternalSquad(nil), w.squads...)
 	result.balancerTags = append([]string(nil), w.balancerTags...)
+	result.profileAllInbounds = cloneProfileHostInbounds(w.profileAllInbounds)
 	result.profileInbounds = cloneProfileHostInbounds(w.profileInbounds)
 	result.selectedProfile.ServerNames = append([]string(nil), w.selectedProfile.ServerNames...)
 	// Ordinary state snapshots intentionally never duplicate the password.

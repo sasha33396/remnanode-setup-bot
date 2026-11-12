@@ -870,6 +870,70 @@ func TestProfileHostWizardCreatesHostBeforeStandardPreflight(t *testing.T) {
 	}
 }
 
+func TestProfileHostWizardSearchesProfilesByNameAndServerName(t *testing.T) {
+	base := &fakeApplication{}
+	application := &fakeProfileHostApplication{
+		fakeApplication: base,
+		options: ProfileHostOptions{Inbounds: []ProfileHostInbound{
+			{ProfileID: "de-profile", ProfileName: "DE Reality", InboundID: "de-inbound", InboundTag: "VLESS_DE", Port: 443, ServerNames: []string{"de-modx.nodexphere.net"}},
+			{ProfileID: "nl-profile", ProfileName: "NL Reality", InboundID: "nl-inbound", InboundTag: "VLESS_NL", Port: 8443, ServerNames: []string{"edge-nl.example.net"}},
+		}},
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+
+	handleMessage(t, controller, 1, MenuAddProfileHost)
+	picker := messenger.lastSent()
+	searchRow := picker.keyboard.Inline[len(picker.keyboard.Inline)-1]
+	if len(searchRow) != 1 || searchRow[0].Text != "🔎 Поиск" || searchRow[0].CallbackData != "ph:search:fixed-nonce" {
+		t.Fatalf("profile search row = %#v", searchRow)
+	}
+
+	handleCallback(t, controller, "search", searchRow[0].CallbackData, picker.message)
+	handleMessage(t, controller, 2, "reality edge-nl")
+	edits := messenger.editsSnapshot()
+	results := edits[len(edits)-1]
+	if !strings.Contains(results.text, "reality edge-nl") || !strings.Contains(results.text, "1") {
+		t.Fatalf("profile search results = %q", results.text)
+	}
+	if len(results.keyboard.Inline) != 2 || !strings.Contains(results.keyboard.Inline[0][0].Text, "NL Reality") {
+		t.Fatalf("profile search keyboard = %#v", results.keyboard)
+	}
+	if len(results.keyboard.Inline[1]) != 2 || results.keyboard.Inline[1][1].Text != "♻️ Сбросить" {
+		t.Fatalf("profile search actions = %#v", results.keyboard.Inline[1])
+	}
+
+	handleCallback(t, controller, "inbound", results.keyboard.Inline[0][0].CallbackData, Message{ID: picker.message.ID, ChatID: testChatID})
+	edits = messenger.editsSnapshot()
+	selected := edits[len(edits)-1]
+	if !strings.Contains(selected.text, "NL Reality") || !strings.Contains(selected.text, "8443") {
+		t.Fatalf("selected search result = %q", selected.text)
+	}
+}
+
+func TestSearchProfileHostInboundsMatchesNameOrServerName(t *testing.T) {
+	values := []ProfileHostInbound{
+		{ProfileName: "DE Main Reality", ServerNames: []string{"de-modx.nodexphere.net"}},
+		{ProfileName: "NL Backup", ServerNames: []string{"edge-nl.example.net"}},
+	}
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{query: "main reality", want: "DE Main Reality"},
+		{query: "EDGE-NL.EXAMPLE", want: "NL Backup"},
+		{query: "backup edge-nl", want: "NL Backup"},
+	}
+	for _, test := range tests {
+		t.Run(test.query, func(t *testing.T) {
+			matches := searchProfileHostInbounds(values, test.query)
+			if len(matches) != 1 || matches[0].ProfileName != test.want {
+				t.Fatalf("searchProfileHostInbounds(%q) = %#v", test.query, matches)
+			}
+		})
+	}
+}
+
 func TestExpiredWizardClearsPasswordAndRejectsIncompleteConversation(t *testing.T) {
 	now := time.Unix(100, 0)
 	application := &fakeApplication{hosts: []Host{{ID: "host", Remark: "Host", Address: "host.example.com"}}}

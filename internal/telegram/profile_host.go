@@ -72,25 +72,140 @@ func (c *Controller) showProfileHostInbounds(ctx context.Context, session *wizar
 		_, sendErr := c.messenger.SendMessage(ctx, session.chatID, message, mainKeyboard())
 		return sendErr
 	}
-	if len(options.Inbounds) > maxTelegramProfileInbounds {
-		options.Inbounds = options.Inbounds[:maxTelegramProfileInbounds]
-	}
+	visible := limitProfileHostInbounds(options.Inbounds)
 	if !c.updateSession(session.userID, session.nonce, stateSelectingProfileHostInbound, func(current *wizard) {
-		current.profileInbounds = cloneProfileHostInbounds(options.Inbounds)
+		current.profileAllInbounds = cloneProfileHostInbounds(options.Inbounds)
+		current.profileInbounds = cloneProfileHostInbounds(visible)
+		current.profileSearchQuery = ""
 	}) {
 		return c.sendExpired(ctx, session.chatID)
 	}
-	rows := make([][]Button, 0, len(options.Inbounds))
-	for index, inbound := range options.Inbounds {
+	current, found, expired := c.loadSession(session.userID)
+	if expired || !found {
+		return c.sendExpired(ctx, session.chatID)
+	}
+	return c.renderProfileHostInbounds(ctx, current, messageID, len(options.Inbounds))
+}
+
+func (c *Controller) renderProfileHostInbounds(ctx context.Context, session *wizard, messageID, total int) error {
+	rows := make([][]Button, 0, len(session.profileInbounds)+1)
+	for index, inbound := range session.profileInbounds {
 		label := fmt.Sprintf("%s · %s · :%d", inbound.ProfileName, inbound.InboundTag, inbound.Port)
 		rows = append(rows, []Button{{Text: safeLine(label, 60), CallbackData: fmt.Sprintf("ph:inbound:%s:%d", session.nonce, index)}})
 	}
+	actions := []Button{{Text: "🔎 Поиск", CallbackData: fmt.Sprintf("ph:search:%s", session.nonce)}}
+	if session.profileSearchQuery != "" {
+		actions = append(actions, Button{Text: "♻️ Сбросить", CallbackData: fmt.Sprintf("ph:reset:%s", session.nonce)})
+	}
+	rows = append(rows, actions)
 	text := "Выберите существующий Config Profile и inbound. Порт Host будет взят из профиля."
+	if session.profileSearchQuery != "" {
+		text = fmt.Sprintf("🔎 Результаты по запросу «%s»: %d.", safeLine(session.profileSearchQuery, 100), total)
+	}
+	if total > len(session.profileInbounds) {
+		text += fmt.Sprintf(" Показаны первые %d — уточните поиск.", len(session.profileInbounds))
+	}
 	if messageID != 0 {
 		return c.messenger.EditMessage(ctx, session.chatID, messageID, text, Keyboard{Inline: rows})
 	}
-	_, err = c.messenger.SendMessage(ctx, session.chatID, text, Keyboard{Inline: rows})
+	_, err := c.messenger.SendMessage(ctx, session.chatID, text, Keyboard{Inline: rows})
 	return err
+}
+
+func (c *Controller) beginProfileHostSearch(ctx context.Context, callback *CallbackQuery, session *wizard) error {
+	if session.state != stateSelectingProfileHostInbound || len(session.profileAllInbounds) == 0 {
+		return c.expiredCallback(ctx, callback)
+	}
+	if !c.updateSession(session.userID, session.nonce, stateSelectingProfileHostInbound, func(current *wizard) {
+		current.state = stateAwaitingProfileHostSearch
+		current.statusMsgID = callback.Message.ID
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	return c.messenger.EditMessage(ctx, session.chatID, callback.Message.ID,
+		"🔎 Поиск Config Profile\n\nОтправьте часть названия профиля и/или serverName.",
+		Keyboard{Inline: [][]Button{{{Text: "⬅️ Все профили", CallbackData: fmt.Sprintf("ph:reset:%s", session.nonce)}}}},
+	)
+}
+
+func (c *Controller) acceptProfileHostSearch(ctx context.Context, message *Message, session *wizard) error {
+	query := strings.TrimSpace(message.Text)
+	if query == "" || len(query) > 100 {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите запрос длиной от 1 до 100 символов.", Keyboard{})
+		return err
+	}
+	matches := searchProfileHostInbounds(session.profileAllInbounds, query)
+	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
+	if len(matches) == 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, session.statusMsgID,
+			fmt.Sprintf("🔎 По запросу «%s» ничего не найдено. Отправьте другой запрос.", safeLine(query, 100)),
+			Keyboard{Inline: [][]Button{{{Text: "⬅️ Все профили", CallbackData: fmt.Sprintf("ph:reset:%s", session.nonce)}}}},
+		)
+	}
+	visible := limitProfileHostInbounds(matches)
+	if !c.updateSession(session.userID, session.nonce, stateAwaitingProfileHostSearch, func(current *wizard) {
+		current.state = stateSelectingProfileHostInbound
+		current.profileInbounds = cloneProfileHostInbounds(visible)
+		current.profileSearchQuery = query
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	current, found, expired := c.loadSession(session.userID)
+	if expired || !found {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	return c.renderProfileHostInbounds(ctx, current, session.statusMsgID, len(matches))
+}
+
+func (c *Controller) resetProfileHostSearch(ctx context.Context, callback *CallbackQuery, session *wizard) error {
+	if (session.state != stateSelectingProfileHostInbound && session.state != stateAwaitingProfileHostSearch) || len(session.profileAllInbounds) == 0 {
+		return c.expiredCallback(ctx, callback)
+	}
+	visible := limitProfileHostInbounds(session.profileAllInbounds)
+	if !c.updateSession(session.userID, session.nonce, session.state, func(current *wizard) {
+		current.state = stateSelectingProfileHostInbound
+		current.profileInbounds = cloneProfileHostInbounds(visible)
+		current.profileSearchQuery = ""
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	current, found, expired := c.loadSession(session.userID)
+	if expired || !found {
+		return c.sendExpired(ctx, session.chatID)
+	}
+	return c.renderProfileHostInbounds(ctx, current, callback.Message.ID, len(current.profileAllInbounds))
+}
+
+func limitProfileHostInbounds(values []ProfileHostInbound) []ProfileHostInbound {
+	if len(values) > maxTelegramProfileInbounds {
+		values = values[:maxTelegramProfileInbounds]
+	}
+	return cloneProfileHostInbounds(values)
+}
+
+func searchProfileHostInbounds(values []ProfileHostInbound, query string) []ProfileHostInbound {
+	terms := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(terms) == 0 {
+		return nil
+	}
+	result := make([]ProfileHostInbound, 0)
+	for _, inbound := range values {
+		haystack := strings.ToLower(strings.TrimSpace(inbound.ProfileName))
+		for _, serverName := range inbound.ServerNames {
+			haystack += "\n" + strings.ToLower(strings.TrimSpace(serverName))
+		}
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			result = append(result, inbound)
+		}
+	}
+	return result
 }
 
 func (c *Controller) selectProfileHostInbound(ctx context.Context, callback *CallbackQuery, session *wizard, index int) error {
