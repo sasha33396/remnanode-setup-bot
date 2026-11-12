@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,13 +44,11 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 	}
 	profiles, err := api.GetConfigProfiles(ctx)
 	if err != nil {
-		message, code := "Не удалось загрузить Config Profiles из Remnawave.", "PROFILE_LIST_FAILED"
-		if errors.Is(err, remnawave.ErrUnauthorized) {
-			message, code = "Remnawave API запретил чтение профилей. Проверьте scope config-profiles:list у токена панели.", "PROFILE_LIST_FORBIDDEN"
-		} else if errors.Is(err, remnawave.ErrInvalidResponse) {
-			message, code = "Remnawave вернул несовместимый ответ списка Config Profiles.", "PROFILE_LIST_INVALID_RESPONSE"
+		safeErr, category, status := profileListError(err)
+		if panel.Service.logger != nil {
+			panel.Service.logger.Warn("profile Host options request failed", "panel_id", panel.ID, "code", safeErr.Code, "category", category, "http_status", status)
 		}
-		return telegram.ProfileHostOptions{}, &SafeError{Code: code, SafeMessage: message, Kind: err}
+		return telegram.ProfileHostOptions{}, safeErr
 	}
 	result := telegram.ProfileHostOptions{TotalProfiles: len(profiles)}
 	for _, profile := range profiles {
@@ -94,6 +93,26 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 		return left.InboundTag < right.InboundTag
 	})
 	return result, nil
+}
+
+func profileListError(err error) (*SafeError, string, int) {
+	message, code, category, status := "Не удалось загрузить Config Profiles из Remnawave.", "PROFILE_LIST_FAILED", "transport", 0
+	if errors.Is(err, remnawave.ErrUnauthorized) {
+		message, code, category = "Remnawave API запретил чтение профилей. Проверьте scope config-profiles:list у токена панели.", "PROFILE_LIST_FORBIDDEN", "authorization"
+	} else if errors.Is(err, remnawave.ErrInvalidResponse) {
+		message, code, category = "Remnawave вернул несовместимый ответ списка Config Profiles.", "PROFILE_LIST_INVALID_RESPONSE", "invalid_response"
+	} else {
+		var httpErr *remnawave.HTTPError
+		if errors.As(err, &httpErr) {
+			status, category = httpErr.StatusCode, "http"
+			message, code = fmt.Sprintf("Remnawave API вернул HTTP %d при чтении Config Profiles.", status), "PROFILE_LIST_HTTP_ERROR"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			message, code, category = "Remnawave API не успел вернуть Config Profiles до таймаута.", "PROFILE_LIST_TIMEOUT", "timeout"
+		} else if errors.Is(err, context.Canceled) {
+			message, code, category = "Запрос Config Profiles был отменён.", "PROFILE_LIST_CANCELLED", "cancelled"
+		}
+	}
+	return &SafeError{Code: code, SafeMessage: message, Kind: err}, category, status
 }
 
 func unmarshalProfileConfig(raw json.RawMessage, target *profileConfigDocument) bool {

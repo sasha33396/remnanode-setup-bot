@@ -65,6 +65,13 @@ func TestProfileHostOptionsUseRemnawave281InboundFields(t *testing.T) {
 	}
 }
 
+func TestProfileListErrorExposesOnlySafeHTTPStatus(t *testing.T) {
+	safeErr, category, status := profileListError(&remnawave.HTTPError{StatusCode: 502})
+	if safeErr.Code != "PROFILE_LIST_HTTP_ERROR" || safeErr.SafeMessage != "Remnawave API вернул HTTP 502 при чтении Config Profiles." || category != "http" || status != 502 {
+		t.Fatalf("profileListError() = %#v, %q, %d", safeErr, category, status)
+	}
+}
+
 func TestProfileHostCreationRejectsAddressConflict(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.profiles = []remnawave.ConfigProfile{{
