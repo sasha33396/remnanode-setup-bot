@@ -19,6 +19,7 @@ type hostWire struct {
 	SNI                  *string          `json:"sni"`
 	IsDisabled           *bool            `json:"isDisabled"`
 	IsHidden             *bool            `json:"isHidden"`
+	Tag                  *string          `json:"tag"`
 	Tags                 []string         `json:"tags"`
 	Nodes                []string         `json:"nodes"`
 	XrayJSONTemplateUUID *string          `json:"xrayJsonTemplateUuid"`
@@ -34,6 +35,22 @@ func (h hostWire) model() (Host, error) {
 	if h.UUID == nil || !validUUID(*h.UUID) || h.Remark == nil || h.Address == nil || *h.Address == "" || h.IsDisabled == nil || h.Inbound == nil {
 		return Host{}, ErrInvalidResponse
 	}
+	tags := append([]string(nil), h.Tags...)
+	// Remnawave 2.7.x exposes one Host tag as `tag`, while 2.8.x exposes
+	// multiple tags as `tags`. Normalize both contracts into the same model.
+	if h.Tag != nil && strings.TrimSpace(*h.Tag) != "" {
+		legacyTag := strings.TrimSpace(*h.Tag)
+		found := false
+		for _, tag := range tags {
+			if tag == legacyTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			tags = append(tags, legacyTag)
+		}
+	}
 	return Host{
 		UUID:                 *h.UUID,
 		Remark:               *h.Remark,
@@ -41,7 +58,7 @@ func (h hostWire) model() (Host, error) {
 		SNI:                  h.SNI,
 		IsDisabled:           *h.IsDisabled,
 		IsHidden:             h.IsHidden != nil && *h.IsHidden,
-		Tags:                 append([]string(nil), h.Tags...),
+		Tags:                 tags,
 		Nodes:                append([]string(nil), h.Nodes...),
 		XrayJSONTemplateUUID: h.XrayJSONTemplateUUID,
 		Inbound: HostInbound{
@@ -290,10 +307,13 @@ type createHostRequest struct {
 		ConfigProfileUUID string `json:"configProfileUuid"`
 		InboundUUID       string `json:"configProfileInboundUuid"`
 	} `json:"inbound"`
-	Remark     string   `json:"remark"`
-	Address    string   `json:"address"`
-	Port       int      `json:"port"`
-	SNI        *string  `json:"sni,omitempty"`
+	Remark  string  `json:"remark"`
+	Address string  `json:"address"`
+	Port    int     `json:"port"`
+	SNI     *string `json:"sni,omitempty"`
+	// Tag is the Remnawave 2.7.x field; Tags is the 2.8.x field. Sending both
+	// is safe because each version strips the unknown counterpart.
+	Tag        *string  `json:"tag,omitempty"`
 	Tags       []string `json:"tags"`
 	IsHidden   bool     `json:"isHidden"`
 	IsDisabled bool     `json:"isDisabled"`

@@ -118,12 +118,16 @@ present in that service's `domains` list; this avoids guessing registrable
 domains such as `example.co.uk`. The selected domain is written to both Host
 `address` and `sni`.
 The Host is tagged `SETUP_BOT_PROFILE_NODE` and, after Node creation, is
-idempotently bound to that Node with the Remnawave 2.8.1 partial Host update
-API. Repeating a failed attempt reuses only an exact matching generated Host;
+idempotently bound to that Node with the compatible Remnawave 2.7.4/2.8.1
+partial Host update API. The client writes and reads both the legacy singular
+`tag` field and the 2.8.1 `tags` array. Repeating a failed attempt reuses only
+an exact matching generated Host;
 a Host with the same address and different settings is never overwritten.
-The panel API token therefore needs `config-profiles:list`, `hosts:list`,
-`hosts:create`, `hosts:update`, and the existing Node/deployment scopes (or the
-corresponding wildcard scopes). No additional `.env` variable is required.
+On Remnawave 2.8.1 the panel API token therefore needs
+`config-profiles:list`, `hosts:list`, `hosts:create`, `hosts:update`, and the
+existing Node/deployment scopes (or the corresponding wildcard scopes).
+Remnawave 2.7.4 uses its legacy API-role authorization instead of these
+fine-grained scopes. No additional `.env` variable is required.
 
 The web toolbar and Telegram Nodes menu also provide **Синхронизировать все**.
 After confirmation it processes only managed Nodes, with at most eight SSH
@@ -179,8 +183,8 @@ the port from the selected inbound, validates profile and Host state again
 immediately before mutation, creates/reuses the DNS-balancer subdomain and a
 regular visible Host, and then
 uses the standard preflight/provisioning workflow including firewall and Mail
-Guard. Remnawave 2.8.1 limits Host remarks to 40 characters, so this wizard
-accepts FQDNs up to that length.
+Guard. Remnawave 2.7.4 and 2.8.1 limit Host remarks to 40 characters, so this
+wizard accepts FQDNs up to that length.
 
 The **Add balancer** wizard creates a separate Xray JSON config profile, Node,
 hidden Host, and inbound-to-internal-squad association for every physical

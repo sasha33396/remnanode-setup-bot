@@ -124,7 +124,7 @@ func (c *Client) CreateHost(ctx context.Context, input CreateHostInput) (Host, e
 	if input.Remark == "" || len(input.Remark) > 40 || input.Address == "" || input.Port < 1 || input.Port > 65535 || !hostTagPattern.MatchString(input.Tag) || len(input.Tag) > 36 || !validUUID(input.ConfigProfileUUID) || !validUUID(input.InboundUUID) || !validUUID(input.NodeUUID) {
 		return Host{}, fmt.Errorf("Host: %w", ErrInvalidInput)
 	}
-	request := createHostRequest{Remark: input.Remark, Address: input.Address, Port: input.Port, Tags: []string{input.Tag}, IsHidden: true, Nodes: []string{input.NodeUUID}}
+	request := createHostRequest{Remark: input.Remark, Address: input.Address, Port: input.Port, Tag: &input.Tag, Tags: []string{input.Tag}, IsHidden: true, Nodes: []string{input.NodeUUID}}
 	request.Inbound.ConfigProfileUUID = input.ConfigProfileUUID
 	request.Inbound.InboundUUID = input.InboundUUID
 	var envelope struct {
@@ -139,18 +139,20 @@ func (c *Client) CreateHost(ctx context.Context, input CreateHostInput) (Host, e
 	return envelope.Response.model()
 }
 
-// CreateVisibleHost creates a regular Host using the Remnawave 2.8.1 hosts
-// contract. The advanced-balancer CreateHost path remains deliberately
-// separate because it creates a hidden Host already bound to a Node.
+// CreateVisibleHost creates a regular Host using the compatible Remnawave
+// 2.7.4/2.8.1 Hosts contract. The advanced-balancer CreateHost path remains
+// deliberately separate because it creates a hidden Host already bound to a
+// Node.
 func (c *Client) CreateVisibleHost(ctx context.Context, input CreateVisibleHostInput) (Host, error) {
 	input.Remark = strings.TrimSpace(input.Remark)
 	input.Address = strings.TrimSpace(input.Address)
 	if input.Remark == "" || len(input.Remark) > 40 || input.Address == "" || input.Port < 1 || input.Port > 65535 || !validUUID(input.ConfigProfileUUID) || !validUUID(input.InboundUUID) {
 		return Host{}, fmt.Errorf("visible Host: %w", ErrInvalidInput)
 	}
+	legacyTag := ProfileHostTag
 	request := createHostRequest{
 		Remark: input.Remark, Address: input.Address, Port: input.Port,
-		Tags: []string{ProfileHostTag}, IsHidden: false, IsDisabled: false, Nodes: []string{},
+		Tag: &legacyTag, Tags: []string{ProfileHostTag}, IsHidden: false, IsDisabled: false, Nodes: []string{},
 	}
 	request.SNI = &input.Address
 	request.Inbound.ConfigProfileUUID = input.ConfigProfileUUID
@@ -168,7 +170,7 @@ func (c *Client) CreateVisibleHost(ctx context.Context, input CreateVisibleHostI
 }
 
 // UpdateHostNodes binds a generated profile Host to its deployed Nodes using
-// the partial PATCH contract available in Remnawave 2.8.1.
+// the partial PATCH contract available in Remnawave 2.7.4 and 2.8.1.
 func (c *Client) UpdateHostNodes(ctx context.Context, input UpdateHostNodesInput) (Host, error) {
 	input.UUID = strings.TrimSpace(input.UUID)
 	if !validUUID(input.UUID) || len(input.Nodes) == 0 {

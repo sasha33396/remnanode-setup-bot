@@ -492,8 +492,8 @@ type AdvancedBalancerApplication interface {
 	PreflightAdvancedBalancer(context.Context, AdvancedBalancerPreflightInput) (PreflightResult, error)
 }
 
-// ProfileHostApplication powers creation of a visible Remnawave 2.8.1 Host
-// from an existing profile before the ordinary Node deployment is started.
+// ProfileHostApplication powers creation of a visible Remnawave 2.7.4/2.8.1
+// Host from an existing profile before the ordinary Node deployment starts.
 type ProfileHostApplication interface {
 	ListProfileHostOptions(context.Context, string) (ProfileHostOptions, error)
 	EnsureProfileHost(context.Context, ProfileHostCreateInput) (Host, error)

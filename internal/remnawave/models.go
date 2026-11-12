@@ -137,9 +137,9 @@ type CreateHostInput struct {
 	NodeUUID          string
 }
 
-// CreateVisibleHostInput is the Remnawave 2.8.1 payload used for a regular
-// subscription Host. A Node is attached later by the standard deployment
-// workflow, so nodes is intentionally sent as an empty array.
+// CreateVisibleHostInput is the Remnawave 2.7.4/2.8.1 payload used for a
+// regular subscription Host. A Node is attached later by the standard
+// deployment workflow, so nodes is intentionally sent as an empty array.
 type CreateVisibleHostInput struct {
 	Remark            string
 	Address           string
