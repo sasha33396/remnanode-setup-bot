@@ -205,4 +205,7 @@ func TestEmptyVisibleHostUsesNewTargetCertificateWithoutTag(t *testing.T) {
 	if !slices.Contains(events, "certificate.prepare-new") || slices.Contains(events, "certificate.prepare") {
 		t.Fatalf("empty Host certificate path = %v", events)
 	}
+	if len(fixture.remnawave.updatedHostNodes) != 1 || fixture.remnawave.updatedHostNodes[0].UUID != testHostUUID || len(fixture.remnawave.updatedHostNodes[0].Nodes) != 1 || fixture.remnawave.updatedHostNodes[0].Nodes[0] != testNodeUUID {
+		t.Fatalf("legacy 2.7 Host node updates = %#v", fixture.remnawave.updatedHostNodes)
+	}
 }

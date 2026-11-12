@@ -626,7 +626,14 @@ func (s *DeploymentService) createNode(ctx context.Context, current *deployment.
 		}
 		current.RemnawaveNodeUUID = &node.UUID
 	}
-	if remnawave.IsProfileHost(host) && current.RemnawaveNodeUUID != nil && !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
+	// Remnawave 2.7.4 used the singular `tag` field. Deployments created by an
+	// older client that sent only the 2.8.x `tags` array therefore have no
+	// marker, but their freshly generated Host still has no Node assignments.
+	// Treat that empty assignment as the same recovery signal already used by
+	// certificate preparation, so an in-flight deployment is not left with an
+	// unusable unbound Host after upgrading the deployer.
+	profileHost := current.Kind != deployment.KindAdvancedBalancer && (remnawave.IsProfileHost(host) || len(host.Nodes) == 0)
+	if profileHost && current.RemnawaveNodeUUID != nil && !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
 		binder, ok := s.remnawave.(interface {
 			UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
 		})
