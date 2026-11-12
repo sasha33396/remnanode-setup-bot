@@ -226,10 +226,14 @@ type configProfileInboundWire struct {
 }
 
 func (p configProfileWire) model() (ConfigProfile, error) {
-	if p.UUID == nil || !validUUID(*p.UUID) || p.Name == nil || *p.Name == "" || len(p.Config) == 0 {
+	if p.UUID == nil || !validUUID(*p.UUID) || p.Name == nil || *p.Name == "" {
 		return ConfigProfile{}, ErrInvalidResponse
 	}
-	result := ConfigProfile{UUID: *p.UUID, Name: *p.Name, Config: append(json.RawMessage(nil), p.Config...)}
+	config := append(json.RawMessage(nil), p.Config...)
+	if strings.TrimSpace(string(config)) == "null" {
+		config = nil
+	}
+	result := ConfigProfile{UUID: *p.UUID, Name: *p.Name, Config: config}
 	for _, inbound := range p.Inbounds {
 		if inbound.UUID == nil || !validUUID(*inbound.UUID) || inbound.Tag == nil || *inbound.Tag == "" {
 			return ConfigProfile{}, ErrInvalidResponse

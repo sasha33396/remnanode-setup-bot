@@ -54,6 +54,30 @@ func TestGetConfigProfilesKeepsRemnawave27And28InboundMetadata(t *testing.T) {
 	}
 }
 
+func TestGetConfigProfilesAcceptsLegacyProfileWithNullConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/config-profiles" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":{"total":1,"configProfiles":[{"uuid":"`+testProfileUUID+`","name":"Legacy Profile","config":null,"inbounds":[{"uuid":"`+testInboundUUID+`","tag":"VLESS_LEGACY","port":443,"rawInbound":null}]}]}}`)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, time.Second)
+	profiles, err := client.GetConfigProfiles(context.Background())
+	if err != nil || len(profiles) != 1 || profiles[0].Name != "Legacy Profile" || len(profiles[0].Inbounds) != 1 {
+		t.Fatalf("GetConfigProfiles() = %#v, %v", profiles, err)
+	}
+	if profiles[0].Config != nil {
+		t.Fatalf("legacy profile config = %q, want nil", profiles[0].Config)
+	}
+	if port := profiles[0].Inbounds[0].Port; port == nil || *port != 443 {
+		t.Fatalf("legacy inbound port = %#v, want 443", port)
+	}
+}
+
 func TestAdvancedAPIContractPathsAndPayloads(t *testing.T) {
 	const squadUUID = "77777777-7777-4777-8777-777777777777"
 	const hostUUID = "99999999-9999-4999-8999-999999999999"
