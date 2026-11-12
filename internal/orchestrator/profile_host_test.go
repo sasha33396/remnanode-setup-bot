@@ -71,6 +71,54 @@ func TestProfileHostOptionsUseRemnawave281InboundFields(t *testing.T) {
 	}
 }
 
+func TestProfileHostDNSUsesOnlySelectedPanelInstance(t *testing.T) {
+	events := &eventLog{}
+	repo := newMemoryRepository()
+	type panelFixture struct {
+		service *DeploymentService
+		dns     *fakeDNS
+	}
+	newPanel := func(t *testing.T, panelID string) panelFixture {
+		t.Helper()
+		port := 443
+		api := &fakeRemnawave{
+			events: events, secret: "generated-secret",
+			profiles: []remnawave.ConfigProfile{{
+				UUID: testProfileUUID, Name: "Reality",
+				Inbounds: []remnawave.ConfigProfileInbound{{UUID: testInboundUUID, Tag: "VLESS", Port: &port}},
+			}},
+		}
+		dns := &fakeDNS{events: events}
+		cert := &fakeCertificateProvider{events: events, readiness: CertificateReady}
+		service, err := NewDeploymentService(repo, api, dns, cert, &fakeVPS{events: events}, Config{PanelID: panelID, MaxConcurrentDeployments: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return panelFixture{service: service, dns: dns}
+	}
+	polus := newPanel(t, "polus")
+	horda := newPanel(t, "horda")
+	hit := newPanel(t, "hit")
+	app, err := NewMultiPanelTelegramApplication([]PanelApplicationConfig{
+		{ID: "polus", Name: "Полюс", DNSEnabled: true, Service: polus.service},
+		{ID: "horda", Name: "Horda", DNSEnabled: true, Service: horda.service},
+		{ID: "hit", Name: "Hit", DNSEnabled: true, Service: hit.service},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.EnsureProfileHost(context.Background(), telegram.ProfileHostCreateInput{
+		PanelID: "horda", ProfileID: testProfileUUID, InboundID: testInboundUUID,
+		Domain: "nl-horda.example.com", VPSIP: netip.MustParseAddr("8.8.8.8"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polus.dns.ensureCalls != 0 || horda.dns.ensureCalls != 1 || hit.dns.ensureCalls != 0 {
+		t.Fatalf("DNS calls polus=%d horda=%d hit=%d", polus.dns.ensureCalls, horda.dns.ensureCalls, hit.dns.ensureCalls)
+	}
+}
+
 func TestProfileListErrorExposesOnlySafeHTTPStatus(t *testing.T) {
 	safeErr, category, status := profileListError(&remnawave.HTTPError{StatusCode: 502})
 	if safeErr.Code != "PROFILE_LIST_HTTP_ERROR" || safeErr.SafeMessage != "Remnawave API вернул HTTP 502 при чтении Config Profiles." || category != "http" || status != 502 {
