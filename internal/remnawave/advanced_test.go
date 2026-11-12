@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +30,27 @@ func TestCreateConfigProfileRejectsDotsInName(t *testing.T) {
 	client := &Client{}
 	if _, err := client.CreateConfigProfile(context.Background(), CreateConfigProfileInput{Name: "gmb.wey-land.net", Config: map[string]any{}}); err == nil {
 		t.Fatal("CreateConfigProfile accepted a dotted name")
+	}
+}
+
+func TestGetConfigProfilesKeepsRemnawave281InboundMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/config-profiles" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":{"total":1,"configProfiles":[{"uuid":"`+testProfileUUID+`","name":"Snippet Profile","config":{"log":{}},"inbounds":[{"uuid":"`+testInboundUUID+`","tag":"VLESS_SNIPPET","port":8443,"rawInbound":{"tag":"VLESS_SNIPPET","port":8443}}]}]}}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	profiles, err := client.GetConfigProfiles(context.Background())
+	if err != nil || len(profiles) != 1 || len(profiles[0].Inbounds) != 1 {
+		t.Fatalf("GetConfigProfiles() = %#v, %v", profiles, err)
+	}
+	inbound := profiles[0].Inbounds[0]
+	if inbound.Port == nil || *inbound.Port != 8443 || !strings.Contains(string(inbound.RawInbound), `"VLESS_SNIPPET"`) {
+		t.Fatalf("inbound metadata = %#v", inbound)
 	}
 }
 

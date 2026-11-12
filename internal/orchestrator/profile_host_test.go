@@ -42,6 +42,29 @@ func TestProfileHostOptionsAndIdempotentCreation(t *testing.T) {
 	}
 }
 
+func TestProfileHostOptionsUseRemnawave281InboundFields(t *testing.T) {
+	fixture := newFixture(t)
+	port := 8443
+	fixture.remnawave.profiles = []remnawave.ConfigProfile{{
+		UUID: testProfileUUID, Name: "Snippet Profile", Config: json.RawMessage(`{"log":{"loglevel":"warning"}}`),
+		Inbounds: []remnawave.ConfigProfileInbound{{
+			UUID: testInboundUUID, Tag: "VLESS_SNIPPET", Port: &port,
+			RawInbound: json.RawMessage(`{"tag":"VLESS_SNIPPET","port":8443,"streamSettings":{"realitySettings":{"serverNames":["snippet.example.com"]}}}`),
+		}},
+	}}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := app.ListProfileHostOptions(context.Background(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.Inbounds) != 1 || options.Inbounds[0].Port != 8443 || len(options.Inbounds[0].ServerNames) != 1 || options.Inbounds[0].ServerNames[0] != "snippet.example.com" {
+		t.Fatalf("2.8.1 inbound options = %#v", options)
+	}
+}
+
 func TestProfileHostCreationRejectsAddressConflict(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.profiles = []remnawave.ConfigProfile{{

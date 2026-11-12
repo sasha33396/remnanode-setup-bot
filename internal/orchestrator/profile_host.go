@@ -48,23 +48,31 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 	result := telegram.ProfileHostOptions{}
 	for _, profile := range profiles {
 		var document profileConfigDocument
-		if len(profile.Config) == 0 || json.Unmarshal(profile.Config, &document) != nil {
-			continue
-		}
-		inboundIDs := make(map[string]string, len(profile.Inbounds))
-		for _, inbound := range profile.Inbounds {
-			inboundIDs[strings.TrimSpace(inbound.Tag)] = inbound.UUID
-		}
+		_ = unmarshalProfileConfig(profile.Config, &document)
+		configByTag := make(map[string]profileConfigInbound, len(document.Inbounds))
 		for _, inbound := range document.Inbounds {
-			inboundID := inboundIDs[strings.TrimSpace(inbound.Tag)]
-			port, valid := profileInboundPort(inbound.Port)
-			if inboundID == "" || !valid {
+			configByTag[strings.TrimSpace(inbound.Tag)] = inbound
+		}
+		for _, apiInbound := range profile.Inbounds {
+			tag := strings.TrimSpace(apiInbound.Tag)
+			fallback := configByTag[tag]
+			port, valid := apiInboundPort(apiInbound.Port)
+			if !valid {
+				port, valid = rawInboundPort(apiInbound.RawInbound)
+			}
+			if !valid {
+				port, valid = profileInboundPort(fallback.Port)
+			}
+			if apiInbound.UUID == "" || !valid {
 				continue
+			}
+			serverNames := rawInboundServerNames(apiInbound.RawInbound)
+			if len(serverNames) == 0 {
+				serverNames = normalizedServerNames(fallback.StreamSettings.RealitySettings.ServerNames)
 			}
 			result.Inbounds = append(result.Inbounds, telegram.ProfileHostInbound{
 				ProfileID: profile.UUID, ProfileName: profile.Name,
-				InboundID: inboundID, InboundTag: strings.TrimSpace(inbound.Tag), Port: port,
-				ServerNames: normalizedServerNames(inbound.StreamSettings.RealitySettings.ServerNames),
+				InboundID: apiInbound.UUID, InboundTag: tag, Port: port, ServerNames: serverNames,
 			})
 		}
 	}
@@ -76,6 +84,40 @@ func (a *TelegramApplication) ListProfileHostOptions(ctx context.Context, panelI
 		return left.InboundTag < right.InboundTag
 	})
 	return result, nil
+}
+
+func unmarshalProfileConfig(raw json.RawMessage, target *profileConfigDocument) bool {
+	if len(raw) == 0 || target == nil {
+		return false
+	}
+	if json.Unmarshal(raw, target) == nil {
+		return true
+	}
+	var encoded string
+	return json.Unmarshal(raw, &encoded) == nil && json.Unmarshal([]byte(encoded), target) == nil
+}
+
+func apiInboundPort(port *int) (int, bool) {
+	if port != nil && *port >= 1 && *port <= 65535 {
+		return *port, true
+	}
+	return 0, false
+}
+
+func rawInboundPort(raw json.RawMessage) (int, bool) {
+	var inbound profileConfigInbound
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &inbound) != nil {
+		return 0, false
+	}
+	return profileInboundPort(inbound.Port)
+}
+
+func rawInboundServerNames(raw json.RawMessage) []string {
+	var inbound profileConfigInbound
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &inbound) != nil {
+		return nil
+	}
+	return normalizedServerNames(inbound.StreamSettings.RealitySettings.ServerNames)
 }
 
 func (a *TelegramApplication) EnsureProfileHost(ctx context.Context, input telegram.ProfileHostCreateInput) (telegram.Host, error) {

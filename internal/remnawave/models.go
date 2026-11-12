@@ -105,8 +105,10 @@ type ConfigProfile struct {
 }
 
 type ConfigProfileInbound struct {
-	UUID string
-	Tag  string
+	UUID       string
+	Tag        string
+	Port       *int
+	RawInbound json.RawMessage
 }
 
 type InternalSquad struct {

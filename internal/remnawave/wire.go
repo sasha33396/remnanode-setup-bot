@@ -200,8 +200,10 @@ type configProfileWire struct {
 }
 
 type configProfileInboundWire struct {
-	UUID *string `json:"uuid"`
-	Tag  *string `json:"tag"`
+	UUID       *string         `json:"uuid"`
+	Tag        *string         `json:"tag"`
+	Port       *int            `json:"port"`
+	RawInbound json.RawMessage `json:"rawInbound"`
 }
 
 func (p configProfileWire) model() (ConfigProfile, error) {
@@ -213,7 +215,10 @@ func (p configProfileWire) model() (ConfigProfile, error) {
 		if inbound.UUID == nil || !validUUID(*inbound.UUID) || inbound.Tag == nil || *inbound.Tag == "" {
 			return ConfigProfile{}, ErrInvalidResponse
 		}
-		result.Inbounds = append(result.Inbounds, ConfigProfileInbound{UUID: *inbound.UUID, Tag: *inbound.Tag})
+		result.Inbounds = append(result.Inbounds, ConfigProfileInbound{
+			UUID: *inbound.UUID, Tag: *inbound.Tag, Port: inbound.Port,
+			RawInbound: append(json.RawMessage(nil), inbound.RawInbound...),
+		})
 	}
 	return result, nil
 }
