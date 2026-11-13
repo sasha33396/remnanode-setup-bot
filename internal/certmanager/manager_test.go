@@ -423,6 +423,30 @@ func TestManagerBootstrapAcknowledgesLegacyAndActivatesStagedCertificate(t *test
 	}
 }
 
+func TestManagerBootstrapDefersUnavailableManagedTarget(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	target := Target{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.60")}
+	fixture.resolver.targets = []Target{target}
+	fixture.distributor.fail = target.IP
+	fixture.distributor.failureKind = DistributionFailureActivation
+
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("Prepare() error = %v, want hard distribution failure", err)
+	}
+
+	fixture.distributor.failureKind = DistributionFailureUnavailable
+	result, err := fixture.manager.Bootstrap(context.Background(), testSNI, 42)
+	if err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+	active, activeErr := fixture.repository.GetActive(context.Background(), testSNI)
+	if activeErr != nil || active.ActiveVersion != result.Version || active.Status != StatusDistributionFailed {
+		t.Fatalf("deferred bootstrap certificate = %#v, %v", active, activeErr)
+	}
+}
+
 func TestManagerBootstrapAcknowledgesLegacyWhenCertificateIsAlreadyActive(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
 	material, err := fixture.manager.Prepare(context.Background(), testSNI)

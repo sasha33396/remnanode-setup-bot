@@ -334,8 +334,13 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 	if err != nil {
 		return BootstrapResult{}, err
 	}
+	distributionDeferred := false
 	if err := m.distributeTargets(ctx, domain, candidate.Version, material, resolution.Managed); err != nil {
-		return BootstrapResult{}, err
+		if errors.Is(err, ErrDistributionDeferred) {
+			distributionDeferred = true
+		} else {
+			return BootstrapResult{}, err
+		}
 	}
 	previousMarker, _ := m.store.ActiveVersion(ctx, domain)
 	if err := m.store.Activate(ctx, domain, candidate.Version); err != nil {
@@ -346,6 +351,11 @@ func (m *Manager) Bootstrap(ctx context.Context, sni string, operatorUserID int6
 			_ = m.store.Activate(context.WithoutCancel(ctx), domain, previousMarker)
 		}
 		return BootstrapResult{}, safe("Bootstrap certificate metadata could not be activated", ErrPersistenceFailed)
+	}
+	if distributionDeferred {
+		if err := m.repository.SetStatus(ctx, domain, StatusDistributionFailed); err != nil {
+			return BootstrapResult{}, safe("Deferred certificate distribution state could not be saved", ErrPersistenceFailed)
+		}
 	}
 	m.observeExpiry(Record{SNI: domain, ExpiresAt: candidate.ExpiresAt})
 	return BootstrapResult{
