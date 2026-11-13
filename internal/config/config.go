@@ -78,6 +78,7 @@ type Config struct {
 	NodeNetworkPollInterval     time.Duration
 	CertificateRenewBefore      time.Duration
 	CertificateRenewInterval    time.Duration
+	CertificateRetryInterval    time.Duration
 	CertificateIssueTimeout     time.Duration
 	DNSPropagationTimeout       time.Duration
 	DNSPropagationInterval      time.Duration
@@ -173,6 +174,7 @@ func load(lookup lookupFunc) (Config, error) {
 		NodeNetworkPollInterval:     5 * time.Minute,
 		CertificateRenewBefore:      30 * 24 * time.Hour,
 		CertificateRenewInterval:    12 * time.Hour,
+		CertificateRetryInterval:    5 * time.Minute,
 		CertificateIssueTimeout:     2 * time.Minute,
 		DNSPropagationTimeout:       90 * time.Second,
 		DNSPropagationInterval:      2 * time.Second,
@@ -302,6 +304,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
 		{"NODE_NETWORK_POLL_INTERVAL", &cfg.NodeNetworkPollInterval},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
+		{"CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL", &cfg.CertificateRetryInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
 		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
 		{"WEB_SESSION_TTL", &cfg.WebSessionTTL}, {"WEB_TERMINAL_TIMEOUT", &cfg.WebTerminalTimeout},

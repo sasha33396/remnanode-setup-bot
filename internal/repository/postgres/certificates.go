@@ -283,6 +283,38 @@ func (r *Repository) ListExpiringForPanel(ctx context.Context, panelID string, b
 	return result, rows.Err()
 }
 
+func (r *Repository) ListDistributionFailures(ctx context.Context, limit int) ([]certmanager.Record, error) {
+	return r.ListDistributionFailuresForPanel(ctx, "default", limit)
+}
+
+func (r *Repository) ListDistributionFailuresForPanel(ctx context.Context, panelID string, limit int) ([]certmanager.Record, error) {
+	if limit < 1 || limit > 100 {
+		return nil, certmanager.ErrInvalidInput
+	}
+	rows, err := r.pool.Query(ctx, `
+        SELECT sni_domain, certificate_fingerprint, serial_number, issued_at,
+               expires_at, last_renewed_at, status, active_version, updated_at
+        FROM certificate_records
+        WHERE panel_id = $1
+          AND status = 'DISTRIBUTION_FAILED'
+          AND active_version IS NOT NULL
+        ORDER BY updated_at ASC, sni_domain ASC
+        LIMIT $2`, panelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list deferred certificate distributions: %w", err)
+	}
+	defer rows.Close()
+	result := make([]certmanager.Record, 0)
+	for rows.Next() {
+		record, scanErr := scanCertificateRecord(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan deferred certificate distribution: %w", scanErr)
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
 func (r *Repository) ListVersions(ctx context.Context, sni string) ([]certmanager.Version, error) {
 	return r.ListVersionsForPanel(ctx, "default", sni)
 }

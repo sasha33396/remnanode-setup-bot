@@ -174,25 +174,25 @@ func (d *SSHDistributor) Distribute(ctx context.Context, sni string, material ce
 			case semaphore <- struct{}{}:
 				defer func() { <-semaphore }()
 			case <-ctx.Done():
-				results[index] = failedDistribution(target, "Certificate distribution cancelled")
+				results[index] = failedDistribution(target, DistributionFailureCancelled, "Certificate distribution cancelled")
 				return
 			}
 			copy := material.Clone()
 			defer copy.Destroy()
 			connection, err := d.ssh.ConnectWithDeploymentKey(ctx, target.DeploymentID, target.IP, "root")
 			if err != nil {
-				results[index] = failedDistribution(target, "Could not connect to Node")
+				results[index] = failedDistribution(target, DistributionFailureUnavailable, "Could not connect to Node")
 				return
 			}
 			defer connection.Close()
 			installer, err := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{RepositoryURL: d.config.RepositoryURL, Ref: d.config.Ref, SNIDomain: sni, Timeout: d.config.CommandTimeout}, copy)
 			if err != nil {
-				results[index] = failedDistribution(target, "Certificate was rejected before distribution")
+				results[index] = failedDistribution(target, DistributionFailureRejected, "Certificate was rejected before distribution")
 				return
 			}
 			defer installer.Destroy()
 			if err := installer.UpdateCertificate(ctx); err != nil {
-				results[index] = failedDistribution(target, "Node certificate activation failed and was rolled back")
+				results[index] = failedDistribution(target, DistributionFailureActivation, "Node certificate activation failed and was rolled back")
 				return
 			}
 			results[index] = DistributionResult{Target: target, Status: DistributionSucceeded, SafeMessage: "Certificate activated"}
@@ -202,8 +202,8 @@ func (d *SSHDistributor) Distribute(ctx context.Context, sni string, material ce
 	return results
 }
 
-func failedDistribution(target Target, message string) DistributionResult {
-	return DistributionResult{Target: target, Status: DistributionFailed, SafeMessage: message}
+func failedDistribution(target Target, kind DistributionFailureKind, message string) DistributionResult {
+	return DistributionResult{Target: target, Status: DistributionFailed, FailureKind: kind, SafeMessage: message}
 }
 
 var (

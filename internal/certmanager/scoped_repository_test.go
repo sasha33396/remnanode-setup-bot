@@ -102,6 +102,10 @@ func (r *recordingPanelRepository) ListExpiringForPanel(_ context.Context, panel
 	r.add(panel)
 	return nil, nil
 }
+func (r *recordingPanelRepository) ListDistributionFailuresForPanel(_ context.Context, panel string, _ int) ([]Record, error) {
+	r.add(panel)
+	return nil, nil
+}
 func (r *recordingPanelRepository) ListVersionsForPanel(_ context.Context, panel, _ string) ([]Version, error) {
 	r.add(panel)
 	return nil, nil

@@ -390,6 +390,14 @@ immutable versions, and distributes renewed material to DNS-configured Nodes.
 Node activation follows the pinned xray-sni external contract and rolls back on
 reload or TLS health failure.
 
+An SSH-unreachable managed Node no longer blocks a new deployment when the
+candidate certificate has already passed central validation. The candidate is
+activated from the protected central store, the unreachable target remains
+recorded as `DISTRIBUTION_FAILED`, and the manager retries its rollout every
+`CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL` (five minutes by default). Certificate
+rejection, Caddy activation, and TLS health failures remain blocking errors;
+private keys are never recovered from arbitrary Nodes.
+
 Interactive deployments use any valid active certificate immediately, including
 one already inside its renewal window. Renewal runs only in the background and
 does not block Node adoption. A cold ACME issuance is bounded end-to-end,

@@ -193,7 +193,7 @@ func run() int {
 			logger.Error("certificate target resolver initialization failed", slog.String("panel_id", panel.ID))
 			return 1
 		}
-		certificateManager, managerErr := certmanager.New(scopedRepository, certificateStorage, issuer, scopedLocker, targetResolver, distributor, registry, certmanager.Config{RenewBefore: cfg.CertificateRenewBefore, IssueTimeout: cfg.CertificateIssueTimeout, RenewInterval: cfg.CertificateRenewInterval})
+		certificateManager, managerErr := certmanager.New(scopedRepository, certificateStorage, issuer, scopedLocker, targetResolver, distributor, registry, certmanager.Config{RenewBefore: cfg.CertificateRenewBefore, IssueTimeout: cfg.CertificateIssueTimeout, RenewInterval: cfg.CertificateRenewInterval, DistributionRetryInterval: cfg.CertificateRetryInterval})
 		if managerErr != nil {
 			logger.Error("certificate manager initialization failed", slog.String("panel_id", panel.ID))
 			return 1

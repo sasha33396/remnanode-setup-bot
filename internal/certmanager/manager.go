@@ -40,6 +40,9 @@ func New(repository Repository, store Store, issuer Issuer, locker Locker, resol
 	if config.RenewBatchSize <= 0 {
 		config.RenewBatchSize = 50
 	}
+	if config.DistributionRetryInterval <= 0 {
+		config.DistributionRetryInterval = 5 * time.Minute
+	}
 	if config.RenewBefore >= 365*24*time.Hour || config.RenewBatchSize > 100 {
 		return nil, ErrInvalidInput
 	}
@@ -451,11 +454,16 @@ func (m *Manager) issueAndActivate(ctx context.Context, domain string, previous 
 	if err := m.repository.SaveVersion(ctx, metadata); err != nil {
 		return certificates.Material{}, safe("Certificate metadata could not be saved", ErrPersistenceFailed)
 	}
+	distributionDeferred := false
 	if err := m.distribute(ctx, domain, version, material); err != nil {
-		m.restoreDistributedVersion(ctx, domain, previous)
-		_ = m.repository.SetVersionStatus(context.WithoutCancel(ctx), domain, version, VersionDistribution)
-		_ = m.repository.SetStatus(context.WithoutCancel(ctx), domain, StatusDistributionFailed)
-		return certificates.Material{}, err
+		if errors.Is(err, ErrDistributionDeferred) {
+			distributionDeferred = true
+		} else {
+			m.restoreDistributedVersion(ctx, domain, previous)
+			_ = m.repository.SetVersionStatus(context.WithoutCancel(ctx), domain, version, VersionDistribution)
+			_ = m.repository.SetStatus(context.WithoutCancel(ctx), domain, StatusDistributionFailed)
+			return certificates.Material{}, err
+		}
 	}
 	oldVersion := ""
 	if previous != nil {
@@ -475,6 +483,11 @@ func (m *Manager) issueAndActivate(ctx context.Context, domain string, previous 
 		_ = m.repository.SetVersionStatus(context.WithoutCancel(ctx), domain, version, VersionDistribution)
 		_ = m.repository.SetStatus(context.WithoutCancel(ctx), domain, StatusDistributionFailed)
 		return certificates.Material{}, safe("Certificate metadata could not be activated", ErrPersistenceFailed)
+	}
+	if distributionDeferred {
+		if err := m.repository.SetStatus(ctx, domain, StatusDistributionFailed); err != nil {
+			return certificates.Material{}, safe("Deferred certificate distribution state could not be saved", ErrPersistenceFailed)
+		}
 	}
 	m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
 	valid = true
@@ -512,6 +525,7 @@ func (m *Manager) distributeTargets(ctx context.Context, domain, version string,
 	}
 	results := m.distributor.Distribute(ctx, domain, material, targets)
 	failed := len(results) != len(targets)
+	unavailableOnly := !failed
 	for _, result := range results {
 		safeErrorMessage := ""
 		if result.Status != DistributionSucceeded {
@@ -523,9 +537,15 @@ func (m *Manager) distributeTargets(ctx context.Context, domain, version string,
 		}
 		if result.Status != DistributionSucceeded {
 			failed = true
+			if result.FailureKind != DistributionFailureUnavailable {
+				unavailableOnly = false
+			}
 		}
 	}
 	if failed {
+		if unavailableOnly {
+			return safe("Certificate distribution was deferred for unreachable Nodes", ErrDistributionDeferred)
+		}
 		return safe("Certificate distribution was incomplete", ErrDistributionFailed)
 	}
 	return nil
@@ -591,15 +611,69 @@ func (m *Manager) RenewDue(ctx context.Context) error {
 	return errors.Join(renewalErrors...)
 }
 
+// RetryDeferredDistributions reconciles centrally active certificates whose
+// rollout was allowed to continue because every failed target was unreachable.
+// Reachable targets with validation or activation errors are never bypassed.
+func (m *Manager) RetryDeferredDistributions(ctx context.Context) error {
+	records, err := m.repository.ListDistributionFailures(ctx, m.config.RenewBatchSize)
+	if err != nil {
+		return safe("Deferred certificate distributions could not be listed", ErrPersistenceFailed)
+	}
+	var retryErrors []error
+	for _, record := range records {
+		if err := m.retryDeferredDistribution(ctx, record); err != nil {
+			retryErrors = append(retryErrors, err)
+		}
+	}
+	return errors.Join(retryErrors...)
+}
+
+func (m *Manager) retryDeferredDistribution(ctx context.Context, pending Record) error {
+	unlock, err := m.locker.Lock(ctx, pending.SNI)
+	if err != nil {
+		return safe("Deferred certificate distribution lock is unavailable", ErrPersistenceFailed)
+	}
+	defer unlock()
+	active, material, err := m.loadActive(ctx, pending.SNI, true)
+	if err != nil {
+		return err
+	}
+	defer material.Destroy()
+	if active.ActiveVersion != pending.ActiveVersion || active.Status != StatusDistributionFailed {
+		return nil
+	}
+	if m.resolver == nil {
+		return safe("Certificate target resolver is unavailable", ErrDistributionFailed)
+	}
+	resolution, err := m.resolver.Resolve(ctx, active.SNI)
+	if err != nil {
+		return safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
+	}
+	if len(resolution.Unmanaged) > 0 {
+		return safe("Certificate distribution requires review of unmanaged DNS targets", ErrDistributionFailed)
+	}
+	if err := m.distributeTargets(ctx, active.SNI, active.ActiveVersion, material, resolution.Managed); err != nil {
+		return err
+	}
+	if err := m.repository.SetStatus(ctx, active.SNI, StatusActive); err != nil {
+		return safe("Certificate distribution state could not be completed", ErrPersistenceFailed)
+	}
+	return nil
+}
+
 func (m *Manager) Run(ctx context.Context) error {
-	ticker := time.NewTicker(m.config.RenewInterval)
-	defer ticker.Stop()
+	renewTicker := time.NewTicker(m.config.RenewInterval)
+	retryTicker := time.NewTicker(m.config.DistributionRetryInterval)
+	defer renewTicker.Stop()
+	defer retryTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
+		case <-renewTicker.C:
 			_ = m.RenewDue(ctx)
+		case <-retryTicker.C:
+			_ = m.RetryDeferredDistributions(ctx)
 		}
 	}
 }

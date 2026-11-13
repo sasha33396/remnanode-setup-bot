@@ -53,6 +53,22 @@ func TestLoadNodePolicyAndMailGuardOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadCertificateDistributionRetryInterval(t *testing.T) {
+	values := validValues()
+	values["CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL"] = "90s"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CertificateRetryInterval != 90*time.Second {
+		t.Fatalf("certificate distribution retry interval = %v", cfg.CertificateRetryInterval)
+	}
+	values["CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL"] = "0s"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL") {
+		t.Fatalf("invalid certificate distribution retry interval error = %v", err)
+	}
+}
+
 func TestLoadAbuseMonitorOverrides(t *testing.T) {
 	values := validValues()
 	values["ABUSE_MONITOR_INTERVAL"] = "2m"

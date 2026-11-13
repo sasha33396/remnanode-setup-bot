@@ -47,6 +47,16 @@ distribution leaves the previous central active version unchanged, records
 each Node result, and best-effort redistributes the previous version to Nodes
 that already accepted the failed candidate.
 
+The only availability exception is an SSH-unreachable managed target. Because
+the candidate is already validated and stored centrally, the manager may make
+that version active and continue provisioning while recording the unreachable
+target as `DISTRIBUTION_FAILED`. It retries the complete SNI rollout every
+`CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL` (default `5m`) and restores the record
+to `ACTIVE` only after all current managed targets accept the active version.
+Certificate rejection, xray-sni/Caddy activation failure, local TLS health
+failure, cancellation, unmanaged DNS targets, and persistence errors still
+block activation. The deployer does not copy private keys back from Nodes.
+
 ## Operator recovery actions
 
 Authorized Telegram users can use:

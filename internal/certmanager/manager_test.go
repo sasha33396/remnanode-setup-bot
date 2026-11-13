@@ -198,6 +198,7 @@ func TestManagerDistributionPartialFailureKeepsCentralActiveVersion(t *testing.T
 	before, _ := fixture.repository.GetActive(context.Background(), testSNI)
 	fixture.resolver.targets = []Target{{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.10")}, {DeploymentID: "00000000-0000-4000-8000-000000000002", IP: netip.MustParseAddr("203.0.113.11")}}
 	fixture.distributor.fail = fixture.resolver.targets[1].IP
+	fixture.distributor.failureKind = DistributionFailureActivation
 	if err := fixture.manager.Renew(context.Background(), testSNI); !errors.Is(err, ErrDistributionFailed) {
 		t.Fatalf("Renew() error = %v", err)
 	}
@@ -214,6 +215,44 @@ func TestManagerDistributionPartialFailureKeepsCentralActiveVersion(t *testing.T
 	}
 	if len(fixture.distributor.fingerprints) != 2 || fixture.distributor.fingerprints[1] != before.Fingerprint {
 		t.Fatalf("compensation fingerprints = %#v, want previous %q last", fixture.distributor.fingerprints, before.Fingerprint)
+	}
+}
+
+func TestManagerDefersUnavailableTargetAndRetriesInBackground(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{
+		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),
+	})
+	target := Target{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.10")}
+	fixture.resolver.targets = []Target{target}
+	fixture.distributor.fail = target.IP
+	fixture.distributor.failureKind = DistributionFailureUnavailable
+
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	material.Destroy()
+	active, err := fixture.repository.GetActive(context.Background(), testSNI)
+	if err != nil || active.ActiveVersion == "" || active.Status != StatusDistributionFailed {
+		t.Fatalf("deferred active certificate = %#v, %v", active, err)
+	}
+	if len(fixture.repository.distributions) != 1 || fixture.repository.distributions[0].Status != DistributionFailed {
+		t.Fatalf("initial distributions = %#v", fixture.repository.distributions)
+	}
+
+	fixture.distributor.fail = netip.Addr{}
+	if err := fixture.manager.RetryDeferredDistributions(context.Background()); err != nil {
+		t.Fatalf("RetryDeferredDistributions() error = %v", err)
+	}
+	active, err = fixture.repository.GetActive(context.Background(), testSNI)
+	if err != nil || active.Status != StatusActive {
+		t.Fatalf("reconciled active certificate = %#v, %v", active, err)
+	}
+	if fixture.distributor.calls != 2 {
+		t.Fatalf("distributor calls = %d, want initial plus retry", fixture.distributor.calls)
+	}
+	if len(fixture.repository.distributions) != 2 || fixture.repository.distributions[1].Status != DistributionSucceeded {
+		t.Fatalf("reconciled distributions = %#v", fixture.repository.distributions)
 	}
 }
 
@@ -414,6 +453,7 @@ func (r *fakeResolver) Resolve(context.Context, string) (TargetResolution, error
 
 type fakeDistributor struct {
 	fail         netip.Addr
+	failureKind  DistributionFailureKind
 	calls        int
 	fingerprints []string
 }
@@ -428,6 +468,7 @@ func (d *fakeDistributor) Distribute(_ context.Context, sni string, material cer
 		results[index] = DistributionResult{Target: target, Status: DistributionSucceeded, SafeMessage: "activated"}
 		if d.fail.IsValid() && d.fail == target.IP {
 			results[index].Status = DistributionFailed
+			results[index].FailureKind = d.failureKind
 			results[index].SafeMessage = "activation failed"
 		}
 	}
@@ -522,6 +563,20 @@ func (r *memoryCertificateRepository) ListExpiring(_ context.Context, before tim
 	var result []Record
 	for _, record := range r.records {
 		if record.ActiveVersion != "" && !record.ExpiresAt.After(before) {
+			result = append(result, record)
+			if len(result) == limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+func (r *memoryCertificateRepository) ListDistributionFailures(_ context.Context, limit int) ([]Record, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []Record
+	for _, record := range r.records {
+		if record.ActiveVersion != "" && record.Status == StatusDistributionFailed {
 			result = append(result, record)
 			if len(result) == limit {
 				break

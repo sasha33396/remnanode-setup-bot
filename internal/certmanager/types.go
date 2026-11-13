@@ -5,6 +5,7 @@ package certmanager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -12,14 +13,15 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("certificate metadata not found")
-	ErrInvalidInput        = errors.New("invalid certificate manager input")
-	ErrIssuanceFailed      = errors.New("certificate issuance failed")
-	ErrStorageFailed       = errors.New("certificate storage failed")
-	ErrPersistenceFailed   = errors.New("certificate metadata persistence failed")
-	ErrDistributionFailed  = errors.New("certificate distribution failed")
-	ErrActivationFailed    = errors.New("certificate activation failed")
-	ErrNoUsableCertificate = errors.New("no usable certificate is available")
+	ErrNotFound             = errors.New("certificate metadata not found")
+	ErrInvalidInput         = errors.New("invalid certificate manager input")
+	ErrIssuanceFailed       = errors.New("certificate issuance failed")
+	ErrStorageFailed        = errors.New("certificate storage failed")
+	ErrPersistenceFailed    = errors.New("certificate metadata persistence failed")
+	ErrDistributionFailed   = errors.New("certificate distribution failed")
+	ErrDistributionDeferred = fmt.Errorf("certificate distribution deferred for unreachable Nodes: %w", ErrDistributionFailed)
+	ErrActivationFailed     = errors.New("certificate activation failed")
+	ErrNoUsableCertificate  = errors.New("no usable certificate is available")
 )
 
 type Status string
@@ -47,6 +49,15 @@ type DistributionStatus string
 const (
 	DistributionSucceeded DistributionStatus = "SUCCEEDED"
 	DistributionFailed    DistributionStatus = "FAILED"
+)
+
+type DistributionFailureKind string
+
+const (
+	DistributionFailureUnavailable DistributionFailureKind = "UNAVAILABLE"
+	DistributionFailureRejected    DistributionFailureKind = "REJECTED"
+	DistributionFailureActivation  DistributionFailureKind = "ACTIVATION"
+	DistributionFailureCancelled   DistributionFailureKind = "CANCELLED"
 )
 
 type TargetReviewState string
@@ -108,6 +119,7 @@ type Repository interface {
 	SetStatus(context.Context, string, Status) error
 	RecordDistribution(context.Context, DistributionRecord) error
 	ListExpiring(context.Context, time.Time, int) ([]Record, error)
+	ListDistributionFailures(context.Context, int) ([]Record, error)
 	ListVersions(context.Context, string) ([]Version, error)
 	RecordTargetReview(context.Context, TargetReview) error
 	ListTargetReviews(context.Context, string) ([]TargetReview, error)
@@ -123,6 +135,7 @@ type PanelRepository interface {
 	SetStatusForPanel(context.Context, string, string, Status) error
 	RecordDistributionForPanel(context.Context, string, DistributionRecord) error
 	ListExpiringForPanel(context.Context, string, time.Time, int) ([]Record, error)
+	ListDistributionFailuresForPanel(context.Context, string, int) ([]Record, error)
 	ListVersionsForPanel(context.Context, string, string) ([]Version, error)
 	RecordTargetReviewForPanel(context.Context, string, TargetReview) error
 	ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error)
@@ -161,6 +174,7 @@ type TargetResolver interface {
 type DistributionResult struct {
 	Target      Target
 	Status      DistributionStatus
+	FailureKind DistributionFailureKind
 	SafeMessage string
 }
 
@@ -174,10 +188,11 @@ type Observer interface {
 }
 
 type Config struct {
-	RenewBefore    time.Duration
-	IssueTimeout   time.Duration
-	RenewInterval  time.Duration
-	RenewBatchSize int
+	RenewBefore               time.Duration
+	IssueTimeout              time.Duration
+	RenewInterval             time.Duration
+	RenewBatchSize            int
+	DistributionRetryInterval time.Duration
 }
 
 type BootstrapResult struct {
