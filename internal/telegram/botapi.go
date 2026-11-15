@@ -16,6 +16,12 @@ import (
 
 const maxTelegramResponseSize = 4 << 20
 
+// Controller handlers are presentation operations. Long-running deployment,
+// SSH and maintenance work is started in background workers. A handler that
+// does not return in this interval is therefore stuck and must not stop the
+// single Telegram long-polling loop indefinitely.
+const updateHandlerTimeout = 45 * time.Second
+
 // UpdateHandler is implemented by Controller and kept separate for transport
 // tests and future webhook adapters.
 type UpdateHandler interface {
@@ -71,7 +77,7 @@ func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 		for index := range updates {
 			updateID := updates[index].UpdateID
 			mapped := mapUpdate(updates[index])
-			_ = handler.Handle(ctx, mapped)
+			_ = b.handleUpdate(ctx, handler, mapped)
 			// Release Telegram message text promptly. Password messages have
 			// already been copied into clearable session memory by Controller.
 			if updates[index].Message != nil {
@@ -81,6 +87,21 @@ func (b *BotAPI) Run(ctx context.Context, handler UpdateHandler) error {
 				offset = updateID + 1
 			}
 		}
+	}
+}
+
+func (b *BotAPI) handleUpdate(ctx context.Context, handler UpdateHandler, update Update) error {
+	handleCtx, cancel := context.WithTimeout(ctx, updateHandlerTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.Handle(handleCtx, update)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-handleCtx.Done():
+		return handleCtx.Err()
 	}
 }
 

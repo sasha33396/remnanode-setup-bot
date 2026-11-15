@@ -47,6 +47,27 @@ func TestBotAPISkipsFailedUpdateInsteadOfRestartLoop(t *testing.T) {
 	}
 }
 
+func TestBotAPIHandlerTimeoutDoesNotBlockPollingForever(t *testing.T) {
+	client := &BotAPI{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	err := client.handleUpdate(ctx, blockingUpdateHandler{}, Update{ID: 12})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("handleUpdate() error = %v; want context.Canceled", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("handleUpdate() did not honor context cancellation")
+	}
+}
+
+type blockingUpdateHandler struct{}
+
+func (blockingUpdateHandler) Handle(ctx context.Context, _ Update) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type failingUpdateHandler struct{}
 
 func (failingUpdateHandler) Handle(context.Context, Update) error {

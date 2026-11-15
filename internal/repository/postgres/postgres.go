@@ -44,6 +44,14 @@ const deploymentColumns = `
     started_at,
     completed_at`
 
+// Background maintenance can legitimately use several database connections at
+// once (node inventory, Mail Guard collection and certificate maintenance).
+// pgx defaults MaxConns to max(4, runtime.NumCPU), which means a small VPS gets
+// exactly four connections. ABUSE_MAX_CONCURRENT_NODES also defaults to four,
+// so a Mail Guard pass could consume the whole pool and starve Telegram and
+// health requests for minutes.
+const minimumDatabasePoolConnections int32 = 16
+
 // Repository persists deployment jobs using a pgx connection pool.
 type Repository struct {
 	pool *pgxpool.Pool
@@ -57,6 +65,9 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, errors.New("create PostgreSQL pool: invalid database configuration")
+	}
+	if config.MaxConns < minimumDatabasePoolConnections {
+		config.MaxConns = minimumDatabasePoolConnections
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
