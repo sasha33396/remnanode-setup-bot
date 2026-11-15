@@ -82,6 +82,25 @@ func TestDeploymentToPopulatedStandardHostKeepsDistributionPath(t *testing.T) {
 	}
 }
 
+func TestEmptyStandardHostCertificateFailureOffersStepRetry(t *testing.T) {
+	fixture := newFixture(t)
+	prepared := fixture.prepare(t, "first-host-node", "8.8.4.8")
+	if err := fixture.service.setState(context.Background(), prepared.Deployment.ID, deployment.StatusFailed, stepPrepareCertificate, "CERTIFICATE_DISTRIBUTION_FAILED", "DNS-balancer certificate zone is unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, err := app.GetDeploymentDetails(context.Background(), prepared.Deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !details.CanRetryStep || details.CanRepairCert {
+		t.Fatalf("empty Host recovery actions = retry:%t repair:%t", details.CanRetryStep, details.CanRepairCert)
+	}
+}
+
 func TestAdoptLegacyNodeRunsStandardWorkflowWithoutCreatingDuplicateNode(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.nodes = []remnawave.Node{{
