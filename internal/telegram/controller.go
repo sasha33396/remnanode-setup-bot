@@ -1229,6 +1229,26 @@ func (c *Controller) acceptVPSIP(ctx context.Context, message *Message, session 
 }
 
 func (c *Controller) acceptPassword(ctx context.Context, message *Message, session *wizard) error {
+	queued := *message
+	message.Text = ""
+	ready := make(chan struct{})
+	completed := make(chan error, 1)
+
+	c.workers.Add(1)
+	go func() {
+		defer c.workers.Done()
+		completed <- c.acceptPasswordWorker(context.WithoutCancel(ctx), &queued, session, ready)
+	}()
+
+	select {
+	case <-ready:
+		return nil
+	case err := <-completed:
+		return err
+	}
+}
+
+func (c *Controller) acceptPasswordWorker(ctx context.Context, message *Message, session *wizard, ready chan<- struct{}) error {
 	password := []byte(message.Text)
 	message.Text = ""
 	_ = c.messenger.DeleteMessage(ctx, message.ChatID, message.ID)
@@ -1255,6 +1275,17 @@ func (c *Controller) acceptPassword(ctx context.Context, message *Message, sessi
 	if !copied {
 		return c.sendExpired(ctx, message.ChatID)
 	}
+	status, statusErr := c.messenger.SendMessage(ctx, message.ChatID, "⏳ VPS preflight is running: checking SSH access, the system and occupied ports. You can continue using the bot.", Keyboard{})
+	if statusErr != nil {
+		clearBytes(requestPassword)
+		removed := c.takeSession(message.FromUserID, current.nonce, statePreflighting)
+		if removed != nil {
+			removed.clear()
+		}
+		return statusErr
+	}
+	close(ready)
+	defer func() { _ = c.messenger.DeleteMessage(ctx, message.ChatID, status.ID) }()
 	if current.profileHost {
 		profileApp, ok := c.app.(ProfileHostApplication)
 		if !ok {

@@ -750,6 +750,7 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	if err := controller.Handle(ctx, Update{Message: passwordMessage}); err != nil {
 		t.Fatalf("Handle(password) error = %v", err)
 	}
+	controller.Wait()
 	if passwordMessage.Text != "" {
 		t.Fatalf("password update text was retained")
 	}
@@ -804,6 +805,85 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	}
 }
 
+func TestPasswordPreflightRunsInBackgroundWithoutBlockingBotUpdates(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	application := &fakeApplication{
+		preflightStarted: started,
+		preflightRelease: release,
+		preflightResult: PreflightResult{
+			PreparedDeploymentID:   "prepared-internal-id",
+			CertificateReadiness:   ReadinessReady,
+			ConfigProfileReadiness: ReadinessReady,
+		},
+	}
+	messenger := &fakeMessenger{}
+	now := time.Unix(100, 0)
+	controller := testController(t, application, messenger, func() time.Time { return now })
+	controller.putSession(&wizard{
+		userID:    testAllowedUser,
+		chatID:    testChatID,
+		nonce:     "fixed-nonce",
+		state:     stateAwaitingPassword,
+		expiresAt: now.Add(15 * time.Minute),
+		panel:     Panel{ID: "hit", Name: "Hit"},
+		selected:  Host{ID: "host-id", Remark: "host"},
+		nodeName:  "test-node",
+		vpsIP:     netip.MustParseAddr("8.8.8.8"),
+	})
+
+	var releaseOnce sync.Once
+	releasePreflight := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releasePreflight()
+
+	passwordMessage := &Message{ID: 1, ChatID: testChatID, FromUserID: testAllowedUser, Text: "temporary-password"}
+	handled := make(chan error, 1)
+	go func() {
+		handled <- controller.Handle(context.Background(), Update{Message: passwordMessage})
+	}()
+	select {
+	case err := <-handled:
+		if err != nil {
+			t.Fatalf("Handle(password) error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		releasePreflight()
+		<-handled
+		t.Fatal("password handler blocked on VPS preflight")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background VPS preflight did not start")
+	}
+	if passwordMessage.Text != "" || !messenger.wasDeleted(testChatID, passwordMessage.ID) {
+		t.Fatal("password message was not cleared and deleted before returning")
+	}
+	if status := messenger.lastSent().text; !strings.Contains(status, "VPS preflight is running") {
+		t.Fatalf("preflight status = %q", status)
+	}
+
+	otherUpdateDone := make(chan error, 1)
+	go func() {
+		otherUpdateDone <- controller.Handle(context.Background(), Update{Message: &Message{ID: 2, ChatID: testChatID, FromUserID: testAllowedUser, Text: "status"}})
+	}()
+	select {
+	case err := <-otherUpdateDone:
+		if err != nil {
+			t.Fatalf("Handle(other update) error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("bot could not process another update during VPS preflight")
+	}
+
+	releasePreflight()
+	controller.Wait()
+	confirmation := messenger.lastSent()
+	if !strings.Contains(confirmation.text, "test-node") || len(confirmation.keyboard.Inline) == 0 {
+		t.Fatalf("confirmation after background preflight = %#v", confirmation)
+	}
+}
+
 func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T) {
 	deploymentID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	base := &fakeApplication{preflightResult: PreflightResult{PreparedDeploymentID: deploymentID, CertificateReadiness: ReadinessReady, ConfigProfileReadiness: ReadinessReady}}
@@ -826,6 +906,7 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	handleMessage(t, controller, 5, "8.8.8.8")
 	handleMessage(t, controller, 6, "1.1.1.1")
 	handleMessage(t, controller, 7, "temporary-password")
+	controller.Wait()
 	if application.advancedCalls != 1 || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
 		t.Fatalf("advanced preflight input = %#v; calls=%d", application.advancedInput, application.advancedCalls)
 	}
@@ -853,6 +934,7 @@ func TestProfileHostWizardCreatesHostBeforeStandardPreflight(t *testing.T) {
 	handleMessage(t, controller, 2, "de-node")
 	handleMessage(t, controller, 3, "8.8.8.8")
 	handleMessage(t, controller, 4, "temporary-password")
+	controller.Wait()
 	if application.ensureCalls != 1 || application.ensureInput.ProfileID != "profile" || application.ensureInput.InboundID != "inbound" || application.ensureInput.Domain != "de-modx.nodexphere.net" || application.ensureInput.VPSIP.String() != "8.8.8.8" {
 		t.Fatalf("EnsureProfileHost input = %#v, calls=%d", application.ensureInput, application.ensureCalls)
 	}
@@ -1101,14 +1183,16 @@ func handleCallback(t *testing.T, controller *Controller, id, data string, messa
 type fakeApplication struct {
 	mu sync.Mutex
 
-	hosts           []Host
-	panels          []Panel
-	nodes           []NodeSummary
-	nameErr         error
-	addressErr      error
-	preflightResult PreflightResult
-	preflightErr    error
-	deployErr       error
+	hosts            []Host
+	panels           []Panel
+	nodes            []NodeSummary
+	nameErr          error
+	addressErr       error
+	preflightResult  PreflightResult
+	preflightErr     error
+	preflightStarted chan struct{}
+	preflightRelease <-chan struct{}
+	deployErr        error
 
 	listHostCalls       int
 	nameChecks          int
@@ -1425,14 +1509,28 @@ func (f *fakeApplication) CheckVPSAddress(_ context.Context, _ string, _ netip.A
 	return f.addressErr
 }
 
-func (f *fakeApplication) Preflight(_ context.Context, input PreflightInput) (PreflightResult, error) {
+func (f *fakeApplication) Preflight(ctx context.Context, input PreflightInput) (PreflightResult, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.preflightCalls++
 	f.preflightInput = input
 	f.preflightInput.Password = nil
 	f.preflightPassword = append([]byte(nil), input.Password...)
-	return f.preflightResult, f.preflightErr
+	started := f.preflightStarted
+	release := f.preflightRelease
+	result := f.preflightResult
+	err := f.preflightErr
+	f.mu.Unlock()
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return PreflightResult{}, ctx.Err()
+		}
+	}
+	return result, err
 }
 
 func (f *fakeApplication) StartDeployment(_ context.Context, input DeploymentInput, progress func(Progress) error) error {
