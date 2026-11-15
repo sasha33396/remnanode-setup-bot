@@ -52,11 +52,11 @@ func TestDeploymentServiceFullSuccessOrdering(t *testing.T) {
 		t.Fatalf("status history = %v, want %v", got, wantStatuses)
 	}
 	events := fixture.events.snapshot()
-	assertBefore(t, events, "certificate.prepare", "vps.provision")
+	assertBefore(t, events, "certificate.prepare-new", "vps.provision")
 	assertBefore(t, events, "vps.provision", "remnawave.create")
-	assertBefore(t, events, "remnawave.connected", "dns.add")
-	if fixture.remnawave.createCalls != 1 || fixture.dns.addCalls != 1 || fixture.vps.provisionCalls != 1 {
-		t.Fatalf("create=%d dns=%d provision=%d", fixture.remnawave.createCalls, fixture.dns.addCalls, fixture.vps.provisionCalls)
+	assertBefore(t, events, "remnawave.connected", "dns.ensure")
+	if fixture.remnawave.createCalls != 1 || fixture.dns.ensureCalls != 1 || fixture.dns.addCalls != 0 || fixture.vps.provisionCalls != 1 {
+		t.Fatalf("create=%d dns.ensure=%d dns.add=%d provision=%d", fixture.remnawave.createCalls, fixture.dns.ensureCalls, fixture.dns.addCalls, fixture.vps.provisionCalls)
 	}
 	if string(fixture.vps.secret) != "generated-secret" {
 		t.Fatalf("provision secret = %q", fixture.vps.secret)
@@ -76,6 +76,9 @@ func TestDeploymentToPopulatedStandardHostKeepsDistributionPath(t *testing.T) {
 	events := fixture.events.snapshot()
 	if !slices.Contains(events, "certificate.prepare") || slices.Contains(events, "certificate.prepare-new") {
 		t.Fatalf("populated Host certificate path = %v", events)
+	}
+	if fixture.dns.addCalls != 1 || fixture.dns.ensureCalls != 0 {
+		t.Fatalf("populated Host DNS calls = add:%d ensure:%d", fixture.dns.addCalls, fixture.dns.ensureCalls)
 	}
 }
 
@@ -645,8 +648,8 @@ func TestDeploymentServiceDNSFailureAndRetry(t *testing.T) {
 		t.Fatalf("RetryDNS() error = %v", err)
 	}
 	stored = fixture.repo.mustGet(prepared.Deployment.ID)
-	if stored.Status != deployment.StatusCompleted || fixture.dns.addCalls != 2 {
-		t.Fatalf("status=%s DNS calls=%d", stored.Status, fixture.dns.addCalls)
+	if stored.Status != deployment.StatusCompleted || fixture.dns.ensureCalls != 2 || fixture.dns.addCalls != 0 {
+		t.Fatalf("status=%s DNS ensure calls=%d add calls=%d", stored.Status, fixture.dns.ensureCalls, fixture.dns.addCalls)
 	}
 	if fixture.remnawave.createCalls != 1 || fixture.vps.provisionCalls != 1 {
 		t.Fatalf("retry recreated resources: create=%d provision=%d", fixture.remnawave.createCalls, fixture.vps.provisionCalls)

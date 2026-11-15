@@ -446,7 +446,11 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 	}
 
 	if current.Status == deployment.StatusPreflight || current.Status == deployment.StatusPreparingCertificate || current.Status == deployment.StatusProvisioning {
-		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", remnawave.IsGeneratedProfileHost(host)); err != nil {
+		// The first Node assigned to any Host is a new DNS target. Preparing its
+		// certificate must not depend on a DNS-balancer zone that does not exist
+		// until this deployment publishes the target.
+		newTarget := remnawave.IsGeneratedProfileHost(host) || len(host.Nodes) == 0
+		if err := s.prepareAndProvision(runCtx, &current, progress, existingNodeUUID != "", newTarget); err != nil {
 			return err
 		}
 		current, err = s.repository.GetDeployment(runCtx, current.ID)
@@ -739,19 +743,22 @@ func (s *DeploymentService) addDNS(ctx context.Context, current *deployment.Depl
 			_, dnsErr = s.config.DNSRecords.EnsureARecord(ctx, current.SNIDomain, current.TargetVPSIP)
 		}
 	} else {
-		// Profile-host deployments create their DNS zone before the Node exists.
-		// A DNS-balancer reconciliation may remove that not-yet-active target
-		// during a long certificate/provisioning run. Re-ensure the zone after
-		// the Node becomes healthy instead of requiring it to still exist.
-		// IsGeneratedProfileHost also recognizes the exact legacy 2.7.4 wizard
-		// shape from builds that sent only the 2.8.x `tags` field.
+		// The first Node of any Host may not have a DNS-balancer zone yet.
+		// EnsureZone creates the subdomain in this panel's config.yml and is also
+		// idempotent for an existing zone. Populated Hosts retain the narrower
+		// AddIP path. IsGeneratedProfileHost additionally covers profile Hosts
+		// whose zone may be removed while their first Node is provisioning.
 		host, _, hostErr := s.selectedHost(ctx, current.SelectedRemnawaveHostUUID)
-		if hostErr == nil && remnawave.IsGeneratedProfileHost(host) {
-			dnsOperation = "ensure_profile_zone"
+		newTarget := hostErr == nil && (remnawave.IsGeneratedProfileHost(host) || len(host.Nodes) == 0)
+		if newTarget {
+			dnsOperation = "ensure_zone"
+			if remnawave.IsGeneratedProfileHost(host) {
+				dnsOperation = "ensure_profile_zone"
+			}
 			// A deployment that reached DNS_FAILED on an older 2.7-compatible
 			// build may also have skipped the Host-to-Node binding. Repair it as
 			// part of the same idempotent retry before publishing the target.
-			if !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
+			if remnawave.IsGeneratedProfileHost(host) && !containsUUID(host.Nodes, *current.RemnawaveNodeUUID) {
 				binder, ok := s.remnawave.(interface {
 					UpdateHostNodes(context.Context, remnawave.UpdateHostNodesInput) (remnawave.Host, error)
 				})
