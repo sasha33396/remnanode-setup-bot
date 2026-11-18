@@ -22,36 +22,48 @@ type Address struct {
 	Primary   bool   `json:"primary"`
 }
 type Route struct {
-	Destination string `json:"dst"`
-	Gateway     string `json:"gateway,omitempty"`
-	Interface   string `json:"dev,omitempty"`
-	Table       any    `json:"table,omitempty"`
-	Source      string `json:"prefsrc,omitempty"`
+	Destination string   `json:"dst"`
+	Gateway     string   `json:"gateway,omitempty"`
+	Interface   string   `json:"dev,omitempty"`
+	Table       any      `json:"table,omitempty"`
+	Source      string   `json:"prefsrc,omitempty"`
+	Family      string   `json:"family,omitempty"`
+	Flags       []string `json:"flags,omitempty"`
+	OnLink      bool     `json:"onLink"`
+	Metric      *int     `json:"metric,omitempty"`
+	Scope       string   `json:"scope,omitempty"`
+	Protocol    string   `json:"protocol,omitempty"`
+	Type        string   `json:"type,omitempty"`
 }
 type Rule struct {
 	Priority int    `json:"priority"`
 	From     string `json:"src,omitempty"`
 	To       string `json:"dst,omitempty"`
 	Table    any    `json:"table,omitempty"`
+	Family   string `json:"family,omitempty"`
 }
 type ConfigFile struct {
-	Path           string `json:"path"`
-	Kind           string `json:"kind"`
-	MatchesPrimary bool   `json:"matchesPrimary"`
+	Path           string    `json:"path"`
+	Kind           string    `json:"kind"`
+	MatchesPrimary bool      `json:"matchesPrimary"`
+	Bindings       []Binding `json:"bindings,omitempty"`
+	GeneratedFrom  string    `json:"generatedFrom,omitempty"`
 }
 type Report struct {
-	PanelID     string       `json:"panelId"`
-	NodeUUID    string       `json:"nodeUuid"`
-	NodeName    string       `json:"nodeName"`
-	PrimaryIP   string       `json:"primaryIp"`
-	CollectedAt time.Time    `json:"collectedAt"`
-	Status      string       `json:"status"`
-	Addresses   []Address    `json:"addresses"`
-	Routes      []Route      `json:"routes"`
-	Rules       []Rule       `json:"rules"`
-	Files       []ConfigFile `json:"files"`
-	Services    []string     `json:"services"`
-	Warnings    []string     `json:"warnings"`
+	PanelID       string       `json:"panelId"`
+	NodeUUID      string       `json:"nodeUuid"`
+	NodeName      string       `json:"nodeName"`
+	PrimaryIP     string       `json:"primaryIp"`
+	CollectedAt   time.Time    `json:"collectedAt"`
+	Status        string       `json:"status"`
+	Addresses     []Address    `json:"addresses"`
+	Routes        []Route      `json:"routes"`
+	Rules         []Rule       `json:"rules"`
+	Files         []ConfigFile `json:"files"`
+	Services      []string     `json:"services"`
+	Warnings      []string     `json:"warnings"`
+	Version       int          `json:"version,omitempty"`
+	NodeInterface string       `json:"nodeInterface,omitempty"`
 }
 type Store interface {
 	SaveNetworkReport(context.Context, Report) error
@@ -61,7 +73,7 @@ type Store interface {
 const filesCommand = "find /etc/netplan /etc/network /etc/systemd/network /run/systemd/network /etc/NetworkManager/system-connections -maxdepth 2 -type f 2>/dev/null; true"
 
 func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.Addr) (Report, error) {
-	report := Report{PrimaryIP: primary.String(), CollectedAt: time.Now().UTC(), Status: "review", Warnings: []string{"Параметры нового IP нужно проверять отдельно; смена сети пока не выполняется."}}
+	report := Report{Version: 2, PrimaryIP: primary.String(), CollectedAt: time.Now().UTC(), Status: "review", Warnings: []string{"Адрес Node не обязательно является базовым IP сервера. Новые маску и шлюз нельзя вычислять из него."}}
 	run := func(command string) (string, error) {
 		result, err := runner.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: 15 * time.Second})
 		if err != nil || len(result.Stdout) > 512*1024 {
@@ -75,6 +87,7 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 	}
 	var links []struct {
 		Name string `json:"ifname"`
+		MAC  string `json:"address"`
 		Info []struct {
 			IP     string `json:"local"`
 			Prefix int    `json:"prefixlen"`
@@ -84,7 +97,9 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 		return report, errors.New("invalid address response")
 	}
 	matches := 0
+	live := map[string]string{}
 	for _, link := range links {
+		live[link.Name] = link.MAC
 		for _, info := range link.Info {
 			ip, e := netip.ParseAddr(info.IP)
 			if e != nil {
@@ -93,9 +108,13 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 			main := ip.Unmap() == primary.Unmap()
 			if main {
 				matches++
+				report.NodeInterface = link.Name
 			}
 			report.Addresses = append(report.Addresses, Address{link.Name, ip.String(), info.Prefix, main})
 		}
+	}
+	if matches != 1 {
+		report.NodeInterface = ""
 	}
 	for _, family := range []string{"-4", "-6"} {
 		raw, e := run("ip -j " + family + " route show table all")
@@ -103,6 +122,14 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 		if e != nil || json.Unmarshal([]byte(raw), &routes) != nil {
 			report.Warnings = append(report.Warnings, "Не удалось прочитать маршруты "+family)
 		} else {
+			for i := range routes {
+				routes[i].Family = family
+				for _, flag := range routes[i].Flags {
+					if flag == "onlink" {
+						routes[i].OnLink = true
+					}
+				}
+			}
 			report.Routes = append(report.Routes, routes...)
 		}
 		raw, e = run("ip -j " + family + " rule show")
@@ -110,6 +137,9 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 		if e != nil || json.Unmarshal([]byte(raw), &rules) != nil {
 			report.Warnings = append(report.Warnings, "Не удалось прочитать правила "+family)
 		} else {
+			for i := range rules {
+				rules[i].Family = family
+			}
 			report.Rules = append(report.Rules, rules...)
 		}
 	}
@@ -125,7 +155,6 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 	}
 	filenames := strings.Split(strings.TrimSpace(raw), "\n")
 	sort.Strings(filenames)
-	matchingFiles := 0
 	for _, filename := range filenames {
 		filename = strings.TrimSpace(filename)
 		kind := configKind(filename)
@@ -144,17 +173,29 @@ func Collect(ctx context.Context, runner sshclient.CommandRunner, primary netip.
 				report.Warnings = append(report.Warnings, "Не прочитан файл "+filename)
 			} else {
 				file.MatchesPrimary = configContainsAddress(kind, content, primary)
+				if kind == "Netplan" {
+					file.Bindings = netplanBindings(content, primary, live)
+				}
+				if kind == "networkd" {
+					file.Bindings = networkdBindings(content, primary, live)
+				}
 			}
-		}
-		if file.MatchesPrimary {
-			matchingFiles++
 		}
 		report.Files = append(report.Files, file)
 	}
+	matchingFiles := correlateFiles(report.Files, report.NodeInterface)
 	if matches == 1 && matchingFiles == 1 && len(report.Warnings) == 1 {
 		report.Status = "observed"
 	} else {
-		report.Warnings = append(report.Warnings, "Основной адрес не найден однозначно в интерфейсах и конфигурации.")
+		if matches != 1 {
+			report.Warnings = append(report.Warnings, "Адрес Node отсутствует на интерфейсах или назначен нескольким интерфейсам.")
+		}
+		if matchingFiles == 0 {
+			report.Warnings = append(report.Warnings, "Не найдена исходная конфигурация адреса Node с подтверждённой привязкой интерфейса.")
+		}
+		if matchingFiles > 1 {
+			report.Warnings = append(report.Warnings, "Найдено несколько независимых конфигураций адреса Node; требуется проверка.")
+		}
 	}
 	report.Warnings = append(report.Warnings, "Найденные файлы — свидетельства конфигурации, а не гарантия управления интерфейсом. Хостер автоматически не определён.")
 	return report, nil

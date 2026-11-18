@@ -28,15 +28,28 @@ Only structured evidence is stored; raw configuration contents and
 NetworkManager profile contents are not persisted. NetworkManager profiles
 are not read at all because they can contain secrets.
 
-**Адрес найден в конфигурации** means the primary address was found once in
-live interfaces and in one candidate file. It does not certify which manager
-owns the interface or readiness for automatic IP replacement. Generated
-networkd files plus Netplan can legitimately produce multiple matches and
-require review. DHCP, custom interfaces include paths, YAML aliases, complex
-networkd matching and NetworkManager profile ownership are not resolved in
-this first version. The report does not infer hosting providers, new prefixes
-or gateways. Provider API integration and verified network-change adapters
-are separate work.
+Version 2 calls the panel address **Адрес Node**, never the server's base IP.
+Other addresses on its interface are shown separately and must be preserved.
+Live routes retain address family, flags (including onlink), metric, scope,
+protocol and type. Rules retain address family. Netplan evidence includes
+section ID, match name/MAC, set-name, renderer, DHCP flags, addresses, gateways
+and configured routes with on-link, table and metric. Only allowlisted fields
+are stored; authentication settings are excluded.
+
+Generated `/run/systemd/network/10-netplan-*.network` files are linked to a
+Netplan source only when section ID, addresses/prefixes and the observed
+interface agree with exactly one source. Exact name and MAC matches are
+supported, including set-name renames. Permanent-MAC matches are corroborated
+only when they agree with the observed MAC; other cases require review.
+Conflicting sources and orphan generated files still require review.
+**Конфигурация адреса Node найдена** is evidence, not certification of manager
+ownership or readiness for automatic IP replacement. Merged Netplan files,
+driver/glob matching, DHCP-only addresses, custom interfaces includes and
+NetworkManager ownership are not resolved. The report does not infer hosting
+providers or parameters for a new IP.
+
+Old reports remain readable and are marked for re-scan. Version 2 uses the
+existing JSON report column: no additional database migration is needed.
 
 ## Upgrade
 

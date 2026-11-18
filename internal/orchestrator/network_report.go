@@ -43,7 +43,7 @@ func (a *TelegramApplication) CollectNetworkReports(ctx context.Context, panelID
 		if panelID != "" && (node.PanelID != panelID || node.UUID != nodeUUID) {
 			continue
 		}
-		report := networkinventory.Report{PanelID: node.PanelID, NodeUUID: node.UUID, NodeName: node.Name, PrimaryIP: node.Address, CollectedAt: time.Now().UTC(), Status: "failed"}
+		report := networkinventory.Report{Version: 2, PanelID: node.PanelID, NodeUUID: node.UUID, NodeName: node.Name, PrimaryIP: node.Address, CollectedAt: time.Now().UTC(), Status: "failed"}
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
@@ -51,7 +51,7 @@ func (a *TelegramApplication) CollectNetworkReports(ctx context.Context, panelID
 		switch {
 		case errors.Is(findErr, repository.ErrNotFound):
 			report.Status = "skipped"
-			report.Warnings = []string{"Нет установленного доступа бота по SSH. Автоматический перевод под управление не выполнялся."}
+			report.Warnings = []string{"Не найдена привязка ноды к управляемому развёртыванию в БД. SSH не проверялся; это не означает отсутствия доступа к серверу."}
 		case findErr != nil:
 			report.Warnings = []string{"Не удалось прочитать данные доступа ноды."}
 		default:
