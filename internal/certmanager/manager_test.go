@@ -545,6 +545,41 @@ func TestManagerAuditRenewsExpiringCertificateWithoutSourceNode(t *testing.T) {
 	}
 }
 
+func TestManagerAuditReusesValidCertificateAfterDistributionFailure(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{
+		testMaterial(t, testSNI, time.Now().Add(12*time.Hour), nil),
+		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),
+	})
+	target := Target{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.31")}
+	fixture.resolver.targets = []Target{target}
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.distributor.fail = target.IP
+	fixture.distributor.failureKind = DistributionFailureActivation
+	if _, err := fixture.manager.Audit(context.Background(), testSNI); !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("first Audit() error = %v", err)
+	}
+	if fixture.issuer.calls.Load() != 2 {
+		t.Fatalf("issuer calls after failed distribution = %d", fixture.issuer.calls.Load())
+	}
+
+	fixture.distributor.fail = netip.Addr{}
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Renewed || fixture.issuer.calls.Load() != 2 {
+		t.Fatalf("audit result = %#v, issuer calls = %d, want staged reuse", result, fixture.issuer.calls.Load())
+	}
+	active, err := fixture.repository.GetActive(context.Background(), testSNI)
+	if err != nil || !active.ExpiresAt.After(time.Now().Add(80*24*time.Hour)) {
+		t.Fatalf("active certificate = %#v, error = %v", active, err)
+	}
+}
+
 func TestManagerAuditRepairsMismatchedNodeCertificate(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
 	fixture.resolver.targets = []Target{{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.12")}}

@@ -164,7 +164,7 @@ func (a *ExternalXraySNIInstaller) Install(ctx context.Context) error {
 			return err
 		}
 	case certificatesChanged:
-		if err := a.reload(ctx); err != nil {
+		if err := a.restartForCertificate(ctx); err != nil {
 			return err
 		}
 	case !permissionsChanged:
@@ -209,9 +209,10 @@ func (a *ExternalXraySNIInstaller) UpdateCertificate(ctx context.Context) error 
 				return err
 			}
 		}
-		// A restart may occur after the files were switched but before reload or
-		// cleanup. Reloading is idempotent and makes that state safely resumable.
-		if err := a.reload(ctx); err == nil {
+		// A restart may occur after the files were switched but before Caddy was
+		// recreated or cleanup completed. Recreating Caddy is idempotent and
+		// makes that state safely resumable while forcing PEM files to be read.
+		if err := a.restartForCertificate(ctx); err == nil {
 			if err := a.validateRuntime(ctx); err == nil {
 				return a.cleanupPreviousCertificates(ctx)
 			}
@@ -221,7 +222,7 @@ func (a *ExternalXraySNIInstaller) UpdateCertificate(ctx context.Context) error 
 	if err := a.stageAndActivateCertificates(ctx); err != nil {
 		return err
 	}
-	if err := a.reload(ctx); err == nil {
+	if err := a.restartForCertificate(ctx); err == nil {
 		if err := a.validateRuntime(ctx); err == nil {
 			return a.cleanupPreviousCertificates(ctx)
 		}
@@ -321,7 +322,7 @@ func (a *ExternalXraySNIInstaller) rollbackFailedCertificateActivation(ctx conte
 	if rollbackErr := a.rollbackCertificates(rollbackCtx); rollbackErr != nil {
 		return ErrXraySNIValidationFailed
 	}
-	if rollbackErr := a.reload(rollbackCtx); rollbackErr != nil {
+	if rollbackErr := a.restartForCertificate(rollbackCtx); rollbackErr != nil {
 		return ErrXraySNIValidationFailed
 	}
 	if rollbackErr := a.validateRuntime(rollbackCtx); rollbackErr != nil {
@@ -561,6 +562,13 @@ trap - EXIT`
 
 func (a *ExternalXraySNIInstaller) reload(ctx context.Context) error {
 	return a.runSafe(ctx, "# xray-sni:reload\ndocker exec snisite caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile", ErrXraySNIValidationFailed)
+}
+
+// restartForCertificate recreates only the static-site Caddy container. A
+// normal Caddy reload treats an unchanged config as a no-op and keeps the old
+// certificate cached even when the mounted PEM files changed on disk.
+func (a *ExternalXraySNIInstaller) restartForCertificate(ctx context.Context) error {
+	return a.runSafe(ctx, "# xray-sni:certificate-restart\ncd /opt/xray-sni && docker compose up -d --force-recreate caddy", ErrXraySNIValidationFailed)
 }
 
 func (a *ExternalXraySNIInstaller) validateRuntime(ctx context.Context) error {

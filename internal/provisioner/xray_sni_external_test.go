@@ -22,19 +22,20 @@ import (
 const testSNIDomain = "sni.example.com"
 
 type fakeXrayRunner struct {
-	state             xraySNIState
-	requests          []sshclient.CommandRequest
-	failMarker        string
-	stagedFullchain   bool
-	stagedPrivateKey  bool
-	activationCount   int
-	repositoryCount   int
-	composeBuildCount int
-	composeUpCount    int
-	reloadCount       int
-	rollbackCount     int
-	managedWriteCount int
-	activeCertificate string
+	state                   xraySNIState
+	requests                []sshclient.CommandRequest
+	failMarker              string
+	stagedFullchain         bool
+	stagedPrivateKey        bool
+	activationCount         int
+	repositoryCount         int
+	composeBuildCount       int
+	composeUpCount          int
+	reloadCount             int
+	certificateRestartCount int
+	rollbackCount           int
+	managedWriteCount       int
+	activeCertificate       string
 }
 
 func (r *fakeXrayRunner) Run(_ context.Context, request sshclient.CommandRequest) (sshclient.CommandResult, error) {
@@ -94,6 +95,10 @@ func (r *fakeXrayRunner) Run(_ context.Context, request sshclient.CommandRequest
 		r.state.ContainerRunning = true
 	case strings.Contains(request.Command, "# xray-sni:reload"):
 		r.reloadCount++
+	case strings.Contains(request.Command, "# xray-sni:certificate-restart"):
+		r.certificateRestartCount++
+		r.state.ContainerExists = true
+		r.state.ContainerRunning = true
 	}
 	return sshclient.CommandResult{}, nil
 }
@@ -291,7 +296,7 @@ func TestExternalXraySNIRetriesBuildUntilCommitMarkerIsRecorded(t *testing.T) {
 	}
 }
 
-func TestExternalXraySNICertificateUpdateUsesReload(t *testing.T) {
+func TestExternalXraySNICertificateUpdateRecreatesCaddy(t *testing.T) {
 	state := readyXrayState()
 	state.FullchainMatches = false
 	state.PrivateKeyMatches = false
@@ -300,8 +305,8 @@ func TestExternalXraySNICertificateUpdateUsesReload(t *testing.T) {
 	if err := adapter.Install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.activationCount != 1 || runner.reloadCount != 1 || runner.composeUpCount != 0 || runner.composeBuildCount != 0 {
-		t.Fatalf("activation=%d reload=%d up=%d build=%d", runner.activationCount, runner.reloadCount, runner.composeUpCount, runner.composeBuildCount)
+	if runner.activationCount != 1 || runner.certificateRestartCount != 1 || runner.reloadCount != 0 || runner.composeUpCount != 0 || runner.composeBuildCount != 0 {
+		t.Fatalf("activation=%d cert_restart=%d reload=%d up=%d build=%d", runner.activationCount, runner.certificateRestartCount, runner.reloadCount, runner.composeUpCount, runner.composeBuildCount)
 	}
 }
 
@@ -330,8 +335,8 @@ func TestExternalXraySNICertificateHealthFailureRollsBack(t *testing.T) {
 	if !errors.Is(err, ErrXraySNIValidationFailed) {
 		t.Fatalf("UpdateCertificate() error = %v", err)
 	}
-	if runner.activeCertificate != "old" || runner.rollbackCount != 1 || runner.reloadCount != 2 {
-		t.Fatalf("active=%q rollback=%d reload=%d", runner.activeCertificate, runner.rollbackCount, runner.reloadCount)
+	if runner.activeCertificate != "old" || runner.rollbackCount != 1 || runner.certificateRestartCount != 2 || runner.reloadCount != 0 {
+		t.Fatalf("active=%q rollback=%d cert_restart=%d reload=%d", runner.activeCertificate, runner.rollbackCount, runner.certificateRestartCount, runner.reloadCount)
 	}
 }
 
@@ -342,8 +347,8 @@ func TestExternalXraySNICertificateUpdateResumesAfterFileSwitch(t *testing.T) {
 	if err := adapter.UpdateCertificate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.activationCount != 0 || runner.reloadCount != 1 || runner.rollbackCount != 0 {
-		t.Fatalf("activation=%d reload=%d rollback=%d", runner.activationCount, runner.reloadCount, runner.rollbackCount)
+	if runner.activationCount != 0 || runner.certificateRestartCount != 1 || runner.reloadCount != 0 || runner.rollbackCount != 0 {
+		t.Fatalf("activation=%d cert_restart=%d reload=%d rollback=%d", runner.activationCount, runner.certificateRestartCount, runner.reloadCount, runner.rollbackCount)
 	}
 }
 

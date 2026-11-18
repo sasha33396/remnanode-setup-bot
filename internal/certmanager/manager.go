@@ -323,7 +323,20 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 			return result, loadErr
 		}
 		material.Destroy()
-		material, err = m.issueAndActivate(auditCtx, domain, previous)
+		var reused bool
+		var distributions []DistributionResult
+		material, reused, distributions, err = m.activateStagedForAudit(auditCtx, domain, previous, resolution.Managed)
+		if err != nil {
+			for _, distribution := range distributions {
+				if distribution.Status != DistributionSucceeded {
+					result.Failures = append(result.Failures, AuditTargetFailure{IP: distribution.Target.IP, Kind: distribution.FailureKind, Message: safeMessage(distribution.SafeMessage)})
+				}
+			}
+			return result, err
+		}
+		if !reused {
+			material, err = m.issueAndActivate(auditCtx, domain, previous)
+		}
 		if err != nil {
 			m.renewalFailed(domain)
 			return result, err
@@ -375,6 +388,62 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 		return result, safe("Certificate audit state could not be saved", ErrPersistenceFailed)
 	}
 	return result, nil
+}
+
+// activateStagedForAudit retries the newest still-valid certificate that was
+// already issued but could not be distributed. This avoids creating a fresh
+// ACME order on every audit while Nodes are being repaired.
+func (m *Manager) activateStagedForAudit(ctx context.Context, domain string, previous *Record, targets []Target) (certificates.Material, bool, []DistributionResult, error) {
+	versions, err := m.repository.ListVersions(ctx, domain)
+	if err != nil {
+		return certificates.Material{}, false, nil, safe("Certificate versions could not be loaded", ErrPersistenceFailed)
+	}
+	for _, version := range versions {
+		if version.Status != VersionDistribution && version.Status != VersionPending {
+			continue
+		}
+		material, loadErr := m.store.Load(ctx, domain, version.Version)
+		if loadErr != nil {
+			continue
+		}
+		info, validationErr := certificates.Validate(material, domain, m.now())
+		if validationErr != nil || info.Fingerprint != version.Fingerprint || !info.ExpiresAt.After(m.now().Add(m.config.RenewBefore)) {
+			material.Destroy()
+			continue
+		}
+
+		distributions, distributeErr := m.distributeTargetsDetailed(ctx, domain, version.Version, material, targets)
+		deferred := errors.Is(distributeErr, ErrDistributionDeferred)
+		if distributeErr != nil && !deferred {
+			m.restoreDistributedVersion(ctx, domain, previous)
+			material.Destroy()
+			return certificates.Material{}, true, distributions, distributeErr
+		}
+
+		previousMarker, _ := m.store.ActiveVersion(ctx, domain)
+		if err := m.store.Activate(ctx, domain, version.Version); err != nil {
+			m.restoreDistributedVersion(ctx, domain, previous)
+			material.Destroy()
+			return certificates.Material{}, true, distributions, err
+		}
+		if err := m.repository.ActivateVersion(ctx, domain, version.Version, previous != nil); err != nil {
+			if previousMarker != "" {
+				_ = m.store.Activate(context.WithoutCancel(ctx), domain, previousMarker)
+			}
+			m.restoreDistributedVersion(ctx, domain, previous)
+			material.Destroy()
+			return certificates.Material{}, true, distributions, safe("Certificate metadata could not be activated", ErrPersistenceFailed)
+		}
+		if deferred {
+			if err := m.repository.SetStatus(ctx, domain, StatusDistributionFailed); err != nil {
+				material.Destroy()
+				return certificates.Material{}, true, distributions, safe("Deferred certificate distribution state could not be saved", ErrPersistenceFailed)
+			}
+		}
+		m.observeExpiry(Record{SNI: domain, ExpiresAt: info.ExpiresAt})
+		return material, true, distributions, nil
+	}
+	return certificates.Material{}, false, nil, nil
 }
 
 // Bootstrap activates the newest valid staged certificate for an SNI after an
