@@ -11,6 +11,7 @@ import (
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/cherryip"
 	"remnanode-setup-bot/internal/deployment"
+	"remnanode-setup-bot/internal/leastload"
 	"remnanode-setup-bot/internal/recovery"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository"
@@ -21,12 +22,13 @@ import (
 // TelegramApplication adapts DeploymentService to the presentation-only
 // Telegram application port.
 type TelegramApplication struct {
-	panels      map[string]PanelApplicationConfig
-	order       []string
-	repository  DeploymentRepository
-	cherryIP    *cherryip.Service
-	royalIP     *royalip.Service
-	maintenance *NodeMaintenance
+	panels       map[string]PanelApplicationConfig
+	order        []string
+	repository   DeploymentRepository
+	cherryIP     *cherryip.Service
+	royalIP      *royalip.Service
+	maintenance  *NodeMaintenance
+	leastloadSSH func(context.Context, string, netip.Addr) (leastload.Session, error)
 }
 
 func (a *TelegramApplication) SetRoyalIPService(service *royalip.Service) error {

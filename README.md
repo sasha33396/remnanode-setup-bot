@@ -406,6 +406,9 @@ two minutes, with 90 seconds allowed for DNS propagation.
 
 ## Database migrations
 
+Leastload server/Node IP replacement is documented in
+[`docs/LEASTLOAD_IP_CHANGE.md`](docs/LEASTLOAD_IP_CHANGE.md) and requires migration `000011`.
+
 Read-only network collection and the web report are documented in
 [`docs/NETWORK_REPORTS.md`](docs/NETWORK_REPORTS.md). This feature requires migration `000010`.
 
@@ -422,6 +425,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_h
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000010_network_reports.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000011_leastload_ip_jobs.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment

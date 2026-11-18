@@ -7,3 +7,4 @@
 .form-grid .checkbox-label{display:flex;align-items:center;gap:9px;align-self:end;padding-bottom:11px}.form-grid .checkbox-label input{width:auto}
 .oidc-login{display:inline-flex;text-decoration:none;justify-content:center;min-width:220px}
 .network-data{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:320px;overflow:auto}.deployment-details details{margin:12px 0}.deployment-details summary{cursor:pointer}
+.leastload-row{padding:12px 0;border-bottom:1px solid var(--line)}.leastload-row small{display:block;margin-top:6px}.leastload-row input[type=checkbox],#leastload-assigned{width:auto}#leastload-candidates{max-height:360px;overflow:auto}#leastload-history{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}

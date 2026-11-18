@@ -19,6 +19,7 @@
     </section>
     <section class="toolbar">
       <button id="network-reports" class="button secondary">Настройки сети</button>
+      <button id="leastload-open" class="button secondary">Замена IP leastload</button>
       <input id="search" class="search" type="search" placeholder="Поиск по имени, IP или панели">
       <div class="filters" role="group"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="managed">Актуальные</button><button class="filter" data-filter="legacy">Legacy</button></div>
     </section>
@@ -31,6 +32,24 @@
     <section id="nodes" class="node-grid" aria-live="polite"></section>
   </main>
 
+  <dialog id="leastload-dialog" class="dialog list-dialog">
+    <div class="dialog-panel">
+      <div class="dialog-heading"><h2>Замена IP leastload</h2><button type="button" class="button ghost" data-close-dialog="leastload-dialog">Закрыть</button></div>
+      <p class="muted">Выберите ноды со скрытыми Host. Проверка покажет, где IP уже настроен, а где потребуется изменить сеть. Дополнительные адреса сохраняются.</p>
+      <label>Панель<select id="leastload-panel"></select></label>
+      <label>Поиск<input id="leastload-search" type="search" placeholder="Имя или IP"></label>
+      <div id="leastload-candidates"></div>
+      <label>Массовый ввод: старый_IP → новый_IP<textarea id="leastload-mappings" rows="4" placeholder="88.216.214.148 -> новый_IP"></textarea></label>
+      <button id="leastload-import" class="button secondary">Заполнить выбранные ноды из списка</button>
+      <button id="leastload-preview" class="button primary">Проверить выбранные</button>
+      <p id="leastload-status" role="status"></p>
+      <div id="leastload-plan"></div>
+      <label><input id="leastload-assigned" type="checkbox"> Новые IP уже назначены нужным серверам у хостера</label>
+      <button id="leastload-apply" class="button primary" disabled>Выполнить готовые / продолжить</button>
+      <h3>Сохранённые операции</h3><button id="leastload-history-refresh" class="button secondary">Обновить историю</button>
+      <div id="leastload-history"></div>
+    </div>
+  </dialog>
   <dialog id="network-dialog" class="dialog list-dialog">
     <div class="dialog-panel">
       <div class="dialog-heading"><h2>Настройки сети</h2><button type="button" class="button ghost" data-close-dialog="network-dialog">Закрыть</button></div>
@@ -138,5 +157,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js" integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/" crossorigin="anonymous"></script>
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/leastload.js" defer></script>
 </body>
 </html>

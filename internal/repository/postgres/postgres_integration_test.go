@@ -14,6 +14,7 @@ import (
 
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/deployment"
+	"remnanode-setup-bot/internal/leastload"
 	"remnanode-setup-bot/internal/networkinventory"
 	repositorycontract "remnanode-setup-bot/internal/repository"
 	"remnanode-setup-bot/migrations"
@@ -62,7 +63,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql", "000006_multi_panel_scope.up.sql", "000007_advanced_balancer_hosts.up.sql", "000008_node_network_inventory.up.sql", "000009_abuse_monitor.up.sql", "000010_network_reports.up.sql"} {
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql", "000006_multi_panel_scope.up.sql", "000007_advanced_balancer_hosts.up.sql", "000008_node_network_inventory.up.sql", "000009_abuse_monitor.up.sql", "000010_network_reports.up.sql", "000011_leastload_ip_jobs.up.sql"} {
 		upSQL, err := migrations.Files.ReadFile(migration)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", migration, err)
@@ -74,6 +75,20 @@ func TestRepositoryIntegration(t *testing.T) {
 
 	assertNoRootPasswordColumn(t, ctx, pool)
 	repo := New(pool)
+	job := leastload.Job{ID: "11111111-1111-4111-8111-111111111111", PanelID: "default", Operator: 42, Items: []leastload.Item{{DeploymentID: "managed", Status: "network_pending"}}}
+	if err := repo.SaveLeastloadJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	loadedJob, err := repo.GetLeastloadJob(ctx, job.ID)
+	if err != nil || loadedJob.Items[0].Status != "network_pending" {
+		t.Fatalf("job=%+v err=%v", loadedJob, err)
+	}
+	if pending, err := repo.HasPendingLeastload(ctx, "managed", "22222222-2222-4222-8222-222222222222"); err != nil || !pending {
+		t.Fatalf("pending=%v err=%v", pending, err)
+	}
+	if pending, err := repo.HasPendingLeastload(ctx, "managed", job.ID); err != nil || pending {
+		t.Fatalf("self pending=%v err=%v", pending, err)
+	}
 	report := networkinventory.Report{PanelID: "default", NodeUUID: "c55c6980-ac8e-4c6a-8579-dd3df8a29891", Status: "observed", Addresses: []networkinventory.Address{{IP: "1.1.1.1", Prefix: 32}}}
 	if err := repo.SaveNetworkReport(ctx, report); err != nil {
 		t.Fatal(err)
