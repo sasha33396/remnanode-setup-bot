@@ -1571,10 +1571,12 @@ type fakeCertificateProvider struct {
 	auditResult     certmanager.AuditResult
 	auditErr        error
 	auditCalls      int
+	auditSNIs       []string
 }
 
 func (f *fakeCertificateProvider) Audit(_ context.Context, sni string) (certmanager.AuditResult, error) {
 	f.auditCalls++
+	f.auditSNIs = append(f.auditSNIs, sni)
 	result := f.auditResult
 	result.SNI = sni
 	return result, f.auditErr

@@ -3,6 +3,9 @@ package orchestrator
 import (
 	"context"
 	"testing"
+
+	"remnanode-setup-bot/internal/remnawave"
+	"remnanode-setup-bot/internal/repository"
 )
 
 func TestCertificateAuditEnumeratesHostOnceAndAggregatesNodes(t *testing.T) {
@@ -38,5 +41,30 @@ func TestCertificateAuditSkipsIPAddressHosts(t *testing.T) {
 	}
 	if result.Hosts != 0 || fixture.cert.auditCalls != 0 {
 		t.Fatalf("audit result = %#v, calls = %d", result, fixture.cert.auditCalls)
+	}
+}
+
+func TestCertificateAuditIncludesManagedNodeSNIAbsentFromHosts(t *testing.T) {
+	fixture := newFixture(t)
+	prepared := fixture.prepare(t, "managed-node", "8.8.4.4")
+	if _, err := fixture.repo.SetRemnawaveNodeUUID(context.Background(), prepared.Deployment.ID, testNodeUUID); err != nil {
+		t.Fatal(err)
+	}
+	const nodeSNI = "service-nl.storagedirectguide.com"
+	if _, err := fixture.repo.SetNodeHostBinding(context.Background(), prepared.Deployment.ID, repository.SetNodeHostBindingParams{HostUUID: testHostUUID, HostRemark: nodeSNI, SNIDomain: nodeSNI}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.remnawave.hosts[0].Nodes = nil
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "managed-node", Address: "8.8.4.4", IsConnected: true}}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.AuditCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hosts != 1 || fixture.cert.auditCalls != 1 || len(fixture.cert.auditSNIs) != 1 || fixture.cert.auditSNIs[0] != nodeSNI {
+		t.Fatalf("audit result=%#v calls=%d SNIs=%v", result, fixture.cert.auditCalls, fixture.cert.auditSNIs)
 	}
 }

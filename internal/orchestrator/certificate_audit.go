@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"sort"
 	"strings"
 	"time"
 
 	"remnanode-setup-bot/internal/certmanager"
 	"remnanode-setup-bot/internal/remnawave"
+	"remnanode-setup-bot/internal/repository"
 	"remnanode-setup-bot/internal/telegram"
 )
 
@@ -33,28 +35,53 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 	seen := make(map[string]struct{})
 	for _, panelID := range a.order {
 		panel := a.panels[panelID]
+		domains := make(map[string]struct{})
 		hosts, err := panel.Service.remnawave.GetHosts(ctx)
 		if err != nil {
 			result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "hosts_unavailable"})
-			continue
+		} else {
+			for _, host := range hosts {
+				profile, profileErr := remnawave.DeploymentProfileFromHost(host)
+				if profileErr != nil || len(host.Nodes) == 0 {
+					continue
+				}
+				if _, ipErr := netip.ParseAddr(strings.TrimSpace(profile.SNIDomain)); ipErr == nil {
+					continue
+				}
+				if domain, normalizeErr := certmanager.NormalizeSNI(profile.SNIDomain); normalizeErr == nil {
+					domains[domain] = struct{}{}
+				}
+			}
+		}
+		nodes, nodesErr := panel.Service.remnawave.GetNodes(ctx)
+		if nodesErr != nil {
+			result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "nodes_unavailable"})
+		} else {
+			for _, node := range nodes {
+				item, findErr := a.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, node.UUID)
+				if errors.Is(findErr, repository.ErrNotFound) {
+					continue
+				}
+				if findErr != nil {
+					result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "deployment_inventory_unavailable"})
+					break
+				}
+				if domain, normalizeErr := certmanager.NormalizeSNI(item.SNIDomain); normalizeErr == nil {
+					domains[domain] = struct{}{}
+				}
+			}
 		}
 		auditor, ok := panel.Service.certificates.(CertificateAuditor)
 		if !ok {
 			result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "audit_unavailable"})
 			continue
 		}
-		for _, host := range hosts {
-			profile, profileErr := remnawave.DeploymentProfileFromHost(host)
-			if profileErr != nil || len(host.Nodes) == 0 {
-				continue
-			}
-			if _, ipErr := netip.ParseAddr(strings.TrimSpace(profile.SNIDomain)); ipErr == nil {
-				continue
-			}
-			domain, normalizeErr := certmanager.NormalizeSNI(profile.SNIDomain)
-			if normalizeErr != nil {
-				continue
-			}
+		orderedDomains := make([]string, 0, len(domains))
+		for domain := range domains {
+			orderedDomains = append(orderedDomains, domain)
+		}
+		sort.Strings(orderedDomains)
+		for _, domain := range orderedDomains {
 			key := panelID + "\x00" + domain
 			if _, exists := seen[key]; exists {
 				continue

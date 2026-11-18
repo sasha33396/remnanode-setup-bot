@@ -300,8 +300,7 @@ fi
 valid_theme "$theme"
 test -d "$SOURCE/$theme"
 staging=$(mktemp -d "$XRAY/.theme-staging.XXXXXX")
-response=$(mktemp)
-cleanup() { rm -rf "$staging"; rm -f "$response"; }
+cleanup() { rm -rf "$staging"; }
 trap cleanup EXIT
 
 bash "$SOURCE/uniquify-theme.sh" --src "$SOURCE/$theme" --seed "$seed" --no-install-deps --no-zip -o "$staging/site"
@@ -321,11 +320,14 @@ activate() {
   cd "$XRAY"
   docker compose up -d --force-recreate caddy
   docker exec snisite caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  expected_hash=$(sha256sum "$ACTIVE/index.html" | cut -d' ' -f1)
+  container_theme_path=$(docker inspect snisite --format '{{range .Mounts}}{{if eq .Source "/opt/xray-sni/html"}}{{.Destination}}{{end}}{{end}}')
+  test -n "$container_theme_path"
   ready=false
   for attempt in $(seq 1 15); do
-    code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' "http://127.0.0.1/" 2>/dev/null || true)
-    health=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "http://127.0.0.1/health" 2>/dev/null || true)
-    if [ "$code" = 200 ] && [ "$health" = 200 ] && cmp -s "$ACTIVE/index.html" "$response"; then
+    running=$(docker inspect snisite --format '{{.State.Running}}' 2>/dev/null || true)
+    container_hash=$(docker exec snisite sha256sum "$container_theme_path/index.html" 2>/dev/null | cut -d' ' -f1 || true)
+    if [ "$running" = true ] && [ "$container_hash" = "$expected_hash" ]; then
       ready=true
       break
     fi

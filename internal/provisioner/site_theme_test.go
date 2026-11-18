@@ -54,11 +54,11 @@ func TestSiteThemeScriptUsesAtomicRollbackAndPinnedSource(t *testing.T) {
 		`if [ "$MODE" = "--rotate-seed" ] && valid_theme "$current_theme"`,
 		`for attempt in $(seq 1 15)`,
 		`[ "$ready" = true ]`,
-		`"http://127.0.0.1/"`,
-		`"http://127.0.0.1/health"`,
+		`container_theme_path=$(docker inspect snisite`,
+		`container_hash=$(docker exec snisite sha256sum`,
+		`[ "$container_hash" = "$expected_hash" ]`,
 		`if ! activate; then`,
 		`mv "$BACKUP" "$ACTIVE"`,
-		`cmp -s "$ACTIVE/index.html" "$response"`,
 	} {
 		if !strings.Contains(siteThemeScript, required) {
 			t.Fatalf("rotation script does not contain %q", required)
