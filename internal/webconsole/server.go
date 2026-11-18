@@ -125,6 +125,8 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /auth/oidc/callback", server.handleOIDCCallback)
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
+	mux.HandleFunc("GET /api/network-reports", server.handleNetworkReports)
+	mux.HandleFunc("POST /api/network-reports/scan", server.handleNetworkScan)
 	mux.HandleFunc("GET /api/jobs/", server.handleJob)
 	mux.HandleFunc("GET /api/options/panels", server.handlePanels)
 	mux.HandleFunc("GET /api/options/capabilities", server.handleCapabilities)

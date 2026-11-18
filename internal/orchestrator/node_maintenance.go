@@ -41,6 +41,7 @@ type NodeMaintenance struct {
 	nodeLocks   sync.Map
 	bulkMu      sync.Mutex
 	bulkRunning bool
+	reportMu    sync.Mutex
 	mailGuard   provisioner.MailGuardConfig
 }
 

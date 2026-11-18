@@ -70,6 +70,36 @@
 
   function selectNode(panel, uuid) { return state.nodes.find((node) => node.panelId === panel && node.uuid === uuid); }
 
+  const networkLabels = { observed: 'Адрес найден в конфигурации', review: 'Требуется проверка', failed: 'Ошибка сбора', skipped: 'Нет доступа бота' };
+  async function loadNetworkReports() {
+    const { reports = [] } = await request('/api/network-reports');
+    $('#network-report-list').innerHTML = reports.map((report) => {
+      const addresses = (report.addresses || []).map((item) => `${item.interface}: ${item.ip}/${item.prefix}${item.primary ? ' (основной)' : ''}`);
+      const files = (report.files || []).map((item) => `${item.kind}: ${item.path}${item.matchesPrimary ? ' — найден основной IP' : ''}`);
+      return `<article class="deployment-details"><h3>${escapeHTML(report.nodeName)} · ${escapeHTML(report.panelId)}</h3><p>${escapeHTML(networkLabels[report.status] || report.status)} · ${escapeHTML(new Date(report.collectedAt).toLocaleString())}</p><p>Основной IP: ${escapeHTML(report.primaryIp)}</p><p>Службы: ${escapeHTML((report.services || []).join(', ') || 'не определены')}</p><p>Хостер: не определён</p><details><summary>Адреса и конфигурация</summary><pre class="network-data">${escapeHTML(addresses.join('\n'))}\n\n${escapeHTML(files.join('\n'))}</pre></details><details><summary>Маршруты и правила</summary><pre class="network-data">${escapeHTML(JSON.stringify({ routes: report.routes || [], rules: report.rules || [] }, null, 2))}</pre></details><p class="muted">${(report.warnings || []).map(escapeHTML).join('<br>')}</p><button class="button secondary network-rescan" data-panel="${escapeHTML(report.panelId)}" data-uuid="${escapeHTML(report.nodeUuid)}">Проверить снова</button></article>`;
+    }).join('') || '<p class="muted">Отчётов пока нет. Запустите проверку.</p>';
+  }
+
+  async function scanNetwork(panelId = '', nodeUuid = '') {
+    const status = $('#network-scan-status');
+    const buttons = () => [$('#network-scan'), ...document.querySelectorAll('.network-rescan')];
+    buttons().forEach((button) => { button.disabled = true; });
+    status.textContent = 'Читаю настройки сети…';
+    try {
+      const result = await request('/api/network-reports/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ panelId, nodeUuid }) });
+      for (;;) {
+        const job = await request(`/api/jobs/${encodeURIComponent(result.jobId)}`);
+        status.textContent = job.progress?.message || 'Читаю настройки сети…';
+        if (job.status === 'failed') throw new Error(job.error || 'Сбор завершился с ошибкой');
+        if (job.status === 'completed') break;
+        await delay(2000);
+      }
+      await loadNetworkReports();
+      status.textContent = 'Проверка завершена. Результаты сохранены; ошибки и пропуски указаны в отчёте.';
+    } catch (error) { status.textContent = error.message; }
+    finally { buttons().forEach((button) => { button.disabled = false; }); }
+  }
+
   const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
   async function waitForJob(jobId, message) {
@@ -336,6 +366,8 @@
   }
 
   document.addEventListener('click', async (event) => {
+    const networkScan = event.target.closest('.network-rescan');
+    if (networkScan) { await scanNetwork(networkScan.dataset.panel, networkScan.dataset.uuid); return; }
     const nodeIP = event.target.closest('.node-ip');
     const nodeMove = event.target.closest('.node-move');
     const nodeDNS = event.target.closest('.node-dns');
@@ -446,6 +478,11 @@
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
   $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
+  $('#network-reports').addEventListener('click', async () => {
+    $('#network-dialog').showModal();
+    try { await loadNetworkReports(); } catch (error) { $('#network-scan-status').textContent = error.message; }
+  });
+  $('#network-scan').addEventListener('click', () => scanNetwork());
   $('#add-node').addEventListener('click', openAddNode);
   $('#add-profile-host').addEventListener('click', openAddProfileHost);
   $('#add-balancer').addEventListener('click', openAddBalancer);

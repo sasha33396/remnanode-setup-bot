@@ -406,6 +406,9 @@ two minutes, with 90 seconds allowed for DNS propagation.
 
 ## Database migrations
 
+Read-only network collection and the web report are documented in
+[`docs/NETWORK_REPORTS.md`](docs/NETWORK_REPORTS.md). This feature requires migration `000010`.
+
 Apply the migrations before using deployment persistence. With `psql` available:
 
 ```sh
@@ -418,6 +421,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000006_multi_panel_scope.u
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000010_network_reports.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment

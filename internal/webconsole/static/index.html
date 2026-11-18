@@ -18,6 +18,7 @@
       <div class="stats"><div><span id="total">—</span><small>Всего</small></div><div><span id="managed">—</span><small>Актуальных</small></div><div><span id="legacy">—</span><small>Legacy</small></div></div>
     </section>
     <section class="toolbar">
+      <button id="network-reports" class="button secondary">Настройки сети</button>
       <input id="search" class="search" type="search" placeholder="Поиск по имени, IP или панели">
       <div class="filters" role="group"><button class="filter active" data-filter="all">Все</button><button class="filter" data-filter="managed">Актуальные</button><button class="filter" data-filter="legacy">Legacy</button></div>
     </section>
@@ -30,6 +31,15 @@
     <section id="nodes" class="node-grid" aria-live="polite"></section>
   </main>
 
+  <dialog id="network-dialog" class="dialog list-dialog">
+    <div class="dialog-panel">
+      <div class="dialog-heading"><h2>Настройки сети</h2><button type="button" class="button ghost" data-close-dialog="network-dialog">Закрыть</button></div>
+      <p class="muted">Проверка читает настройки по SSH. Адреса, firewall и службы не изменяются. Для legacy-нод без доступа бота будет показан пропуск.</p>
+      <button id="network-scan" class="button secondary">Проверить все ноды</button>
+      <p id="network-scan-status" role="status"></p>
+      <div id="network-report-list"></div>
+    </div>
+  </dialog>
   <dialog id="password-dialog" class="dialog">
     <form id="password-form" method="dialog">
       <p class="eyebrow">LEGACY SSH</p><h2 id="password-title">Подключение</h2>
