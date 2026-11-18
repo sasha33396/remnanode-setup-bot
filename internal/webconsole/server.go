@@ -593,7 +593,7 @@ func (s *Server) handleBulkTheme(w http.ResponseWriter, r *http.Request) {
 		progress(telegram.NodeActualizeProgress{Step: "theme_prepare", Message: "Подключаюсь к нодам и запускаю параллельную ротацию", Completed: 1, Total: 4})
 		result, rotateErr := s.themer.RotateManagedNodeThemes(ctx)
 		if rotateErr == nil {
-			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблоны собраны, Caddy и HTTPS проверены", Completed: 3, Total: 4})
+			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблоны собраны и проверены внутри Caddy", Completed: 3, Total: 4})
 		}
 		return result, rotateErr
 	})
@@ -632,7 +632,7 @@ func (s *Server) handleNodeTheme(w http.ResponseWriter, r *http.Request) {
 		progress(telegram.NodeActualizeProgress{Step: "theme_prepare", Message: "Подключаюсь по SSH, выбираю шаблон и создаю новый seed", Completed: 1, Total: 4})
 		result, rotateErr := s.themer.RotateNodeTheme(ctx, parts[0], parts[1])
 		if rotateErr == nil {
-			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблон собран, Caddy и HTTPS проверены", Completed: 3, Total: 4})
+			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблон собран и проверен внутри Caddy", Completed: 3, Total: 4})
 		}
 		return result, rotateErr
 	})

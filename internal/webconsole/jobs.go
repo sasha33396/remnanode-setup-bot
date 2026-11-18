@@ -102,6 +102,15 @@ func (s *nodeJobStore) finish(token, status string, result any, safeError string
 			job.Progress.Total = 1
 		}
 		job.Progress.Completed = job.Progress.Total
+	} else if status == jobFailed {
+		// A failed job is terminal too. Keeping the last intermediate percentage
+		// makes a finished operation look stuck (for example, at 25%). Preserve
+		// the last-stage message for diagnostics, but close the progress bar.
+		job.Progress.Step = "failed"
+		if job.Progress.Total <= 0 {
+			job.Progress.Total = 1
+		}
+		job.Progress.Completed = job.Progress.Total
 	}
 	s.values[token] = job
 	delete(s.running, job.PanelID+"\x00"+job.NodeUUID)
