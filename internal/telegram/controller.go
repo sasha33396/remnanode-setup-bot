@@ -16,11 +16,15 @@ import (
 const (
 	defaultSessionTTL = 15 * time.Minute
 	cancelTimeout     = 10 * time.Second
-	maxPasswordBytes  = 4096
-	maxMessageBytes   = 3900
-	legacyMenuAddNode = "➕ Add Node"
-	legacyMenuNodes   = "📡 Nodes"
-	legacyMenuDeploys = "📜 Deployments"
+	// A recovery may resume SSH provisioning, certificate work and the
+	// Remnawave connection wait. It must outlive the short Telegram update
+	// context, but still have a finite operational deadline.
+	deploymentActionTimeout = 45 * time.Minute
+	maxPasswordBytes        = 4096
+	maxMessageBytes         = 3900
+	legacyMenuAddNode       = "➕ Add Node"
+	legacyMenuNodes         = "📡 Nodes"
+	legacyMenuDeploys       = "📜 Deployments"
 )
 
 // Controller owns Telegram authorization, presentation and transient wizard
@@ -1508,8 +1512,12 @@ func (c *Controller) handleDeploymentCallback(ctx context.Context, callback *Cal
 		if err := c.messenger.EditMessage(ctx, callback.Message.ChatID, callback.Message.ID, "⏳ Выполняю безопасное восстановление…", Keyboard{}); err != nil {
 			return err
 		}
+		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentActionTimeout)
 		c.workers.Add(1)
-		go c.runDeploymentAction(ctx, recoveryApp, callback, action, deploymentID, details)
+		go func() {
+			defer cancel()
+			c.runDeploymentAction(runCtx, recoveryApp, callback, action, deploymentID, details)
+		}()
 		return nil
 	default:
 		return c.expiredCallback(ctx, callback)
@@ -1545,7 +1553,11 @@ func (c *Controller) runDeploymentAction(ctx context.Context, app RecoveryApplic
 	if err != nil {
 		message = "❌ Действие не выполнено безопасно. Откройте логи этой карточки."
 	}
-	_ = c.showDeploymentCard(ctx, app, callback.Message.ChatID, callback.Message.ID, deploymentID, message)
+	// The operation context may have reached its deadline. Use a fresh short
+	// context so the operator never remains stuck on the progress placeholder.
+	notifyCtx, cancel := context.WithTimeout(context.Background(), cancelTimeout)
+	defer cancel()
+	_ = c.showDeploymentCard(notifyCtx, app, callback.Message.ChatID, callback.Message.ID, deploymentID, message)
 }
 
 func (c *Controller) showDeploymentCard(ctx context.Context, app RecoveryApplication, chatID int64, messageID int, deploymentID, notice string) error {

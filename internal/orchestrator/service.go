@@ -1098,37 +1098,42 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 	if err != nil {
 		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
-	if current.Status != deployment.StatusFailed && !(current.Status == deployment.StatusManualReview && current.CurrentStep == stepProvisioning) {
+	provisioningRecovery := isProvisioningWorkflowStep(current.CurrentStep)
+	if current.Status != deployment.StatusFailed && !(current.Status == deployment.StatusManualReview && provisioningRecovery) {
 		return ErrDeploymentNotRunnable
 	}
 	if s.logger != nil {
 		s.logger.Info("deployment retry requested", "panel_id", s.config.PanelID, "deployment_id", current.ID, "step", current.CurrentStep)
 	}
 	var resume deployment.Status
-	switch current.CurrentStep {
-	case stepPrepareCertificate:
-		resume = deployment.StatusPreflight
-	case stepProvisioning:
+	resumeStep := current.CurrentStep
+	if provisioningRecovery {
 		resume = deployment.StatusProvisioning
-	case stepCreateProfile:
-		resume = deployment.StatusCreatingProfile
-	case stepCreateNode:
-		resume = deployment.StatusCreatingRemnawave
-	case stepWaitNode:
-		resume = deployment.StatusWaitingRemnawave
-	case stepAddDNS:
-		if err := s.setState(ctx, current.ID, deployment.StatusDNSFailed, stepAddDNS, "DNS_RETRY_REQUIRED", "DNS retry requires a healthy Node"); err != nil {
-			return err
+		resumeStep = stepProvisioning
+	} else {
+		switch current.CurrentStep {
+		case stepPrepareCertificate:
+			resume = deployment.StatusPreflight
+		case stepCreateProfile:
+			resume = deployment.StatusCreatingProfile
+		case stepCreateNode:
+			resume = deployment.StatusCreatingRemnawave
+		case stepWaitNode:
+			resume = deployment.StatusWaitingRemnawave
+		case stepAddDNS:
+			if err := s.setState(ctx, current.ID, deployment.StatusDNSFailed, stepAddDNS, "DNS_RETRY_REQUIRED", "DNS retry requires a healthy Node"); err != nil {
+				return err
+			}
+			return s.RetryDNS(ctx, current.ID, progress)
+		case stepCreateHost:
+			resume = deployment.StatusCreatingHost
+		case stepAddSquad:
+			resume = deployment.StatusAddingToSquad
+		default:
+			return ErrDeploymentNotRunnable
 		}
-		return s.RetryDNS(ctx, current.ID, progress)
-	case stepCreateHost:
-		resume = deployment.StatusCreatingHost
-	case stepAddSquad:
-		resume = deployment.StatusAddingToSquad
-	default:
-		return ErrDeploymentNotRunnable
 	}
-	if err := s.setState(ctx, current.ID, resume, current.CurrentStep, "", ""); err != nil {
+	if err := s.setState(ctx, current.ID, resume, resumeStep, "", ""); err != nil {
 		return err
 	}
 	err = s.Deploy(ctx, StartInput{DeploymentID: current.ID, OperatorUserID: current.TelegramOperatorUserID, HostID: current.SelectedRemnawaveHostUUID, NodeName: current.NodeName, VPSIP: current.TargetVPSIP}, progress)
@@ -1141,6 +1146,23 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 		s.logger.Warn("deployment retry failed", "panel_id", s.config.PanelID, "deployment_id", current.ID, "step", current.CurrentStep, "code", code, "safe_message", message)
 	}
 	return err
+}
+
+func isProvisioningWorkflowStep(step string) bool {
+	step = strings.TrimSpace(step)
+	if step == stepProvisioning {
+		return true
+	}
+	stage := strings.TrimPrefix(step, stepProvisioning+"/")
+	if stage == step {
+		return false
+	}
+	for _, candidate := range provisioner.StageNames {
+		if stage == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *DeploymentService) BootstrapCertificate(ctx context.Context, sni string, operatorUserID int64) (string, error) {

@@ -52,7 +52,7 @@ func TestRecoveryMakesInterruptedProvisioningExplicitlyRetryable(t *testing.T) {
 
 func TestRecoveryConvertsLegacyProvisioningManualReviewToRetryable(t *testing.T) {
 	item := recoveryDeployment(deployment.StatusManualReview)
-	item.CurrentStep = "provisioning"
+	item.CurrentStep = "provisioning/xray_sni"
 	repo := newRecoveryRepository(item)
 	service, _ := New(repo, &recoveryRemnawave{}, &recoveryDNS{})
 	result, err := service.RecheckRemnawave(context.Background(), item.ID)

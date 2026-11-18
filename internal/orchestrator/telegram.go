@@ -332,7 +332,7 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 		CanRetryDNS:       item.Status == deployment.StatusDNSFailed,
 		CanCancel:         !item.Status.Terminal(),
 	}
-	if item.Status == deployment.StatusFailed || (item.Status == deployment.StatusManualReview && item.CurrentStep == stepProvisioning) {
+	if item.Status == deployment.StatusFailed || (item.Status == deployment.StatusManualReview && isProvisioningWorkflowStep(item.CurrentStep)) {
 		switch item.CurrentStep {
 		case stepPrepareCertificate, stepProvisioning, stepCreateProfile, stepCreateNode, stepWaitNode, stepAddDNS, stepCreateHost, stepAddSquad:
 			details.CanRetryStep = true

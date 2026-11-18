@@ -660,6 +660,39 @@ func TestStaleCertificateRepairButtonRetriesProfileHostDirectly(t *testing.T) {
 	}
 }
 
+func TestDeploymentRecoveryOutlivesTelegramUpdateContext(t *testing.T) {
+	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	application := &fakeRecoveryApplication{
+		fakeApplication: &fakeApplication{},
+		details: DeploymentDetails{
+			DeploymentSummary: DeploymentSummary{ID: deploymentID, PanelName: "Hit", NodeName: "best-fdc-5", Status: "MANUAL_REVIEW", CurrentStep: "provisioning/xray_sni"},
+			CanRetryStep:      true,
+		},
+		retryStarted: started,
+		retryProceed: proceed,
+	}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	ctx, cancel := context.WithCancel(context.Background())
+	callback := &CallbackQuery{ID: "retry", FromUserID: testAllowedUser, Message: &Message{ID: 10, ChatID: testChatID}, Data: "dep:retry:" + deploymentID}
+	if err := controller.Handle(ctx, Update{CallbackQuery: callback}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cancel()
+	close(proceed)
+	controller.Wait()
+	if application.retryCtxErr != nil {
+		t.Fatalf("background recovery inherited Telegram cancellation: %v", application.retryCtxErr)
+	}
+	edits := messenger.editsSnapshot()
+	if len(edits) < 2 || len(edits[len(edits)-1].keyboard.Inline) == 0 {
+		t.Fatalf("final card was not restored: %#v", edits)
+	}
+}
+
 func TestDeploymentLogsButtonShowsDetailedJournalAndBackNavigation(t *testing.T) {
 	const deploymentID = "1c60754a-f9bb-41fa-95bb-39f11375bbaa"
 	started := time.Date(2026, 8, 17, 18, 20, 0, 0, time.UTC)
@@ -1218,6 +1251,9 @@ type fakeRecoveryApplication struct {
 	bootstrapErr      error
 	details           DeploymentDetails
 	retryCalls        int
+	retryStarted      chan struct{}
+	retryProceed      chan struct{}
+	retryCtxErr       error
 	logs              []DeploymentLogEntry
 }
 
@@ -1256,8 +1292,15 @@ func (f *fakeAdvancedApplication) PreflightAdvancedBalancer(_ context.Context, i
 	return f.preflightResult, f.preflightErr
 }
 
-func (f *fakeRecoveryApplication) RetryFailedStep(context.Context, string) error {
+func (f *fakeRecoveryApplication) RetryFailedStep(ctx context.Context, _ string) error {
 	f.retryCalls++
+	if f.retryStarted != nil {
+		close(f.retryStarted)
+	}
+	if f.retryProceed != nil {
+		<-f.retryProceed
+	}
+	f.retryCtxErr = ctx.Err()
 	return nil
 }
 func (f *fakeRecoveryApplication) RetryDNS(context.Context, string) error { return nil }

@@ -10,6 +10,7 @@ import (
 
 	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/dnsbalancer"
+	"remnanode-setup-bot/internal/provisioner"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository"
 )
@@ -112,7 +113,7 @@ func (s *Service) classify(ctx context.Context, item deployment.Deployment) (Res
 	// Completed stages are skipped and an interrupted running stage starts again
 	// from inspection, so a deployer restart is recoverable without blindly
 	// repeating the stage side effect.
-	if item.CurrentStep == "provisioning" && (item.Status == deployment.StatusProvisioning || item.Status == deployment.StatusManualReview) {
+	if isProvisioningWorkflowStep(item.CurrentStep) && (item.Status == deployment.StatusProvisioning || item.Status == deployment.StatusManualReview) {
 		message := "Provisioning was interrupted; retry resumes from the last incomplete inspected stage"
 		if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusFailed, CurrentStep: item.CurrentStep, SafeErrorCode: pointer("RETRY_AFTER_RESTART"), SafeErrorMessage: &message}); err != nil {
 			return Result{}, errors.New("persist provisioning recovery state failed")
@@ -146,6 +147,23 @@ func (s *Service) classify(ctx context.Context, item deployment.Deployment) (Res
 	default:
 		return s.manual(ctx, item, "Restart occurred during a step that cannot be repeated automatically")
 	}
+}
+
+func isProvisioningWorkflowStep(step string) bool {
+	step = strings.TrimSpace(step)
+	if step == "provisioning" {
+		return true
+	}
+	stage := strings.TrimPrefix(step, "provisioning/")
+	if stage == step {
+		return false
+	}
+	for _, candidate := range provisioner.StageNames {
+		if stage == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) inspectExternalState(ctx context.Context, item deployment.Deployment) (Result, error) {
