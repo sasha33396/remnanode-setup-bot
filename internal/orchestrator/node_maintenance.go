@@ -514,8 +514,11 @@ func (m *NodeMaintenance) rotateManagedTargetTheme(ctx context.Context, target m
 	}
 	defer connection.Close()
 	theme, err := provisioner.NewSiteThemeManager(connection, m.siteTheme)
-	if err != nil || theme.Rotate(ctx) != nil {
-		m.logger.Warn("node theme rotation failed", slog.String("panel_id", target.panelID), slog.String("node_name", target.nodeName), slog.String("stage", "theme_rotate"), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
+	if err == nil {
+		err = theme.Rotate(ctx)
+	}
+	if err != nil {
+		m.logger.Warn("node theme rotation failed", slog.String("panel_id", target.panelID), slog.String("node_name", target.nodeName), slog.String("stage", "theme_rotate"), slog.String("reason", err.Error()), slog.Int64("duration_ms", time.Since(started).Milliseconds()))
 		return "theme_rotate"
 	}
 	m.logger.Info("node theme rotation completed", slog.String("panel_id", target.panelID), slog.String("node_name", target.nodeName), slog.Int64("duration_ms", time.Since(started).Milliseconds()))

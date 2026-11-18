@@ -52,6 +52,8 @@ func TestSiteThemeScriptUsesAtomicRollbackAndPinnedSource(t *testing.T) {
 		`git -C "$SOURCE" checkout --detach --force "$REPOSITORY_REF"`,
 		`bash "$SOURCE/uniquify-theme.sh" --src "$SOURCE/$theme" --seed "$seed" --no-install-deps --no-zip`,
 		`if [ "$MODE" = "--rotate-seed" ] && valid_theme "$current_theme"`,
+		`for attempt in $(seq 1 15)`,
+		`[ "$ready" = true ]`,
 		`if ! activate; then`,
 		`mv "$BACKUP" "$ACTIVE"`,
 		`cmp -s "$ACTIVE/index.html" "$response"`,

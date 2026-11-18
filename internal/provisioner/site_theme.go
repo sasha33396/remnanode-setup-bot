@@ -22,6 +22,8 @@ var (
 	ErrInvalidSiteThemeConfiguration = errors.New("invalid site theme configuration")
 	ErrSiteThemeInstallationFailed   = errors.New("site theme installation failed")
 	ErrSiteThemeValidationFailed     = errors.New("site theme validation failed")
+	ErrSiteThemeUnsafeContent        = errors.New("site theme contains unsafe symbolic links")
+	ErrSiteThemeActivationFailed     = errors.New("site theme Caddy or HTTPS activation failed")
 )
 
 type SiteThemeConfig struct {
@@ -115,12 +117,18 @@ if [ -d /opt/node-templates/.git ] &&
 else
   %s --rotate-template
 fi`, repository, ref, siteThemeScriptPath, siteThemeScriptPath)
-	_, err := m.runner.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: m.config.CommandTimeout})
+	result, err := m.runner.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: m.config.CommandTimeout})
 	if err == nil {
 		return nil
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if result.ExitStatus == 20 {
+		return ErrSiteThemeUnsafeContent
+	}
+	if result.ExitStatus == 21 {
+		return ErrSiteThemeActivationFailed
 	}
 	return ErrSiteThemeInstallationFailed
 }
@@ -315,11 +323,17 @@ activate() {
   docker exec snisite caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
   domain=$(sed -n 's/^SNI_DOMAIN=//p' .env | tail -n1 | tr -d '"' | tr -d "'")
   [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]]
-  code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/")
-  [ "$code" = 200 ]
-  cmp -s "$ACTIVE/index.html" "$response"
-  health=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/health")
-  [ "$health" = 200 ]
+  ready=false
+  for attempt in $(seq 1 15); do
+    code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/" 2>/dev/null || true)
+    health=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/health" 2>/dev/null || true)
+    if [ "$code" = 200 ] && [ "$health" = 200 ] && cmp -s "$ACTIVE/index.html" "$response"; then
+      ready=true
+      break
+    fi
+    sleep 2
+  done
+  [ "$ready" = true ]
 }
 
 if ! activate; then
