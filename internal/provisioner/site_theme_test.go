@@ -54,6 +54,8 @@ func TestSiteThemeScriptUsesAtomicRollbackAndPinnedSource(t *testing.T) {
 		`if [ "$MODE" = "--rotate-seed" ] && valid_theme "$current_theme"`,
 		`for attempt in $(seq 1 15)`,
 		`[ "$ready" = true ]`,
+		`"http://127.0.0.1/"`,
+		`"http://127.0.0.1/health"`,
 		`if ! activate; then`,
 		`mv "$BACKUP" "$ACTIVE"`,
 		`cmp -s "$ACTIVE/index.html" "$response"`,
@@ -61,6 +63,9 @@ func TestSiteThemeScriptUsesAtomicRollbackAndPinnedSource(t *testing.T) {
 		if !strings.Contains(siteThemeScript, required) {
 			t.Fatalf("rotation script does not contain %q", required)
 		}
+	}
+	if strings.Contains(siteThemeScript, `--cacert certs/fullchain.pem`) {
+		t.Fatal("theme activation must not fail because the independent TLS certificate is expired")
 	}
 }
 

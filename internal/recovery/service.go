@@ -109,6 +109,22 @@ func (s *Service) RecheckRemnawave(ctx context.Context, deploymentID string) (Re
 }
 
 func (s *Service) classify(ctx context.Context, item deployment.Deployment) (Result, error) {
+	if (item.Status == deployment.StatusFailed || item.Status == deployment.StatusManualReview) && item.CurrentStep == "preflight" {
+		steps, err := s.repository.ListDeploymentSteps(ctx, item.ID)
+		if err != nil {
+			return Result{}, errors.New("load deployment steps for recovery failed")
+		}
+		for _, step := range steps {
+			if step.Name != "preflight" || step.Status != deployment.StepStatusCompleted {
+				continue
+			}
+			message := "Preflight completed before restart; deployment can continue with certificate preparation"
+			if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusFailed, CurrentStep: "prepare_certificate", SafeErrorCode: pointer("RETRY_AFTER_RESTART"), SafeErrorMessage: &message}); err != nil {
+				return Result{}, errors.New("persist post-preflight recovery state failed")
+			}
+			return Result{DeploymentID: item.ID, Classification: SafeToRecheck, SafeMessage: message}, nil
+		}
+	}
 	// Provisioning is implemented as persisted inspect/apply/validate stages.
 	// Completed stages are skipped and an interrupted running stage starts again
 	// from inspection, so a deployer restart is recoverable without blindly

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -47,6 +48,9 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 			if profileErr != nil || len(host.Nodes) == 0 {
 				continue
 			}
+			if _, ipErr := netip.ParseAddr(strings.TrimSpace(profile.SNIDomain)); ipErr == nil {
+				continue
+			}
 			domain, normalizeErr := certmanager.NormalizeSNI(profile.SNIDomain)
 			if normalizeErr != nil {
 				continue
@@ -73,6 +77,9 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 					reason = message
 				}
 				result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, SNI: domain, Reason: reason})
+				for _, failure := range audit.Failures {
+					slog.Warn("certificate audit target failed", slog.String("panel_id", panelID), slog.String("panel_name", panel.Name), slog.String("sni", domain), slog.String("node_ip", failure.IP.String()), slog.String("failure_kind", string(failure.Kind)), slog.String("reason", failure.Message))
+				}
 				slog.Warn("certificate audit host failed", slog.String("panel_id", panelID), slog.String("panel_name", panel.Name), slog.String("sni", domain), slog.Int("nodes_checked", audit.Checked), slog.Int("nodes_healthy", audit.Healthy), slog.Int("nodes_repaired", audit.Repaired), slog.Int("nodes_deferred", audit.Deferred), slog.String("reason", reason))
 			} else {
 				slog.Info("certificate audit host completed", slog.String("panel_id", panelID), slog.String("panel_name", panel.Name), slog.String("sni", domain), slog.Int("nodes_checked", audit.Checked), slog.Int("nodes_healthy", audit.Healthy), slog.Int("nodes_repaired", audit.Repaired), slog.Bool("renewed", audit.Renewed))

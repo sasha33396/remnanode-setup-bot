@@ -23,3 +23,20 @@ func TestCertificateAuditEnumeratesHostOnceAndAggregatesNodes(t *testing.T) {
 		t.Fatalf("audit result = %#v, calls = %d", result, fixture.cert.auditCalls)
 	}
 }
+
+func TestCertificateAuditSkipsIPAddressHosts(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.hosts[0].Address = "203.0.113.10"
+	fixture.remnawave.hosts[0].Nodes = []string{testNodeUUID}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.AuditCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hosts != 0 || fixture.cert.auditCalls != 0 {
+		t.Fatalf("audit result = %#v, calls = %d", result, fixture.cert.auditCalls)
+	}
+}

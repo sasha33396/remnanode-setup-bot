@@ -203,6 +203,13 @@ type AuditResult struct {
 	Healthy  int
 	Repaired int
 	Deferred int
+	Failures []AuditTargetFailure
+}
+
+type AuditTargetFailure struct {
+	IP      netip.Addr
+	Kind    DistributionFailureKind
+	Message string
 }
 
 type Observer interface {

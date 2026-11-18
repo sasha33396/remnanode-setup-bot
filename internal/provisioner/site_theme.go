@@ -23,7 +23,7 @@ var (
 	ErrSiteThemeInstallationFailed   = errors.New("site theme installation failed")
 	ErrSiteThemeValidationFailed     = errors.New("site theme validation failed")
 	ErrSiteThemeUnsafeContent        = errors.New("site theme contains unsafe symbolic links")
-	ErrSiteThemeActivationFailed     = errors.New("site theme Caddy or HTTPS activation failed")
+	ErrSiteThemeActivationFailed     = errors.New("site theme Caddy or HTTP activation failed")
 )
 
 type SiteThemeConfig struct {
@@ -321,12 +321,10 @@ activate() {
   cd "$XRAY"
   docker compose up -d --force-recreate caddy
   docker exec snisite caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-  domain=$(sed -n 's/^SNI_DOMAIN=//p' .env | tail -n1 | tr -d '"' | tr -d "'")
-  [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]]
   ready=false
   for attempt in $(seq 1 15); do
-    code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/" 2>/dev/null || true)
-    health=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert certs/fullchain.pem "https://$domain:9443/health" 2>/dev/null || true)
+    code=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' "http://127.0.0.1/" 2>/dev/null || true)
+    health=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "http://127.0.0.1/health" 2>/dev/null || true)
     if [ "$code" = 200 ] && [ "$health" = 200 ] && cmp -s "$ACTIVE/index.html" "$response"; then
       ready=true
       break

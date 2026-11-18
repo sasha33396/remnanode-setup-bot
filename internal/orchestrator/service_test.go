@@ -102,6 +102,31 @@ func TestEmptyStandardHostCertificateFailureOffersStepRetry(t *testing.T) {
 	}
 }
 
+func TestCompletedPreflightManualReviewCanContinueWithoutPassword(t *testing.T) {
+	fixture := newFixture(t)
+	prepared := fixture.prepare(t, "restart-after-preflight", "8.8.4.9")
+	if err := fixture.service.setState(context.Background(), prepared.Deployment.ID, deployment.StatusManualReview, stepPreflight, "MANUAL_REVIEW_REQUIRED", "restart after preflight"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, err := app.GetDeploymentDetails(context.Background(), prepared.Deployment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !details.CanRetryStep || details.CanRecheck {
+		t.Fatalf("post-preflight recovery actions = retry:%t recheck:%t", details.CanRetryStep, details.CanRecheck)
+	}
+	if err := fixture.service.RetryFailedStep(context.Background(), prepared.Deployment.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if stored := fixture.repo.mustGet(prepared.Deployment.ID); stored.Status != deployment.StatusCompleted {
+		t.Fatalf("deployment status = %s", stored.Status)
+	}
+}
+
 func TestAdoptLegacyNodeRunsStandardWorkflowWithoutCreatingDuplicateNode(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.remnawave.nodes = []remnawave.Node{{

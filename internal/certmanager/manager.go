@@ -303,6 +303,9 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 		return result, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
 	}
 	if len(resolution.Unmanaged) > 0 {
+		for _, ip := range resolution.Unmanaged {
+			result.Failures = append(result.Failures, AuditTargetFailure{IP: ip, Kind: DistributionFailureRejected, Message: "DNS target has no verified deployment SSH identity"})
+		}
 		return result, safe("Certificate audit requires review of unmanaged DNS targets", ErrDistributionFailed)
 	}
 	result.Checked = len(resolution.Managed)
@@ -355,7 +358,13 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 		}
 		return result, nil
 	}
-	if err := m.distributeTargets(auditCtx, domain, record.ActiveVersion, material, needsRepair); err != nil {
+	distributions, err := m.distributeTargetsDetailed(auditCtx, domain, record.ActiveVersion, material, needsRepair)
+	for _, distribution := range distributions {
+		if distribution.Status != DistributionSucceeded {
+			result.Failures = append(result.Failures, AuditTargetFailure{IP: distribution.Target.IP, Kind: distribution.FailureKind, Message: safeMessage(distribution.SafeMessage)})
+		}
+	}
+	if err != nil {
 		if errors.Is(err, ErrDistributionDeferred) {
 			result.Deferred = len(needsRepair)
 		}
@@ -628,11 +637,16 @@ func (m *Manager) distribute(ctx context.Context, domain, version string, materi
 }
 
 func (m *Manager) distributeTargets(ctx context.Context, domain, version string, material certificates.Material, targets []Target) error {
+	_, err := m.distributeTargetsDetailed(ctx, domain, version, material, targets)
+	return err
+}
+
+func (m *Manager) distributeTargetsDetailed(ctx context.Context, domain, version string, material certificates.Material, targets []Target) ([]DistributionResult, error) {
 	if len(targets) == 0 {
-		return nil
+		return nil, nil
 	}
 	if m.distributor == nil {
-		return safe("Certificate distributor is unavailable", ErrDistributionFailed)
+		return nil, safe("Certificate distributor is unavailable", ErrDistributionFailed)
 	}
 	results := m.distributor.Distribute(ctx, domain, material, targets)
 	failed := len(results) != len(targets)
@@ -644,7 +658,7 @@ func (m *Manager) distributeTargets(ctx context.Context, domain, version string,
 		}
 		record := DistributionRecord{SNI: domain, Version: version, DeploymentID: result.Target.DeploymentID, NodeIP: result.Target.IP, Status: result.Status, SafeErrorMessage: safeErrorMessage, AttemptedAt: m.now().UTC()}
 		if err := m.repository.RecordDistribution(ctx, record); err != nil {
-			return safe("Certificate distribution result could not be saved", ErrPersistenceFailed)
+			return results, safe("Certificate distribution result could not be saved", ErrPersistenceFailed)
 		}
 		if result.Status != DistributionSucceeded {
 			failed = true
@@ -655,11 +669,11 @@ func (m *Manager) distributeTargets(ctx context.Context, domain, version string,
 	}
 	if failed {
 		if unavailableOnly {
-			return safe("Certificate distribution was deferred for unreachable Nodes", ErrDistributionDeferred)
+			return results, safe("Certificate distribution was deferred for unreachable Nodes", ErrDistributionDeferred)
 		}
-		return safe("Certificate distribution was incomplete", ErrDistributionFailed)
+		return results, safe("Certificate distribution was incomplete", ErrDistributionFailed)
 	}
-	return nil
+	return results, nil
 }
 
 // restoreDistributedVersion is best-effort compensation. It never changes the

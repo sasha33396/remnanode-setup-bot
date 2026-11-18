@@ -512,6 +512,19 @@ func TestManagerAuditSkipsCertificateIssuanceWithoutManagedNodes(t *testing.T) {
 	}
 }
 
+func TestManagerAuditReportsUnmanagedTargetIP(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	unmanaged := netip.MustParseAddr("203.0.113.99")
+	fixture.resolver.unmanaged = []netip.Addr{unmanaged}
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("Audit() error = %v, want distribution failure", err)
+	}
+	if len(result.Failures) != 1 || result.Failures[0].IP != unmanaged || result.Failures[0].Kind != DistributionFailureRejected {
+		t.Fatalf("audit failures = %#v", result.Failures)
+	}
+}
+
 func TestManagerAuditRenewsExpiringCertificateWithoutSourceNode(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{
 		testMaterial(t, testSNI, time.Now().Add(12*time.Hour), nil),
@@ -575,6 +588,9 @@ func TestManagerAuditRenewsForReachableNodesWhenFormerNodeIsOffline(t *testing.T
 	}
 	if len(fixture.distributor.fingerprints) < 2 || fixture.distributor.fingerprints[len(fixture.distributor.fingerprints)-1] != active.Fingerprint {
 		t.Fatalf("reachable nodes did not receive active certificate: %#v", fixture.distributor.fingerprints)
+	}
+	if len(result.Failures) != 1 || result.Failures[0].IP != offline.IP || result.Failures[0].Kind != DistributionFailureUnavailable {
+		t.Fatalf("audit failures = %#v", result.Failures)
 	}
 }
 

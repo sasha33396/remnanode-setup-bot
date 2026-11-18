@@ -64,6 +64,21 @@ func TestRecoveryConvertsLegacyProvisioningManualReviewToRetryable(t *testing.T)
 	}
 }
 
+func TestRecoveryContinuesCompletedPreflightAfterRestart(t *testing.T) {
+	item := recoveryDeployment(deployment.StatusManualReview)
+	item.CurrentStep = "preflight"
+	repo := newRecoveryRepository(item)
+	repo.steps = []deployment.Step{{DeploymentID: item.ID, Name: "preflight", Status: deployment.StepStatusCompleted}}
+	service, _ := New(repo, &recoveryRemnawave{}, &recoveryDNS{})
+	result, err := service.RecheckRemnawave(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification != SafeToRecheck || repo.item.Status != deployment.StatusFailed || repo.item.CurrentStep != "prepare_certificate" {
+		t.Fatalf("result=%#v deployment=%#v", result, repo.item)
+	}
+}
+
 func TestRecoveryExposesExplicitDNSRetry(t *testing.T) {
 	item := recoveryDeployment(deployment.StatusAddingToDNS)
 	uuid := "00000000-0000-4000-8000-000000000099"
@@ -104,7 +119,10 @@ func recoveryDeployment(status deployment.Status) deployment.Deployment {
 	return deployment.Deployment{ID: "00000000-0000-4000-8000-000000000001", TelegramOperatorUserID: 1, SelectedRemnawaveHostUUID: "00000000-0000-4000-8000-000000000002", SNIDomain: "edge.example.com", NodeName: "node-one", TargetVPSIP: netip.MustParseAddr("203.0.113.10"), Status: status, CurrentStep: "step", CreatedAt: time.Now(), UpdatedAt: time.Now()}
 }
 
-type recoveryRepository struct{ item deployment.Deployment }
+type recoveryRepository struct {
+	item  deployment.Deployment
+	steps []deployment.Step
+}
 
 func newRecoveryRepository(item deployment.Deployment) *recoveryRepository {
 	return &recoveryRepository{item: item}
@@ -141,8 +159,8 @@ func (r *recoveryRepository) SetNodeHostBinding(_ context.Context, _ string, par
 func (*recoveryRepository) RecordDeploymentStep(context.Context, repository.RecordStepParams) (deployment.Step, error) {
 	return deployment.Step{}, nil
 }
-func (*recoveryRepository) ListDeploymentSteps(context.Context, string) ([]deployment.Step, error) {
-	return nil, nil
+func (r *recoveryRepository) ListDeploymentSteps(context.Context, string) ([]deployment.Step, error) {
+	return append([]deployment.Step(nil), r.steps...), nil
 }
 func (r *recoveryRepository) ListRecentDeployments(context.Context, int) ([]deployment.Deployment, error) {
 	return []deployment.Deployment{r.item}, nil

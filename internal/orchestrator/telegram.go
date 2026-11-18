@@ -335,9 +335,20 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 		CanRetryDNS:       item.Status == deployment.StatusDNSFailed,
 		CanCancel:         !item.Status.Terminal(),
 	}
-	if item.Status == deployment.StatusFailed || (item.Status == deployment.StatusManualReview && isProvisioningWorkflowStep(item.CurrentStep)) {
+	preflightRecovery := false
+	if item.Status == deployment.StatusManualReview && item.CurrentStep == stepPreflight {
+		if steps, stepsErr := panel.Service.repository.ListDeploymentSteps(ctx, item.ID); stepsErr == nil {
+			for _, step := range steps {
+				if step.Name == stepPreflight && step.Status == deployment.StepStatusCompleted {
+					preflightRecovery = true
+					break
+				}
+			}
+		}
+	}
+	if item.Status == deployment.StatusFailed || (item.Status == deployment.StatusManualReview && (isProvisioningWorkflowStep(item.CurrentStep) || preflightRecovery)) {
 		switch item.CurrentStep {
-		case stepPrepareCertificate, stepProvisioning, stepCreateProfile, stepCreateNode, stepWaitNode, stepAddDNS, stepCreateHost, stepAddSquad:
+		case stepPreflight, stepPrepareCertificate, stepProvisioning, stepCreateProfile, stepCreateNode, stepWaitNode, stepAddDNS, stepCreateHost, stepAddSquad:
 			details.CanRetryStep = true
 		}
 		switch item.CurrentStep {
@@ -362,7 +373,7 @@ func (a *TelegramApplication) GetDeploymentDetails(ctx context.Context, deployme
 			}
 		}
 	}
-	if item.Status == deployment.StatusManualReview {
+	if item.Status == deployment.StatusManualReview && !preflightRecovery {
 		details.CanRecheck = true
 	}
 	return details, nil

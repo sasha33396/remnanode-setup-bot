@@ -1099,7 +1099,20 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
 	provisioningRecovery := isProvisioningWorkflowStep(current.CurrentStep)
-	if current.Status != deployment.StatusFailed && !(current.Status == deployment.StatusManualReview && provisioningRecovery) {
+	preflightRecovery := false
+	if current.Status == deployment.StatusManualReview && current.CurrentStep == stepPreflight {
+		steps, stepsErr := s.repository.ListDeploymentSteps(ctx, current.ID)
+		if stepsErr != nil {
+			return safeError("PERSISTENCE_READ_FAILED", "Could not inspect completed preflight", ErrPersistenceFailed)
+		}
+		for _, step := range steps {
+			if step.Name == stepPreflight && step.Status == deployment.StepStatusCompleted {
+				preflightRecovery = true
+				break
+			}
+		}
+	}
+	if current.Status != deployment.StatusFailed && !(current.Status == deployment.StatusManualReview && (provisioningRecovery || preflightRecovery)) {
 		return ErrDeploymentNotRunnable
 	}
 	if s.logger != nil {
@@ -1107,7 +1120,10 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 	}
 	var resume deployment.Status
 	resumeStep := current.CurrentStep
-	if provisioningRecovery {
+	if preflightRecovery {
+		resume = deployment.StatusPreflight
+		resumeStep = stepPrepareCertificate
+	} else if provisioningRecovery {
 		resume = deployment.StatusProvisioning
 		resumeStep = stepProvisioning
 	} else {
