@@ -301,6 +301,20 @@ func (r *Repository) SetTargetVPSIP(ctx context.Context, id string, address neti
 	return result, nil
 }
 
+// SetAdvancedEgressIP updates the second Advanced Balancer address after its
+// Config Profile was changed successfully.
+func (r *Repository) SetAdvancedEgressIP(ctx context.Context, id string, address netip.Addr) (deployment.Deployment, error) {
+	if !validUUID(id) || !address.IsValid() || !address.Is4() {
+		return deployment.Deployment{}, invalid("advanced egress IP")
+	}
+	row := r.pool.QueryRow(ctx, `UPDATE deployments SET advanced_egress_ip=$2,updated_at=now() WHERE id=$1 RETURNING `+deploymentColumns, id, address.Unmap().String())
+	result, err := scanDeployment(row)
+	if err != nil {
+		return deployment.Deployment{}, mapNotFound("set advanced egress IP", err)
+	}
+	return result, nil
+}
+
 // SetNodeHostBinding records the Host selected by a successful managed Node
 // move so later certificate and DNS workflows use the new SNI.
 func (r *Repository) SetNodeHostBinding(ctx context.Context, id string, params repositorycontract.SetNodeHostBindingParams) (deployment.Deployment, error) {

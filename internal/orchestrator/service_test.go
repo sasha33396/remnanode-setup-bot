@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -954,6 +955,18 @@ func (r *memoryRepository) SetTargetVPSIP(_ context.Context, id string, address 
 	return item, nil
 }
 
+func (r *memoryRepository) SetAdvancedEgressIP(_ context.Context, id string, address netip.Addr) (deployment.Deployment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[id]
+	if !found {
+		return deployment.Deployment{}, repository.ErrNotFound
+	}
+	item.AdvancedEgressIP = address.Unmap()
+	r.items[id] = item
+	return item, nil
+}
+
 func (r *memoryRepository) SetNodeHostBinding(_ context.Context, id string, params repository.SetNodeHostBindingParams) (deployment.Deployment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1180,6 +1193,22 @@ func (f *fakeRemnawave) CreateConfigProfile(_ context.Context, input remnawave.C
 	f.profiles = append(f.profiles, profile)
 	f.events.add("remnawave.profile")
 	return profile, nil
+}
+
+func (f *fakeRemnawave) UpdateConfigProfile(_ context.Context, input remnawave.UpdateConfigProfileInput) (remnawave.ConfigProfile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	encoded, err := json.Marshal(input.Config)
+	if err != nil {
+		return remnawave.ConfigProfile{}, err
+	}
+	for index := range f.profiles {
+		if f.profiles[index].UUID == input.UUID {
+			f.profiles[index].Config = encoded
+			return f.profiles[index], nil
+		}
+	}
+	return remnawave.ConfigProfile{}, errors.New("Config Profile not found")
 }
 
 type fakeDNSRecords struct {

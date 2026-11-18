@@ -148,3 +148,35 @@ func TestLeastloadControlPlaneModeSkipsSSHAndUpdatesCanonicalAddress(t *testing.
 		t.Fatalf("control-plane result: dns=%d node=%s deployment=%s", dns.updates, f.remnawave.nodes[0].Address, f.repo.mustGet("managed").TargetVPSIP)
 	}
 }
+
+func TestLeastloadEgressModeUpdatesOnlySendThroughWithoutSSH(t *testing.T) {
+	f := newFixture(t)
+	store := &ipJobStore{memoryRepository: f.repo}
+	f.service.repository = store
+	f.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "leastload", Address: "8.8.8.8"}}
+	config, _ := json.Marshal(map[string]any{"outbounds": []any{map[string]any{"tag": "DIRECT", "protocol": "freedom", "sendThrough": "9.9.9.9"}, map[string]any{"tag": "BLOCK", "protocol": "blackhole"}}})
+	f.remnawave.profiles = []remnawave.ConfigProfile{{UUID: testProfileUUID, Name: "edge_example", Config: config}}
+	f.repo.items["managed"] = deployment.Deployment{ID: "managed", PanelID: "default", Kind: deployment.KindAdvancedBalancer, RemnawaveNodeUUID: stringPtr(testNodeUUID), TargetVPSIP: netip.MustParseAddr("8.8.8.8"), AdvancedEgressIP: netip.MustParseAddr("9.9.9.9"), AdvancedConfigProfileUUID: testProfileUUID}
+	app, err := NewTelegramApplication(f.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.maintenance = &NodeMaintenance{}
+
+	job, err := app.PrepareLeastload(context.Background(), "default", leastload.ModeEgress, 42, []leastload.Mapping{{NodeUUID: testNodeUUID, OldIP: "9.9.9.9", NewIP: "1.1.1.1"}}, nil)
+	if err != nil || len(job.Items) != 1 || job.Items[0].Status != "prepared" {
+		t.Fatalf("PrepareLeastload() = %#v, %v", job, err)
+	}
+	job, err = app.ApplyLeastload(context.Background(), job.ID, 42, nil)
+	if err != nil || job.Items[0].Status != "done" {
+		t.Fatalf("ApplyLeastload() = %#v, %v", job, err)
+	}
+	stored := f.repo.mustGet("managed")
+	if stored.AdvancedEgressIP.String() != "1.1.1.1" || stored.TargetVPSIP.String() != "8.8.8.8" || f.remnawave.nodes[0].Address != "8.8.8.8" {
+		t.Fatalf("deployment=%+v node=%+v", stored, f.remnawave.nodes[0])
+	}
+	var updated map[string]any
+	if json.Unmarshal(f.remnawave.profiles[0].Config, &updated) != nil || updated["outbounds"].([]any)[0].(map[string]any)["sendThrough"] != "1.1.1.1" {
+		t.Fatalf("updated profile = %s", f.remnawave.profiles[0].Config)
+	}
+}

@@ -306,6 +306,11 @@ type createConfigProfileRequest struct {
 	Config any    `json:"config"`
 }
 
+type updateConfigProfileRequest struct {
+	UUID   string `json:"uuid"`
+	Config any    `json:"config"`
+}
+
 type createHostRequest struct {
 	Inbound struct {
 		ConfigProfileUUID string `json:"configProfileUuid"`

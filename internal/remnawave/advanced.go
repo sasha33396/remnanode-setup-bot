@@ -54,6 +54,27 @@ func (c *Client) CreateConfigProfile(ctx context.Context, input CreateConfigProf
 	return profile, nil
 }
 
+// UpdateConfigProfile replaces only the Xray config of an existing profile.
+// The UUID + config PATCH contract is shared by Remnawave 2.7.4 and 2.8.1.
+func (c *Client) UpdateConfigProfile(ctx context.Context, input UpdateConfigProfileInput) (ConfigProfile, error) {
+	if !validUUID(strings.TrimSpace(input.UUID)) || input.Config == nil {
+		return ConfigProfile{}, fmt.Errorf("config profile update: %w", ErrInvalidInput)
+	}
+	var envelope configProfileEnvelope
+	request := updateConfigProfileRequest{UUID: strings.TrimSpace(input.UUID), Config: input.Config}
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/config-profiles", request, http.StatusOK, &envelope); err != nil {
+		return ConfigProfile{}, err
+	}
+	if envelope.Response == nil {
+		return ConfigProfile{}, invalidResponse("updated config profile response is missing")
+	}
+	profile, err := envelope.Response.model()
+	if err != nil {
+		return ConfigProfile{}, invalidResponse("updated config profile is incomplete")
+	}
+	return profile, nil
+}
+
 func (c *Client) GenerateX25519(ctx context.Context) (X25519Keypair, error) {
 	var envelope x25519Envelope
 	if err := c.doJSON(ctx, http.MethodGet, "/api/system/tools/x25519/generate", nil, http.StatusOK, &envelope); err != nil {

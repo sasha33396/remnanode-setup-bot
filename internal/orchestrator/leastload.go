@@ -19,6 +19,15 @@ type replaceRecord interface {
 	ReplaceARecord(context.Context, string, netip.Addr, netip.Addr, bool) error
 }
 
+type updateConfigProfileAPI interface {
+	GetConfigProfiles(context.Context) ([]remnawave.ConfigProfile, error)
+	UpdateConfigProfile(context.Context, remnawave.UpdateConfigProfileInput) (remnawave.ConfigProfile, error)
+}
+
+type advancedEgressStore interface {
+	SetAdvancedEgressIP(context.Context, string, netip.Addr) (deployment.Deployment, error)
+}
+
 func (a *TelegramApplication) connectLeastload(ctx context.Context, id string, ip netip.Addr) (leastload.Session, error) {
 	if a.leastloadSSH != nil {
 		return a.leastloadSSH(ctx, id, ip)
@@ -59,8 +68,15 @@ func (a *TelegramApplication) ListLeastloadCandidates(ctx context.Context, panel
 		item, e := a.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, node.UUID)
 		if e != nil {
 			c.Reason = "Нет управляемой записи ноды в боте"
-		} else if item.SSHHostKeyFingerprint == nil || *item.SSHHostKeyFingerprint == "" {
-			c.NetworkReason = "Нет закреплённого ключа SSH"
+		} else {
+			if item.SSHHostKeyFingerprint == nil || *item.SSHHostKeyFingerprint == "" {
+				c.NetworkReason = "Нет закреплённого ключа SSH"
+			}
+			if item.Kind != deployment.KindAdvancedBalancer || !item.AdvancedEgressIP.IsValid() || item.AdvancedConfigProfileUUID == "" {
+				c.EgressReason = "У ноды нет управляемого второго IP"
+			} else {
+				c.EgressIP = item.AdvancedEgressIP.Unmap().String()
+			}
 		}
 		if _, e := netip.ParseAddr(c.Domain); e == nil {
 			c.Reason = "Host использует IP вместо отдельного DNS-имени"
@@ -94,7 +110,7 @@ func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID, mod
 	if mode == "" {
 		mode = leastload.ModeNetwork
 	}
-	if operator <= 0 || len(mappings) == 0 || len(mappings) > 50 || (mode != leastload.ModeNetwork && mode != leastload.ModeControlPlane) {
+	if operator <= 0 || len(mappings) == 0 || len(mappings) > 50 || (mode != leastload.ModeNetwork && mode != leastload.ModeControlPlane && mode != leastload.ModeEgress) {
 		return job, ErrInvalidInput
 	}
 	oldSet, newSet, nodeSet := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -127,6 +143,8 @@ func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID, mod
 		probe, cancel := context.WithTimeout(ctx, 100*time.Second)
 		if mode == leastload.ModeControlPlane {
 			item, e = a.prepareLeastloadControlPlaneItem(probe, panelID, item)
+		} else if mode == leastload.ModeEgress {
+			item, e = a.prepareLeastloadEgressItem(probe, panelID, item)
 		} else {
 			item, e = a.prepareLeastloadItem(probe, panelID, item)
 		}
@@ -260,6 +278,104 @@ func (a *TelegramApplication) prepareLeastloadControlPlaneItem(ctx context.Conte
 	return item, nil
 }
 
+func (a *TelegramApplication) prepareLeastloadEgressItem(ctx context.Context, panelID string, item leastload.Item) (leastload.Item, error) {
+	_, _, profile, _, err := a.checkLeastloadEgressTarget(ctx, panelID, &item)
+	if err != nil {
+		return item, err
+	}
+	item.Domain = profile.Name
+	item.Plan = leastload.Plan{OldIP: item.Mapping.OldIP, NewIP: item.Mapping.NewIP, Mode: leastload.ModeEgress}
+	item.Message = "Без SSH/Netplan: изменить только outbound.sendThrough"
+	return item, nil
+}
+
+func (a *TelegramApplication) checkLeastloadEgressTarget(ctx context.Context, panelID string, item *leastload.Item) (PanelApplicationConfig, deployment.Deployment, remnawave.ConfigProfile, map[string]any, error) {
+	panel, err := a.panel(panelID)
+	if err != nil {
+		return panel, deployment.Deployment{}, remnawave.ConfigProfile{}, nil, err
+	}
+	managed, err := a.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, item.Mapping.NodeUUID)
+	if err != nil || managed.Kind != deployment.KindAdvancedBalancer || managed.AdvancedConfigProfileUUID == "" || !managed.AdvancedEgressIP.IsValid() {
+		return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("У ноды нет управляемого второго IP")
+	}
+	oldIP := netip.MustParseAddr(item.Mapping.OldIP).Unmap()
+	newIP := netip.MustParseAddr(item.Mapping.NewIP).Unmap()
+	resuming := item.Status == "egress_pending" || item.Status == "done"
+	if managed.AdvancedEgressIP.Unmap() != oldIP && !(resuming && managed.AdvancedEgressIP.Unmap() == newIP) {
+		return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("Второй IP изменился после подготовки")
+	}
+	if managed.TargetVPSIP.Unmap() == newIP {
+		return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("Второй IP не должен совпадать с основным")
+	}
+	nodes, err := panel.Service.remnawave.GetNodes(ctx)
+	if err != nil {
+		return panel, managed, remnawave.ConfigProfile{}, nil, err
+	}
+	found := false
+	for _, node := range nodes {
+		if node.UUID == item.Mapping.NodeUUID {
+			found = true
+			item.Name = node.Name
+		}
+		if address, parseErr := netip.ParseAddr(strings.TrimSpace(node.Address)); parseErr == nil && address.Unmap() == newIP {
+			return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("Новый второй IP уже используется как основной IP ноды")
+		}
+	}
+	if !found {
+		return panel, managed, remnawave.ConfigProfile{}, nil, ErrNodeNotFound
+	}
+	api, ok := panel.Service.remnawave.(updateConfigProfileAPI)
+	if !ok {
+		return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("Обновление Config Profile недоступно")
+	}
+	profiles, err := api.GetConfigProfiles(ctx)
+	if err != nil {
+		return panel, managed, remnawave.ConfigProfile{}, nil, err
+	}
+	for _, profile := range profiles {
+		if profile.UUID != managed.AdvancedConfigProfileUUID {
+			continue
+		}
+		config, current, err := replaceProfileEgress(profile.Config, oldIP.String(), newIP.String())
+		if err != nil || (current != oldIP.String() && !(resuming && current == newIP.String())) {
+			return panel, managed, profile, nil, leastload.Error("sendThrough профиля не совпадает с сохранённым вторым IP")
+		}
+		item.DeploymentID = managed.ID
+		return panel, managed, profile, config, nil
+	}
+	return panel, managed, remnawave.ConfigProfile{}, nil, leastload.Error("Config Profile балансировщика не найден")
+}
+
+func replaceProfileEgress(raw json.RawMessage, oldIP, newIP string) (map[string]any, string, error) {
+	var config map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &config) != nil {
+		return nil, "", errors.New("invalid config profile")
+	}
+	outbounds, ok := config["outbounds"].([]any)
+	if !ok {
+		return nil, "", errors.New("outbounds are missing")
+	}
+	var direct map[string]any
+	for _, value := range outbounds {
+		candidate, ok := value.(map[string]any)
+		if ok && candidate["tag"] == "DIRECT" {
+			if direct != nil {
+				return nil, "", errors.New("multiple DIRECT outbounds")
+			}
+			direct = candidate
+		}
+	}
+	if direct == nil {
+		return nil, "", errors.New("DIRECT outbound is missing")
+	}
+	current, ok := direct["sendThrough"].(string)
+	if !ok || (current != oldIP && current != newIP) {
+		return nil, current, errors.New("sendThrough mismatch")
+	}
+	direct["sendThrough"] = newIP
+	return config, current, nil
+}
+
 func checkEgress(ctx context.Context, s *DeploymentService, nodeID, oldIP string) error {
 	node, err := s.remnawave.GetNode(ctx, nodeID)
 	if err != nil {
@@ -370,6 +486,8 @@ func (a *TelegramApplication) ApplyLeastload(ctx context.Context, id string, ope
 		}
 		if job.Mode == leastload.ModeControlPlane {
 			err = a.applyLeastloadControlPlaneItem(ctx, job.PanelID, item, update)
+		} else if job.Mode == leastload.ModeEgress {
+			err = a.applyLeastloadEgressItem(ctx, job.PanelID, item, update)
 		} else {
 			err = a.applyLeastloadItem(ctx, job.PanelID, item, job.CreatedAt, update)
 		}
@@ -533,4 +651,39 @@ func (a *TelegramApplication) applyLeastloadControlPlaneItem(ctx context.Context
 		return leastload.Error("Node и DNS обновлены; основной IP в боте требует повтора")
 	}
 	return update("done", "Node, DNS и основной IP бота/веб-интерфейса обновлены без SSH/Netplan")
+}
+
+func (a *TelegramApplication) applyLeastloadEgressItem(ctx context.Context, panelID string, item *leastload.Item, update func(string, string) error) error {
+	panel, _, profile, config, err := a.checkLeastloadEgressTarget(ctx, panelID, item)
+	if err != nil {
+		return err
+	}
+	if item.Status == "prepared" {
+		if err := update("egress_pending", "Обновление outbound.sendThrough без SSH"); err != nil {
+			return err
+		}
+	}
+	if item.Status != "egress_pending" {
+		return nil
+	}
+	newIP := netip.MustParseAddr(item.Mapping.NewIP).Unmap()
+	api := panel.Service.remnawave.(updateConfigProfileAPI)
+	_, current, _ := replaceProfileEgress(profile.Config, item.Mapping.OldIP, item.Mapping.NewIP)
+	if current != item.Mapping.NewIP {
+		updated, err := api.UpdateConfigProfile(ctx, remnawave.UpdateConfigProfileInput{UUID: profile.UUID, Config: config})
+		if err != nil {
+			return leastload.Error("Обновление sendThrough в Config Profile требует повтора")
+		}
+		if _, value, err := replaceProfileEgress(updated.Config, item.Mapping.NewIP, item.Mapping.NewIP); err != nil || value != item.Mapping.NewIP {
+			return leastload.Error("Панель не подтвердила новый sendThrough")
+		}
+	}
+	store, ok := a.repository.(advancedEgressStore)
+	if !ok {
+		return leastload.Error("Сохранение второго IP в боте недоступно")
+	}
+	if _, err := store.SetAdvancedEgressIP(ctx, item.DeploymentID, newIP); err != nil {
+		return leastload.Error("sendThrough обновлён; второй IP в базе требует повтора")
+	}
+	return update("done", "Второй IP в Config Profile и базе обновлён без SSH/Netplan")
 }

@@ -10,6 +10,7 @@ import (
 const (
 	ModeNetwork      = "network"
 	ModeControlPlane = "control_plane"
+	ModeEgress       = "egress"
 )
 
 type Mapping struct {
@@ -24,6 +25,8 @@ type Candidate struct {
 	Domain        string `json:"domain"`
 	Reason        string `json:"reason,omitempty"`
 	NetworkReason string `json:"networkReason,omitempty"`
+	EgressIP      string `json:"egressIp,omitempty"`
+	EgressReason  string `json:"egressReason,omitempty"`
 }
 type Plan struct {
 	OldIP      string                  `json:"oldIp"`

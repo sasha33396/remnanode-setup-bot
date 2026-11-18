@@ -37,6 +37,14 @@ mode for cases where the server network was changed separately. Each item is
 stored before mutation and can be retried after a partial panel, DNS or
 database failure.
 
+Advanced Balancer deployments with a stored second address also expose
+**Egress/sendThrough only**. This mode leaves the Node address, Cloudflare,
+server network and canonical SSH address unchanged. It patches only the
+deployment-owned Config Profile's `DIRECT` outbound `sendThrough` and then
+stores the new `advanced_egress_ip`. The old value must match both the saved
+deployment and the current profile, preventing a stale operation from editing
+an unrelated profile.
+
 The preview re-reads the server; it does not rely on an old inventory snapshot.
 Before applying, the plan is rechecked and its file hash/mode/interface must
 still agree. Unstarted plans expire after 30 minutes; re-prepare an expired or

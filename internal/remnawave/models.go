@@ -127,6 +127,11 @@ type CreateConfigProfileInput struct {
 	Config any
 }
 
+type UpdateConfigProfileInput struct {
+	UUID   string
+	Config any
+}
+
 type CreateHostInput struct {
 	Remark            string
 	Address           string

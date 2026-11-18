@@ -33,6 +33,27 @@ func TestCreateConfigProfileRejectsDotsInName(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigProfileSendsUUIDAndConfigOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/config-profiles" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["uuid"] != testProfileUUID || body["config"] == nil || len(body) != 2 {
+			t.Fatalf("update body = %#v, %v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"response":{"uuid":"`+testProfileUUID+`","name":"Balancer-test","config":{"outbounds":[{"tag":"DIRECT","sendThrough":"1.1.1.1"}]},"inbounds":[]}}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, time.Second)
+	profile, err := client.UpdateConfigProfile(context.Background(), UpdateConfigProfileInput{UUID: testProfileUUID, Config: map[string]any{"outbounds": []any{map[string]any{"tag": "DIRECT", "sendThrough": "1.1.1.1"}}}})
+	if err != nil || profile.UUID != testProfileUUID || !strings.Contains(string(profile.Config), `"sendThrough":"1.1.1.1"`) {
+		t.Fatalf("UpdateConfigProfile() = %#v, %v", profile, err)
+	}
+}
+
 func TestGetConfigProfilesKeepsRemnawave27And28InboundMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/config-profiles" {
