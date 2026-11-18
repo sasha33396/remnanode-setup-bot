@@ -70,6 +70,30 @@ func TestDNSDeploymentResolverReturnsSafeFailurePhase(t *testing.T) {
 	}
 }
 
+func TestPanelDNSDeploymentResolverFallsBackToManagedInventoryForAudit(t *testing.T) {
+	managedIP := netip.MustParseAddr("203.0.113.40")
+	nodeUUID, fingerprint := "00000000-0000-4000-8000-000000000040", "SHA256:managed"
+	lookup := &panelResolverLookup{deployments: []deployment.Deployment{{
+		ID: "00000000-0000-4000-8000-000000000041", PanelID: "hit", SNIDomain: testSNI,
+		TargetVPSIP: managedIP, RemnawaveNodeUUID: &nodeUUID,
+		SSHHostKeyFingerprint: &fingerprint, Status: deployment.StatusCompleted,
+	}}}
+	resolver, err := NewPanelDNSDeploymentResolver("hit", &resolverDNS{err: errors.New("zone is absent")}, lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := resolver.ResolveForAudit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolution.Managed) != 1 || resolution.Managed[0].IP != managedIP {
+		t.Fatalf("managed = %#v", resolution.Managed)
+	}
+	if _, err := resolver.Resolve(context.Background(), testSNI); !errors.Is(err, ErrDistributionFailed) {
+		t.Fatalf("normal Resolve() error = %v, want fail-closed distribution error", err)
+	}
+}
+
 type resolverDNS struct {
 	match dnsbalancer.ZoneMatch
 	err   error
@@ -82,6 +106,19 @@ func (r *resolverDNS) FindZone(context.Context, string) (dnsbalancer.ZoneMatch, 
 type resolverLookup struct {
 	deployments []deployment.Deployment
 	reviews     []TargetReview
+}
+
+type panelResolverLookup struct {
+	deployments []deployment.Deployment
+	reviews     []TargetReview
+}
+
+func (r *panelResolverLookup) FindDeploymentsByPanelSNI(context.Context, string, string, int) ([]deployment.Deployment, error) {
+	return append([]deployment.Deployment(nil), r.deployments...), nil
+}
+
+func (r *panelResolverLookup) ListTargetReviewsForPanel(context.Context, string, string) ([]TargetReview, error) {
+	return append([]TargetReview(nil), r.reviews...), nil
 }
 
 func (r *resolverLookup) FindDeploymentsBySNI(context.Context, string, int) ([]deployment.Deployment, error) {

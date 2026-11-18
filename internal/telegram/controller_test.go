@@ -838,6 +838,34 @@ func TestAddNodeWizardTransitionsAndDeploymentProgress(t *testing.T) {
 	}
 }
 
+func TestStartDeploymentOutlivesTelegramUpdateContext(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	contextErr := make(chan error, 1)
+	application := &fakeApplication{deployStarted: started, deployRelease: release, deployContextErr: contextErr}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	session := &wizard{
+		userID: testAllowedUser, chatID: testChatID, nonce: "deployment-context", state: stateAwaitingConfirmation,
+		expiresAt: time.Unix(100, 0).Add(time.Minute), statusMsgID: 99, password: []byte("temporary-secret"),
+		panel: Panel{ID: "hit"}, selected: Host{ID: "host-id"}, nodeName: "node-name",
+		vpsIP: netip.MustParseAddr("203.0.113.10"), preflight: PreflightResult{PreparedDeploymentID: "deployment-id"},
+	}
+	controller.putSession(session)
+	callback := &CallbackQuery{ID: "deploy", FromUserID: testAllowedUser, Message: &Message{ID: 99, ChatID: testChatID}}
+	updateCtx, cancelUpdate := context.WithCancel(context.Background())
+	if err := controller.startDeployment(updateCtx, callback, session); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cancelUpdate()
+	close(release)
+	controller.Wait()
+	if err := <-contextErr; err != nil {
+		t.Fatalf("deployment inherited cancelled Telegram context: %v", err)
+	}
+}
+
 func TestPasswordPreflightRunsInBackgroundWithoutBlockingBotUpdates(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -1226,6 +1254,9 @@ type fakeApplication struct {
 	preflightStarted chan struct{}
 	preflightRelease <-chan struct{}
 	deployErr        error
+	deployStarted    chan struct{}
+	deployRelease    <-chan struct{}
+	deployContextErr chan error
 
 	listHostCalls       int
 	nameChecks          int
@@ -1576,13 +1607,25 @@ func (f *fakeApplication) Preflight(ctx context.Context, input PreflightInput) (
 	return result, err
 }
 
-func (f *fakeApplication) StartDeployment(_ context.Context, input DeploymentInput, progress func(Progress) error) error {
+func (f *fakeApplication) StartDeployment(ctx context.Context, input DeploymentInput, progress func(Progress) error) error {
 	f.mu.Lock()
 	f.deployCalls++
 	f.deploymentPassword = append([]byte(nil), input.Password...)
 	f.deploymentInput = input
 	f.deploymentInput.Password = nil
 	f.mu.Unlock()
+	if f.deployStarted != nil {
+		close(f.deployStarted)
+	}
+	if f.deployRelease != nil {
+		select {
+		case <-f.deployRelease:
+		case <-ctx.Done():
+		}
+	}
+	if f.deployContextErr != nil {
+		f.deployContextErr <- ctx.Err()
+	}
 	if err := progress(Progress{Step: "preflight", Completed: 1, Total: 2, SafeMessage: "Preflight complete", Status: ProgressCompleted}); err != nil {
 		return err
 	}

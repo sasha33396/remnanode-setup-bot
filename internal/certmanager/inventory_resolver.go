@@ -25,14 +25,18 @@ func NewInventoryResolver(panelID string, lookup PanelDeploymentLookup) (*Invent
 }
 
 func (r *InventoryResolver) Resolve(ctx context.Context, sni string) (TargetResolution, error) {
-	items, err := r.lookup.FindDeploymentsByPanelSNI(ctx, r.panelID, sni, 100)
+	return resolvePanelInventory(ctx, r.panelID, sni, r.lookup)
+}
+
+func resolvePanelInventory(ctx context.Context, panelID, sni string, lookup PanelDeploymentLookup) (TargetResolution, error) {
+	items, err := lookup.FindDeploymentsByPanelSNI(ctx, panelID, sni, 100)
 	if err != nil {
 		return TargetResolution{}, safe("Certificate deployment inventory is unavailable", ErrDistributionFailed)
 	}
 	result := TargetResolution{}
 	seen := make(map[string]struct{})
 	for _, item := range items {
-		if item.PanelID != r.panelID || item.RemnawaveNodeUUID == nil || item.SSHHostKeyFingerprint == nil || item.Status == deployment.StatusCancelled {
+		if item.PanelID != panelID || item.RemnawaveNodeUUID == nil || item.SSHHostKeyFingerprint == nil || item.Status == deployment.StatusCancelled {
 			continue
 		}
 		key := item.TargetVPSIP.Unmap().String()

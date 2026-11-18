@@ -288,6 +288,28 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 	}
 	defer unlock()
 
+	if m.resolver == nil {
+		return result, nil
+	}
+	resolution, err := m.resolver.Resolve(auditCtx, domain)
+	if err != nil {
+		if resolver, ok := m.resolver.(interface {
+			ResolveForAudit(context.Context, string) (TargetResolution, error)
+		}); ok {
+			resolution, err = resolver.ResolveForAudit(auditCtx, domain)
+		}
+	}
+	if err != nil {
+		return result, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
+	}
+	if len(resolution.Unmanaged) > 0 {
+		return result, safe("Certificate audit requires review of unmanaged DNS targets", ErrDistributionFailed)
+	}
+	result.Checked = len(resolution.Managed)
+	if len(resolution.Managed) == 0 {
+		return result, nil
+	}
+
 	record, material, loadErr := m.loadActive(auditCtx, domain, true)
 	var previous *Record
 	if loadErr == nil {
@@ -311,21 +333,6 @@ func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
 		}
 	}
 	defer material.Destroy()
-
-	if m.resolver == nil {
-		return result, nil
-	}
-	resolution, err := m.resolver.Resolve(auditCtx, domain)
-	if err != nil {
-		return result, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
-	}
-	if len(resolution.Unmanaged) > 0 {
-		return result, safe("Certificate audit requires review of unmanaged DNS targets", ErrDistributionFailed)
-	}
-	result.Checked = len(resolution.Managed)
-	if len(resolution.Managed) == 0 {
-		return result, nil
-	}
 
 	inspector, ok := m.distributor.(Inspector)
 	needsRepair := append([]Target(nil), resolution.Managed...)

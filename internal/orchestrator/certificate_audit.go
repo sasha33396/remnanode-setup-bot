@@ -73,6 +73,9 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 					reason = message
 				}
 				result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, SNI: domain, Reason: reason})
+				slog.Warn("certificate audit host failed", slog.String("panel_id", panelID), slog.String("panel_name", panel.Name), slog.String("sni", domain), slog.Int("nodes_checked", audit.Checked), slog.Int("nodes_healthy", audit.Healthy), slog.Int("nodes_repaired", audit.Repaired), slog.Int("nodes_deferred", audit.Deferred), slog.String("reason", reason))
+			} else {
+				slog.Info("certificate audit host completed", slog.String("panel_id", panelID), slog.String("panel_name", panel.Name), slog.String("sni", domain), slog.Int("nodes_checked", audit.Checked), slog.Int("nodes_healthy", audit.Healthy), slog.Int("nodes_repaired", audit.Repaired), slog.Bool("renewed", audit.Renewed))
 			}
 		}
 	}

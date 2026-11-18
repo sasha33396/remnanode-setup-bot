@@ -37,6 +37,19 @@ type DNSDeploymentResolver struct {
 	panelLookup PanelDeploymentLookup
 }
 
+// ResolveForAudit falls back to verified deployment inventory when a Host is
+// absent from the DNS-balancer config. Normal distribution still fails closed.
+func (r *DNSDeploymentResolver) ResolveForAudit(ctx context.Context, sni string) (TargetResolution, error) {
+	resolution, err := r.Resolve(ctx, sni)
+	if err == nil {
+		return resolution, nil
+	}
+	if r.panelLookup == nil || r.panelID == "" {
+		return TargetResolution{}, err
+	}
+	return resolvePanelInventory(ctx, r.panelID, sni, r.panelLookup)
+}
+
 func NewPanelDNSDeploymentResolver(panelID string, dns DNSConfigAPI, deployments PanelDeploymentLookup) (*DNSDeploymentResolver, error) {
 	panelID = strings.TrimSpace(panelID)
 	if panelID == "" || dns == nil || deployments == nil {

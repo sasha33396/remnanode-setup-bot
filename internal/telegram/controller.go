@@ -1099,11 +1099,13 @@ func (c *Controller) acceptNodeMovePassword(ctx context.Context, message *Messag
 		active.clear()
 		return err
 	}
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentActionTimeout)
 	c.workers.Add(1)
 	go func() {
 		defer c.workers.Done()
+		defer cancel()
 		defer active.clear()
-		result, moveErr := c.app.(NodeHostMoveApplication).MoveNodeToHost(ctx, NodeHostMoveInput{
+		result, moveErr := c.app.(NodeHostMoveApplication).MoveNodeToHost(runCtx, NodeHostMoveInput{
 			PanelID: active.panel.ID, NodeUUID: active.nodeMoveTarget.UUID, TargetHostUUID: active.selected.ID,
 			ExpectedProfileUUID:  active.nodeMoveTarget.ExpectedProfileUUID,
 			ExpectedInboundUUIDs: append([]string(nil), active.nodeMoveTarget.ExpectedInboundUUIDs...),
@@ -1401,9 +1403,11 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 		return err
 	}
 
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deploymentActionTimeout)
 	c.workers.Add(1)
 	go func() {
 		defer c.workers.Done()
+		defer cancel()
 		defer active.clear()
 		input := DeploymentInput{
 			PanelID:              active.panel.ID,
@@ -1414,17 +1418,17 @@ func (c *Controller) startDeployment(ctx context.Context, callback *CallbackQuer
 			VPSIP:                active.vpsIP,
 			Password:             active.password,
 		}
-		err := c.app.StartDeployment(ctx, input, func(progress Progress) error {
+		err := c.app.StartDeployment(runCtx, input, func(progress Progress) error {
 			progressView.Update(progress)
-			return c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
+			return c.messenger.EditMessage(runCtx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
 		})
 		if err != nil {
 			progressView.Fail(err)
-			_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{Inline: [][]Button{{{Text: "🔧 Открыть карточку и повторить шаг", CallbackData: "dep:open:" + active.preflight.PreparedDeploymentID}}}})
+			_ = c.messenger.EditMessage(runCtx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{Inline: [][]Button{{{Text: "🔧 Открыть карточку и повторить шаг", CallbackData: "dep:open:" + active.preflight.PreparedDeploymentID}}}})
 			return
 		}
 		progressView.Complete()
-		_ = c.messenger.EditMessage(ctx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
+		_ = c.messenger.EditMessage(runCtx, active.chatID, active.statusMsgID, progressView.Render(), Keyboard{})
 	}()
 	return nil
 }

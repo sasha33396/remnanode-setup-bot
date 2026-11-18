@@ -501,6 +501,17 @@ func TestManagerAuditKeepsValidMatchingCertificate(t *testing.T) {
 	}
 }
 
+func TestManagerAuditSkipsCertificateIssuanceWithoutManagedNodes(t *testing.T) {
+	fixture := newManagerFixture(t, nil)
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Checked != 0 || result.Renewed || fixture.issuer.calls.Load() != 0 {
+		t.Fatalf("audit result = %#v, issuer calls = %d", result, fixture.issuer.calls.Load())
+	}
+}
+
 func TestManagerAuditRenewsExpiringCertificateWithoutSourceNode(t *testing.T) {
 	fixture := newManagerFixture(t, []certificates.Material{
 		testMaterial(t, testSNI, time.Now().Add(12*time.Hour), nil),
