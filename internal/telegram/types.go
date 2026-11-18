@@ -14,7 +14,25 @@ const (
 	MenuNodes          = "📡 Ноды"
 	MenuDeployments    = "📜 Развёртывания"
 	MenuChangeIP       = "🔄 Сменить IP"
+	MenuCertificates   = "🔐 Проверить сертификаты"
 )
+
+type CertificateAuditFailure struct {
+	PanelName string `json:"panelName"`
+	SNI       string `json:"sni"`
+	Reason    string `json:"reason"`
+}
+
+type CertificateAuditResult struct {
+	Panels   int                       `json:"panels"`
+	Hosts    int                       `json:"hosts"`
+	Renewed  int                       `json:"renewed"`
+	Checked  int                       `json:"checked"`
+	Healthy  int                       `json:"healthy"`
+	Repaired int                       `json:"repaired"`
+	Deferred int                       `json:"deferred"`
+	Failures []CertificateAuditFailure `json:"failures,omitempty"`
+}
 
 var (
 	ErrDuplicateNodeName = errors.New("duplicate Node name")
@@ -520,6 +538,10 @@ type NodeIPApplication interface {
 type NodeActualizeApplication interface {
 	ActualizeNode(context.Context, NodeActualizeInput) (NodeActualizeResult, error)
 	ActualizeManagedNodes(context.Context) (ManagedNodesActualizeResult, error)
+}
+
+type CertificateAuditApplication interface {
+	AuditCertificates(context.Context) (CertificateAuditResult, error)
 }
 
 // BulkNodeIPApplication updates Remnawave and DNS from an operator-supplied

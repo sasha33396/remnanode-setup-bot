@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"remnanode-setup-bot/internal/certmanager"
@@ -22,13 +23,15 @@ import (
 // TelegramApplication adapts DeploymentService to the presentation-only
 // Telegram application port.
 type TelegramApplication struct {
-	panels       map[string]PanelApplicationConfig
-	order        []string
-	repository   DeploymentRepository
-	cherryIP     *cherryip.Service
-	royalIP      *royalip.Service
-	maintenance  *NodeMaintenance
-	leastloadSSH func(context.Context, string, netip.Addr) (leastload.Session, error)
+	panels                  map[string]PanelApplicationConfig
+	order                   []string
+	repository              DeploymentRepository
+	cherryIP                *cherryip.Service
+	royalIP                 *royalip.Service
+	maintenance             *NodeMaintenance
+	leastloadSSH            func(context.Context, string, netip.Addr) (leastload.Session, error)
+	certificateAuditMu      sync.Mutex
+	certificateAuditRunning bool
 }
 
 func (a *TelegramApplication) SetRoyalIPService(service *royalip.Service) error {

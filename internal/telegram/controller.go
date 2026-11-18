@@ -147,6 +147,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	case MenuDeployments, legacyMenuDeploys:
 		c.cancelExisting(ctx, message.FromUserID)
 		return c.showDeployments(ctx, message.ChatID)
+	case MenuCertificates:
+		return c.startCertificateAudit(ctx, message)
 	case MenuChangeIP:
 		return c.beginIPChange(ctx, message)
 	}
@@ -1747,7 +1749,7 @@ func (c *Controller) sendExpired(ctx context.Context, chatID int64) error {
 }
 
 func mainKeyboard() Keyboard {
-	return Keyboard{Reply: [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}}}
+	return Keyboard{Reply: [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}, {MenuCertificates}}}
 }
 
 func ipChangeKeyboard(nonce string) Keyboard {

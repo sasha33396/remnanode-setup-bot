@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -480,6 +481,90 @@ type fakeDistributor struct {
 	failureKind  DistributionFailureKind
 	calls        int
 	fingerprints []string
+	served       string
+}
+
+func TestManagerAuditKeepsValidMatchingCertificate(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	fixture.resolver.targets = []Target{{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.10")}}
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Renewed || result.Checked != 1 || result.Healthy != 1 || result.Repaired != 0 || fixture.distributor.calls != 1 {
+		t.Fatalf("audit result = %#v, distribution calls = %d", result, fixture.distributor.calls)
+	}
+}
+
+func TestManagerAuditRenewsExpiringCertificateWithoutSourceNode(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{
+		testMaterial(t, testSNI, time.Now().Add(12*time.Hour), nil),
+		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),
+	})
+	fixture.resolver.targets = []Target{{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.11")}}
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Renewed || fixture.issuer.calls.Load() != 2 || result.Healthy != 1 {
+		t.Fatalf("audit result = %#v, issuer calls = %d", result, fixture.issuer.calls.Load())
+	}
+}
+
+func TestManagerAuditRepairsMismatchedNodeCertificate(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil)})
+	fixture.resolver.targets = []Target{{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.12")}}
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.distributor.served = strings.Repeat("0", 64)
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Repaired != 1 || fixture.distributor.calls != 2 {
+		t.Fatalf("audit result = %#v, distribution calls = %d", result, fixture.distributor.calls)
+	}
+}
+
+func TestManagerAuditRenewsForReachableNodesWhenFormerNodeIsOffline(t *testing.T) {
+	fixture := newManagerFixture(t, []certificates.Material{
+		testMaterial(t, testSNI, time.Now().Add(12*time.Hour), nil),
+		testMaterial(t, testSNI, time.Now().Add(90*24*time.Hour), nil),
+	})
+	offline := Target{DeploymentID: "00000000-0000-4000-8000-000000000001", IP: netip.MustParseAddr("203.0.113.21")}
+	online := Target{DeploymentID: "00000000-0000-4000-8000-000000000002", IP: netip.MustParseAddr("203.0.113.22")}
+	fixture.resolver.targets = []Target{offline, online}
+	material, err := fixture.manager.Prepare(context.Background(), testSNI)
+	material.Destroy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.distributor.fail = offline.IP
+	fixture.distributor.failureKind = DistributionFailureUnavailable
+	result, err := fixture.manager.Audit(context.Background(), testSNI)
+	if !errors.Is(err, ErrDistributionDeferred) {
+		t.Fatalf("Audit() error = %v, want deferred distribution", err)
+	}
+	active, activeErr := fixture.repository.GetActive(context.Background(), testSNI)
+	if activeErr != nil || !result.Renewed || active.Status != StatusDistributionFailed || fixture.issuer.calls.Load() != 2 {
+		t.Fatalf("audit result = %#v, active = %#v, error = %v", result, active, activeErr)
+	}
+	if len(fixture.distributor.fingerprints) < 2 || fixture.distributor.fingerprints[len(fixture.distributor.fingerprints)-1] != active.Fingerprint {
+		t.Fatalf("reachable nodes did not receive active certificate: %#v", fixture.distributor.fingerprints)
+	}
 }
 
 func (d *fakeDistributor) Distribute(_ context.Context, sni string, material certificates.Material, targets []Target) []DistributionResult {
@@ -494,6 +579,22 @@ func (d *fakeDistributor) Distribute(_ context.Context, sni string, material cer
 			results[index].Status = DistributionFailed
 			results[index].FailureKind = d.failureKind
 			results[index].SafeMessage = "activation failed"
+		}
+	}
+	return results
+}
+
+func (d *fakeDistributor) Inspect(_ context.Context, _ string, targets []Target) []InspectionResult {
+	fingerprint := d.served
+	if fingerprint == "" && len(d.fingerprints) > 0 {
+		fingerprint = d.fingerprints[len(d.fingerprints)-1]
+	}
+	results := make([]InspectionResult, len(targets))
+	for index, target := range targets {
+		results[index] = InspectionResult{Target: target, Fingerprint: fingerprint, Status: DistributionSucceeded}
+		if d.fail.IsValid() && d.fail == target.IP {
+			results[index].Status = DistributionFailed
+			results[index].FailureKind = d.failureKind
 		}
 	}
 	return results

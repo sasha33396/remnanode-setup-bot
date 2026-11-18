@@ -42,7 +42,7 @@ func TestControllerRejectsUnauthorizedUsers(t *testing.T) {
 func TestTelegramButtonsUseRussianLabels(t *testing.T) {
 	menu := mainKeyboard()
 	wantReply := [][]string{{"➕ Добавить ноду", "🔄 Сменить IP"}, {"📡 Ноды", "📜 Развёртывания"}}
-	wantReply = [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}}
+	wantReply = [][]string{{MenuAddNode, MenuAddProfileHost}, {MenuAddBalancer, MenuChangeIP}, {MenuNodes, MenuDeployments}, {MenuCertificates}}
 	if fmt.Sprint(menu.Reply) != fmt.Sprint(wantReply) {
 		t.Fatalf("main keyboard = %#v, want %#v", menu.Reply, wantReply)
 	}

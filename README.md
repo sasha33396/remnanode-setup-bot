@@ -47,6 +47,15 @@ central DNS-01 client and for direct Advanced Balancer Host A records; it is
 never copied to a Node. Certificate versions and
 the ACME account key are stored under `CERTIFICATE_STORE_PATH`.
 
+Certificate audits run at startup and every `CERTIFICATE_AUDIT_INTERVAL` (six
+hours by default), and can also be started from Telegram or the web console.
+For every Remnawave Host with Nodes, the audit validates the protected central
+certificate and the certificate actually served by each managed Node on Xray
+SNI port 9443. Certificates inside the renewal window are issued centrally via
+DNS-01 and distributed to every reachable Node. There is no designated source
+Node: an offline or deleted Node is deferred while the other Nodes continue to
+receive the new version, and the scheduler retries unavailable targets later.
+
 Multi-panel mode is configured in `config/panels.yml`. Copy
 `config/panels.yml.example`, edit the panel URLs and set
 `PANELS_CONFIG_FILE=/etc/remnanode-setup-bot/panels.yml` in `.env`. Each entry

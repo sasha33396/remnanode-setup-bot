@@ -1543,6 +1543,16 @@ type fakeCertificateProvider struct {
 	bootstrapResult certmanager.BootstrapResult
 	bootstrapErr    error
 	bootstrapCalls  int
+	auditResult     certmanager.AuditResult
+	auditErr        error
+	auditCalls      int
+}
+
+func (f *fakeCertificateProvider) Audit(_ context.Context, sni string) (certmanager.AuditResult, error) {
+	f.auditCalls++
+	result := f.auditResult
+	result.SNI = sni
+	return result, f.auditErr
 }
 
 func (f *fakeCertificateProvider) Readiness(context.Context, string) (CertificateReadiness, error) {

@@ -41,6 +41,10 @@ type NodeActualizer interface {
 	ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error)
 }
 
+type CertificateAuditor interface {
+	AuditCertificates(context.Context) (telegram.CertificateAuditResult, error)
+}
+
 type DeploymentFinder interface {
 	FindDeploymentByPanelNodeUUID(context.Context, string, string) (deployment.Deployment, error)
 }
@@ -62,6 +66,7 @@ type Server struct {
 	config       Config
 	nodes        NodeProvider
 	actualizer   NodeActualizer
+	auditor      CertificateAuditor
 	deployments  DeploymentFinder
 	managedSSH   *sshclient.Client
 	legacySSH    *sshclient.Client
@@ -83,6 +88,7 @@ type Server struct {
 
 func New(config Config, nodes NodeProvider, deployments DeploymentFinder, managedSSH, legacySSH *sshclient.Client) (*Server, error) {
 	actualizer, _ := nodes.(NodeActualizer)
+	auditor, _ := nodes.(CertificateAuditor)
 	if config.Addr == "" || config.PublicURL == "" || strings.TrimSpace(config.OIDCClientID) == "" || strings.TrimSpace(config.OIDCClientSecret) == "" || len(config.SessionSecret) < 32 || config.SessionTTL <= 0 || config.TerminalTimeout <= 0 || config.MaxSessions <= 0 || len(config.AllowedUsers) == 0 || nodes == nil || deployments == nil || managedSSH == nil || legacySSH == nil {
 		return nil, errors.New("invalid web console configuration")
 	}
@@ -96,7 +102,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	}
 	key := sha256.Sum256([]byte(config.SessionSecret))
 	server := &Server{
-		config: config, nodes: nodes, actualizer: actualizer, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
+		config: config, nodes: nodes, actualizer: actualizer, auditor: auditor, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
 		allowedUsers: make(map[int64]struct{}, len(config.AllowedUsers)), sessionKey: key[:], publicURL: publicURL,
 		login: login, slots: make(chan struct{}, config.MaxSessions), now: time.Now,
 	}
@@ -125,6 +131,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	mux.HandleFunc("GET /auth/oidc/callback", server.handleOIDCCallback)
 	mux.HandleFunc("GET /api/session", server.handleSession)
 	mux.HandleFunc("GET /api/nodes", server.handleNodes)
+	mux.HandleFunc("POST /api/certificates/audit", server.handleCertificateAudit)
 	mux.HandleFunc("GET /api/network-reports", server.handleNetworkReports)
 	mux.HandleFunc("POST /api/network-reports/scan", server.handleNetworkScan)
 	mux.HandleFunc("GET /api/leastload/candidates", server.handleLeastloadRead)
@@ -545,6 +552,28 @@ func (s *Server) handleBulkActualize(w http.ResponseWriter, r *http.Request) {
 		"total": result.Total, "updated": result.Updated, "failed": result.Failed,
 		"firewallChanged": result.FirewallChanged, "failures": result.Failures,
 	})
+}
+
+func (s *Server) handleCertificateAudit(w http.ResponseWriter, r *http.Request) {
+	_, cookie, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.validCSRF(r, cookie) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if s.auditor == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Проверка сертификатов недоступна"})
+		return
+	}
+	result, err := s.auditor.AuditCertificates(r.Context())
+	if err != nil && result.Hosts == 0 && len(result.Failures) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Проверка сертификатов уже выполняется или недоступна"})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleActualize(w http.ResponseWriter, r *http.Request) {

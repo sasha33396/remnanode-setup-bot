@@ -182,6 +182,29 @@ type Distributor interface {
 	Distribute(context.Context, string, certificates.Material, []Target) []DistributionResult
 }
 
+type InspectionResult struct {
+	Target      Target
+	Fingerprint string
+	Status      DistributionStatus
+	FailureKind DistributionFailureKind
+	SafeMessage string
+}
+
+// Inspector verifies the certificate currently served by each Node's Caddy,
+// rather than trusting only the central distribution history.
+type Inspector interface {
+	Inspect(context.Context, string, []Target) []InspectionResult
+}
+
+type AuditResult struct {
+	SNI      string
+	Renewed  bool
+	Checked  int
+	Healthy  int
+	Repaired int
+	Deferred int
+}
+
 type Observer interface {
 	SetCertificateExpiry(string, time.Duration)
 	CertificateRenewalFailed(string)
@@ -193,6 +216,7 @@ type Config struct {
 	RenewInterval             time.Duration
 	RenewBatchSize            int
 	DistributionRetryInterval time.Duration
+	AuditTimeout              time.Duration
 }
 
 type BootstrapResult struct {

@@ -43,6 +43,9 @@ func New(repository Repository, store Store, issuer Issuer, locker Locker, resol
 	if config.DistributionRetryInterval <= 0 {
 		config.DistributionRetryInterval = 5 * time.Minute
 	}
+	if config.AuditTimeout <= 0 {
+		config.AuditTimeout = 5 * time.Minute
+	}
 	if config.RenewBefore >= 365*24*time.Hour || config.RenewBatchSize > 100 {
 		return nil, ErrInvalidInput
 	}
@@ -265,6 +268,97 @@ func (m *Manager) Renew(ctx context.Context, sni string) error {
 		m.renewalFailed(domain)
 	}
 	return err
+}
+
+// Audit verifies the centrally stored certificate and the certificate actually
+// served by every managed Node. Expiring, expired or invalid central material
+// is replaced through ACME; Nodes with a missing or different live certificate
+// receive the active version. Issuance never depends on a designated Node.
+func (m *Manager) Audit(ctx context.Context, sni string) (AuditResult, error) {
+	domain, err := canonicalSNI(sni)
+	if err != nil {
+		return AuditResult{}, err
+	}
+	result := AuditResult{SNI: domain}
+	auditCtx, cancel := context.WithTimeout(ctx, m.config.AuditTimeout)
+	defer cancel()
+	unlock, err := m.locker.Lock(auditCtx, domain)
+	if err != nil {
+		return result, safe("Certificate audit lock is unavailable", ErrPersistenceFailed)
+	}
+	defer unlock()
+
+	record, material, loadErr := m.loadActive(auditCtx, domain, true)
+	var previous *Record
+	if loadErr == nil {
+		previous = &record
+	}
+	if loadErr != nil || !record.ExpiresAt.After(m.now().Add(m.config.RenewBefore)) {
+		if loadErr != nil && !errors.Is(loadErr, ErrNotFound) && !errors.Is(loadErr, certificates.ErrInvalidMaterial) && !errors.Is(loadErr, ErrStorageFailed) {
+			return result, loadErr
+		}
+		material.Destroy()
+		material, err = m.issueAndActivate(auditCtx, domain, previous)
+		if err != nil {
+			m.renewalFailed(domain)
+			return result, err
+		}
+		result.Renewed = true
+		record, err = m.repository.GetActive(auditCtx, domain)
+		if err != nil {
+			material.Destroy()
+			return result, safe("Renewed certificate metadata is unavailable", ErrPersistenceFailed)
+		}
+	}
+	defer material.Destroy()
+
+	if m.resolver == nil {
+		return result, nil
+	}
+	resolution, err := m.resolver.Resolve(auditCtx, domain)
+	if err != nil {
+		return result, safe(SafeMessage(err, "Certificate distribution targets are unavailable"), ErrDistributionFailed)
+	}
+	if len(resolution.Unmanaged) > 0 {
+		return result, safe("Certificate audit requires review of unmanaged DNS targets", ErrDistributionFailed)
+	}
+	result.Checked = len(resolution.Managed)
+	if len(resolution.Managed) == 0 {
+		return result, nil
+	}
+
+	inspector, ok := m.distributor.(Inspector)
+	needsRepair := append([]Target(nil), resolution.Managed...)
+	if ok {
+		inspections := inspector.Inspect(auditCtx, domain, resolution.Managed)
+		needsRepair = needsRepair[:0]
+		for index, target := range resolution.Managed {
+			if index < len(inspections) && inspections[index].Target == target && inspections[index].Status == DistributionSucceeded && strings.EqualFold(inspections[index].Fingerprint, record.Fingerprint) {
+				result.Healthy++
+				continue
+			}
+			needsRepair = append(needsRepair, target)
+		}
+	}
+	if len(needsRepair) == 0 {
+		if record.Status != StatusActive {
+			if err := m.repository.SetStatus(auditCtx, domain, StatusActive); err != nil {
+				return result, safe("Certificate audit state could not be saved", ErrPersistenceFailed)
+			}
+		}
+		return result, nil
+	}
+	if err := m.distributeTargets(auditCtx, domain, record.ActiveVersion, material, needsRepair); err != nil {
+		if errors.Is(err, ErrDistributionDeferred) {
+			result.Deferred = len(needsRepair)
+		}
+		return result, err
+	}
+	result.Repaired = len(needsRepair)
+	if err := m.repository.SetStatus(auditCtx, domain, StatusActive); err != nil {
+		return result, safe("Certificate audit state could not be saved", ErrPersistenceFailed)
+	}
+	return result, nil
 }
 
 // Bootstrap activates the newest valid staged certificate for an SNI after an

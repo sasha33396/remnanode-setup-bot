@@ -91,6 +91,18 @@ func TestLoadCertificateDistributionRetryInterval(t *testing.T) {
 	}
 }
 
+func TestLoadCertificateAuditInterval(t *testing.T) {
+	values := validValues()
+	values["CERTIFICATE_AUDIT_INTERVAL"] = "3h"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CertificateAuditInterval != 3*time.Hour {
+		t.Fatalf("certificate audit interval = %v", cfg.CertificateAuditInterval)
+	}
+}
+
 func TestLoadAbuseMonitorOverrides(t *testing.T) {
 	values := validValues()
 	values["ABUSE_MONITOR_INTERVAL"] = "2m"

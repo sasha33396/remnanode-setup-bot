@@ -164,6 +164,17 @@
     finally { button.disabled = false; button.textContent = 'Синхронизировать защиту на всех'; }
   }
 
+  async function auditCertificates() {
+    const button = $('#certificate-audit');
+    clearNotice(); button.disabled = true; button.textContent = 'Проверка сертификатов…';
+    try {
+      const result = await request('/api/certificates/audit', { method: 'POST' });
+      const failures = (result.failures || []).slice(0, 8).map((item) => `${item.panelName}${item.sni ? ` / ${item.sni}` : ''}: ${item.reason}`).join('; ');
+      showNotice(`Проверка завершена: Host — ${result.hosts}, нод — ${result.checked}, исправных — ${result.healthy}, перевыпущено — ${result.renewed}, исправлено на нодах — ${result.repaired}, недоступно — ${result.deferred}.${failures ? ` Ошибки: ${failures}` : ''}`);
+    } catch (error) { showNotice(error.message); }
+    finally { button.disabled = false; button.textContent = 'Проверить сертификаты'; }
+  }
+
   function openTerminal(node, ticket) {
     terminalDialog.showModal();
     $('#terminal-title').textContent = node.name;
@@ -480,6 +491,7 @@
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
   $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
+  $('#certificate-audit').addEventListener('click', auditCertificates);
   $('#network-reports').addEventListener('click', async () => {
     $('#network-dialog').showModal();
     try { await loadNetworkReports(); } catch (error) { $('#network-scan-status').textContent = error.message; }

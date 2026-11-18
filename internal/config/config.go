@@ -85,6 +85,8 @@ type Config struct {
 	CertificateRenewBefore      time.Duration
 	CertificateRenewInterval    time.Duration
 	CertificateRetryInterval    time.Duration
+	CertificateAuditInterval    time.Duration
+	CertificateAuditTimeout     time.Duration
 	CertificateIssueTimeout     time.Duration
 	DNSPropagationTimeout       time.Duration
 	DNSPropagationInterval      time.Duration
@@ -185,6 +187,8 @@ func load(lookup lookupFunc) (Config, error) {
 		CertificateRenewBefore:      30 * 24 * time.Hour,
 		CertificateRenewInterval:    12 * time.Hour,
 		CertificateRetryInterval:    5 * time.Minute,
+		CertificateAuditInterval:    6 * time.Hour,
+		CertificateAuditTimeout:     5 * time.Minute,
 		CertificateIssueTimeout:     2 * time.Minute,
 		DNSPropagationTimeout:       90 * time.Second,
 		DNSPropagationInterval:      2 * time.Second,
@@ -322,6 +326,8 @@ func load(lookup lookupFunc) (Config, error) {
 		{"NODE_THEME_ROTATION_INTERVAL", &cfg.NodeThemeRotationInterval}, {"NODE_THEME_ROTATION_JITTER", &cfg.NodeThemeRotationJitter},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL", &cfg.CertificateRetryInterval},
+		{"CERTIFICATE_AUDIT_INTERVAL", &cfg.CertificateAuditInterval},
+		{"CERTIFICATE_AUDIT_TIMEOUT", &cfg.CertificateAuditTimeout},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
 		{"DNS_PROPAGATION_INTERVAL", &cfg.DNSPropagationInterval},
 		{"WEB_SESSION_TTL", &cfg.WebSessionTTL}, {"WEB_TERMINAL_TIMEOUT", &cfg.WebTerminalTimeout},

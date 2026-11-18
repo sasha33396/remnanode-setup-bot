@@ -55,6 +55,10 @@ type CertificateBootstrapper interface {
 	Bootstrap(context.Context, string, int64) (certmanager.BootstrapResult, error)
 }
 
+type CertificateAuditor interface {
+	Audit(context.Context, string) (certmanager.AuditResult, error)
+}
+
 type NewTargetCertificateProvider interface {
 	PrepareForNewTarget(context.Context, string) (certificates.Material, error)
 }

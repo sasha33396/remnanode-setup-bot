@@ -2,6 +2,7 @@ package certmanager
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"sort"
 	"strings"
@@ -202,6 +203,63 @@ func (d *SSHDistributor) Distribute(ctx context.Context, sni string, material ce
 	return results
 }
 
+func (d *SSHDistributor) Inspect(ctx context.Context, sni string, targets []Target) []InspectionResult {
+	results := make([]InspectionResult, len(targets))
+	semaphore := make(chan struct{}, d.config.MaxConcurrent)
+	var workers sync.WaitGroup
+	for index, target := range targets {
+		index, target := index, target
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				results[index] = InspectionResult{Target: target, Status: DistributionFailed, FailureKind: DistributionFailureCancelled, SafeMessage: "Certificate inspection cancelled"}
+				return
+			}
+			connection, err := d.ssh.ConnectWithDeploymentKey(ctx, target.DeploymentID, target.IP, "root")
+			if err != nil {
+				results[index] = InspectionResult{Target: target, Status: DistributionFailed, FailureKind: DistributionFailureUnavailable, SafeMessage: "Could not connect to Node"}
+				return
+			}
+			defer connection.Close()
+			domain, _ := shellQuoteCertificate(sni)
+			command := fmt.Sprintf(`# certificate:audit-live
+set -eu
+domain=%s
+peer=$(mktemp)
+trap 'rm -f "$peer"' EXIT
+code=$(curl --silent --show-error --output /dev/null --write-out '%%{http_code}' --resolve "$domain:9443:127.0.0.1" --cacert /opt/xray-sni/certs/fullchain.pem "https://$domain:9443/health")
+test "$code" = 200
+openssl s_client -connect 127.0.0.1:9443 -servername "$domain" -showcerts </dev/null 2>/dev/null | openssl x509 -out "$peer"
+openssl x509 -in "$peer" -noout -checkend 0 >/dev/null
+openssl x509 -in "$peer" -outform DER | sha256sum | cut -d' ' -f1`, domain)
+			result, err := connection.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: d.config.CommandTimeout})
+			if err != nil {
+				results[index] = InspectionResult{Target: target, Status: DistributionFailed, FailureKind: DistributionFailureActivation, SafeMessage: "Node is not serving a valid certificate"}
+				return
+			}
+			fingerprint := strings.ToLower(strings.TrimSpace(result.Stdout))
+			if len(fingerprint) != 64 {
+				results[index] = InspectionResult{Target: target, Status: DistributionFailed, FailureKind: DistributionFailureActivation, SafeMessage: "Node certificate fingerprint is invalid"}
+				return
+			}
+			results[index] = InspectionResult{Target: target, Fingerprint: fingerprint, Status: DistributionSucceeded, SafeMessage: "Certificate is valid"}
+		}()
+	}
+	workers.Wait()
+	return results
+}
+
+func shellQuoteCertificate(value string) (string, bool) {
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return "", false
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'", true
+}
+
 func failedDistribution(target Target, kind DistributionFailureKind, message string) DistributionResult {
 	return DistributionResult{Target: target, Status: DistributionFailed, FailureKind: kind, SafeMessage: message}
 }
@@ -209,4 +267,5 @@ func failedDistribution(target Target, kind DistributionFailureKind, message str
 var (
 	_ TargetResolver = (*DNSDeploymentResolver)(nil)
 	_ Distributor    = (*SSHDistributor)(nil)
+	_ Inspector      = (*SSHDistributor)(nil)
 )
