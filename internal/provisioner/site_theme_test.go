@@ -28,7 +28,7 @@ func TestSiteThemeManagerInstallsTimerAndRotatesTemplate(t *testing.T) {
 		"RandomizedDelaySec=43200s",
 		"ExecStart=/usr/local/sbin/node-theme-rotate --rotate-seed --offline",
 		"systemctl enable --now node-theme-rotate.timer",
-		"/usr/local/sbin/node-theme-rotate --rotate-template",
+		"/usr/local/sbin/node-theme-rotate --rotate-template --offline",
 	} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("managed commands do not contain %q", required)

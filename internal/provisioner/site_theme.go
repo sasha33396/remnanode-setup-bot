@@ -99,7 +99,30 @@ func (m *SiteThemeManager) Rotate(ctx context.Context) error {
 	if err := m.installManagedFiles(ctx); err != nil {
 		return err
 	}
-	return m.run(ctx, "--rotate-template")
+	return m.rotate(ctx)
+}
+
+func (m *SiteThemeManager) rotate(ctx context.Context) error {
+	repository, _ := shellQuote(m.config.RepositoryURL)
+	ref, _ := shellQuote(m.config.Ref)
+	command := fmt.Sprintf(`# node-theme:rotate
+set -eu
+if [ -d /opt/node-templates/.git ] &&
+   [ "$(git -C /opt/node-templates remote get-url origin)" = %s ] &&
+   [ "$(git -C /opt/node-templates rev-parse HEAD)" = %s ] &&
+   [ -x /opt/node-templates/uniquify-theme.sh ]; then
+  %s --rotate-template --offline
+else
+  %s --rotate-template
+fi`, repository, ref, siteThemeScriptPath, siteThemeScriptPath)
+	_, err := m.runner.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: m.config.CommandTimeout})
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return ErrSiteThemeInstallationFailed
 }
 
 func (m *SiteThemeManager) Validate(ctx context.Context) error {

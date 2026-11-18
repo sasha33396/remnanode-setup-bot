@@ -589,8 +589,13 @@ func (s *Server) handleBulkTheme(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Смена шаблонов недоступна"})
 		return
 	}
-	jobID, err := s.startBackgroundJob(user.UserID, "theme-managed", "all", nil, func(ctx context.Context, _ func(telegram.NodeActualizeProgress)) (any, error) {
-		return s.themer.RotateManagedNodeThemes(ctx)
+	jobID, err := s.startBackgroundJob(user.UserID, "theme-managed", "all", nil, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
+		progress(telegram.NodeActualizeProgress{Step: "theme_prepare", Message: "Подключаюсь к нодам и запускаю параллельную ротацию", Completed: 1, Total: 4})
+		result, rotateErr := s.themer.RotateManagedNodeThemes(ctx)
+		if rotateErr == nil {
+			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблоны собраны, Caddy и HTTPS проверены", Completed: 3, Total: 4})
+		}
+		return result, rotateErr
 	})
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "Смена шаблонов уже выполняется"})
@@ -623,8 +628,13 @@ func (s *Server) handleNodeTheme(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Смена шаблона доступна только актуальной ноде"})
 		return
 	}
-	jobID, err := s.startBackgroundJob(user.UserID, "theme:"+parts[0], parts[1], nil, func(ctx context.Context, _ func(telegram.NodeActualizeProgress)) (any, error) {
-		return s.themer.RotateNodeTheme(ctx, parts[0], parts[1])
+	jobID, err := s.startBackgroundJob(user.UserID, "theme:"+parts[0], parts[1], nil, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
+		progress(telegram.NodeActualizeProgress{Step: "theme_prepare", Message: "Подключаюсь по SSH, выбираю шаблон и создаю новый seed", Completed: 1, Total: 4})
+		result, rotateErr := s.themer.RotateNodeTheme(ctx, parts[0], parts[1])
+		if rotateErr == nil {
+			progress(telegram.NodeActualizeProgress{Step: "theme_validate", Message: "Шаблон собран, Caddy и HTTPS проверены", Completed: 3, Total: 4})
+		}
+		return result, rotateErr
 	})
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется операция"})
