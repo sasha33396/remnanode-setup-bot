@@ -29,6 +29,14 @@ blocked. Unknown provider gateway/mask conventions are never guessed.
   Ethernet address list, preserving its prefix and every other YAML setting.
   This mode requires an explicit administrator network rule below.
 
+The web console also offers **Control plane only**. It performs no SSH,
+Netplan, route, reachability or provider-assignment checks. It updates the
+Remnawave Node address, the dedicated Cloudflare A record and the deployment's
+canonical address used by the bot and web console. This is an explicit expert
+mode for cases where the server network was changed separately. Each item is
+stored before mutation and can be retried after a partial panel, DNS or
+database failure.
+
 The preview re-reads the server; it does not rely on an old inventory snapshot.
 Before applying, the plan is rechecked and its file hash/mode/interface must
 still agree. Unstarted plans expire after 30 minutes; re-prepare an expired or

@@ -114,8 +114,37 @@ func TestLeastloadPreviewRejectsSwapsBeforeSSH(t *testing.T) {
 	f.service.repository = store
 	app, _ := NewTelegramApplication(f.service)
 	app.maintenance = &NodeMaintenance{}
-	_, err := app.PrepareLeastload(context.Background(), "default", 42, []leastload.Mapping{{NodeUUID: "a", OldIP: "8.8.8.8", NewIP: "1.1.1.1"}, {NodeUUID: "b", OldIP: "1.1.1.1", NewIP: "8.8.8.8"}}, nil)
+	_, err := app.PrepareLeastload(context.Background(), "default", leastload.ModeNetwork, 42, []leastload.Mapping{{NodeUUID: "a", OldIP: "8.8.8.8", NewIP: "1.1.1.1"}, {NodeUUID: "b", OldIP: "1.1.1.1", NewIP: "8.8.8.8"}}, nil)
 	if err == nil || len(store.data) != 0 {
 		t.Fatal("address swap accepted")
+	}
+}
+
+func TestLeastloadControlPlaneModeSkipsSSHAndUpdatesCanonicalAddress(t *testing.T) {
+	f := newFixture(t)
+	store := &ipJobStore{memoryRepository: f.repo}
+	f.service.repository = store
+	f.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: "leastload", Address: "8.8.8.8"}}
+	f.remnawave.hosts = []remnawave.Host{{UUID: testHostUUID, IsHidden: true, Address: "edge.example.com", Nodes: []string{testNodeUUID}}}
+	// This mode intentionally does not require a pinned SSH host key.
+	f.repo.items["managed"] = deployment.Deployment{ID: "managed", PanelID: "default", RemnawaveNodeUUID: stringPtr(testNodeUUID), TargetVPSIP: netip.MustParseAddr("8.8.8.8")}
+	dns := &ipRecord{}
+	f.service.config.DNSRecords = dns
+	app, err := NewTelegramApplication(f.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.maintenance = &NodeMaintenance{}
+
+	job, err := app.PrepareLeastload(context.Background(), "default", leastload.ModeControlPlane, 42, []leastload.Mapping{{NodeUUID: testNodeUUID, OldIP: "8.8.8.8", NewIP: "1.1.1.1"}}, nil)
+	if err != nil || len(job.Items) != 1 || job.Items[0].Status != "prepared" || job.Items[0].Plan.Mode != leastload.ModeControlPlane {
+		t.Fatalf("PrepareLeastload() = %#v, %v", job, err)
+	}
+	job, err = app.ApplyLeastload(context.Background(), job.ID, 42, nil)
+	if err != nil || job.Items[0].Status != "done" {
+		t.Fatalf("ApplyLeastload() = %#v, %v", job, err)
+	}
+	if dns.updates != 1 || f.remnawave.nodes[0].Address != "1.1.1.1" || f.repo.mustGet("managed").TargetVPSIP.String() != "1.1.1.1" {
+		t.Fatalf("control-plane result: dns=%d node=%s deployment=%s", dns.updates, f.remnawave.nodes[0].Address, f.repo.mustGet("managed").TargetVPSIP)
 	}
 }

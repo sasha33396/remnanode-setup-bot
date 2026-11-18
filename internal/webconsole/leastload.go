@@ -11,7 +11,7 @@ import (
 type leastloadApp interface {
 	ListLeastloadCandidates(context.Context, string) ([]leastload.Candidate, error)
 	ListLeastloadJobs(context.Context) ([]leastload.Job, error)
-	PrepareLeastload(context.Context, string, int64, []leastload.Mapping, func(telegram.NodeActualizeProgress)) (leastload.Job, error)
+	PrepareLeastload(context.Context, string, string, int64, []leastload.Mapping, func(telegram.NodeActualizeProgress)) (leastload.Job, error)
 	ApplyLeastload(context.Context, string, int64, func(telegram.NodeActualizeProgress)) (leastload.Job, error)
 }
 
@@ -52,6 +52,7 @@ func (s *Server) handleLeastloadWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		PanelID  string              `json:"panelId"`
+		Mode     string              `json:"mode"`
 		Mappings []leastload.Mapping `json:"mappings"`
 		JobID    string              `json:"jobId"`
 		Assigned bool                `json:"assigned"`
@@ -79,7 +80,7 @@ func (s *Server) handleLeastloadWrite(w http.ResponseWriter, r *http.Request) {
 		if apply {
 			return app.ApplyLeastload(ctx, body.JobID, user.UserID, progress)
 		}
-		return app.PrepareLeastload(ctx, body.PanelID, user.UserID, body.Mappings, progress)
+		return app.PrepareLeastload(ctx, body.PanelID, body.Mode, user.UserID, body.Mappings, progress)
 	})
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": "Операция уже выполняется"})

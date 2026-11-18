@@ -3,7 +3,7 @@
   const $ = (id) => document.getElementById(id);
   const escape = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let candidates = [], current = null, busy = false, csrf = '';
-  const statuses = { prepared:'Готово к запуску', blocked:'Пропущено', network_pending:'Проверка изменения сети / отката', network_done:'Сервер готов, завершается панель и DNS', done:'Выполнено', rolled_back:'Не применено / откат' };
+  const statuses = { prepared:'Готово к запуску', blocked:'Пропущено', network_pending:'Проверка изменения сети / отката', network_done:'Сервер готов, завершается панель и DNS', control_pending:'Обновляются панель, DNS и основной IP', done:'Выполнено', rolled_back:'Не применено / откат' };
   async function api(path, body) {
     const response = await fetch(path, body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});
     const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Ошибка запроса'); return result;
@@ -11,11 +11,12 @@
   function message(text) { $('leastload-status').textContent = text; }
   function setBusy(value) {
     busy=value;
-    for (const id of ['leastload-panel','leastload-preview','leastload-import','leastload-history-refresh']) $(id).disabled=value;
-    $('leastload-apply').disabled=value || !current || !current.items.some((item)=>['prepared','network_pending','network_done'].includes(item.status));
+    for (const id of ['leastload-panel','leastload-mode','leastload-preview','leastload-import','leastload-history-refresh']) $(id).disabled=value;
+    $('leastload-apply').disabled=value || !current || !current.items.some((item)=>['prepared','network_pending','network_done','control_pending'].includes(item.status));
   }
   function renderCandidates() {
-    $('leastload-candidates').innerHTML=candidates.map((c,i)=>`<div class="leastload-row" data-search="${escape(`${c.name} ${c.address}`.toLowerCase())}"><label><input type="checkbox" data-leastload-check="${i}" ${c.reason?'disabled':''}> ${escape(c.name)} · ${escape(c.address)}</label><input data-leastload-ip="${i}" aria-label="Новый IP для ${escape(c.name)}" placeholder="Новый IPv4" ${c.reason?'disabled':''}><small>${escape(c.reason || c.domain)}</small></div>`).join('') || '<p>Ноды с отдельными скрытыми Host не найдены.</p>';
+    const network=$('leastload-mode').value==='network';
+    $('leastload-candidates').innerHTML=candidates.map((c,i)=>{const reason=c.reason||(network?c.networkReason:'');return `<div class="leastload-row" data-search="${escape(`${c.name} ${c.address}`.toLowerCase())}"><label><input type="checkbox" data-leastload-check="${i}" ${reason?'disabled':''}> ${escape(c.name)} · ${escape(c.address)}</label><input data-leastload-ip="${i}" aria-label="Новый IP для ${escape(c.name)}" placeholder="Новый IPv4" ${reason?'disabled':''}><small>${escape(reason || c.domain)}</small></div>`;}).join('') || '<p>Ноды с отдельными скрытыми Host не найдены.</p>';
     filter();
   }
   function filter() { const q=$('leastload-search').value.toLowerCase();document.querySelectorAll('.leastload-row').forEach((row)=>{row.hidden=!row.dataset.search.includes(q);}); }
@@ -23,8 +24,8 @@
   function renderJob(job) {
     current=job;
     $('leastload-plan').innerHTML=`<p>Операция ${escape(job.id)} · ${escape(job.panelId)}</p>`+job.items.map((item)=>{
-      const others=(item.plan.before?.addresses||[]).filter((a)=>a.ip!==item.mapping.oldIp&&a.interface===item.plan.interface).map((a)=>`${a.ip}/${a.prefix}`);
-      return `<article class="deployment-details"><strong>${escape(item.name||item.mapping.oldIp)}</strong><p>${escape(item.mapping.oldIp)} → ${escape(item.mapping.newIp)}</p><p>${escape(statuses[item.status]||item.status)}: ${escape(item.message)}</p>${item.status==='blocked'?'':`<p>Сохранить: ${escape(others.join(', ')||'дополнительных адресов не найдено')}${item.plan.mode!=='replace'?' · старый IP также сохраняется':''}</p>`}</article>`;
+      const control=job.mode==='control_plane',others=(item.plan.before?.addresses||[]).filter((a)=>a.ip!==item.mapping.oldIp&&a.interface===item.plan.interface).map((a)=>`${a.ip}/${a.prefix}`);
+      return `<article class="deployment-details"><strong>${escape(item.name||item.mapping.oldIp)}</strong><p>${escape(item.mapping.oldIp)} → ${escape(item.mapping.newIp)}</p><p>${escape(statuses[item.status]||item.status)}: ${escape(item.message)}</p>${item.status==='blocked'||control?'':`<p>Сохранить: ${escape(others.join(', ')||'дополнительных адресов не найдено')}${item.plan.mode!=='replace'?' · старый IP также сохраняется':''}</p>`}</article>`;
     }).join('');setBusy(busy);
   }
   async function history() {
@@ -49,6 +50,7 @@
     $('leastload-dialog').showModal();if(busy)return;try{csrf=(await api('/api/session')).csrfToken;const panels=(await api('/api/options/panels')).panels||[];$('leastload-panel').innerHTML=panels.map((p)=>`<option value="${escape(p.ID)}">${escape(p.Name)}</option>`).join('');await loadCandidates();await history();}catch(error){message(error.message);}
   };
   $('leastload-panel').onchange=()=>loadCandidates().catch((e)=>message(e.message));
+  $('leastload-mode').onchange=()=>{current=null;$('leastload-plan').textContent='';$('leastload-assigned').checked=false;$('leastload-confirm-text').textContent=$('leastload-mode').value==='control_plane'?'Понимаю: SSH и Netplan не проверяются, меняются только панель, DNS и основной IP':'Новые IP уже назначены нужным серверам у хостера';renderCandidates();setBusy(false);};
   $('leastload-search').oninput=filter;
   $('leastload-history-refresh').onclick=()=>history().catch((e)=>message(e.message));
   $('leastload-import').onclick=()=>{
@@ -67,11 +69,11 @@
   $('leastload-preview').onclick=()=>{
     const mappings=[...document.querySelectorAll('[data-leastload-check]:checked')].map((el)=>{const i=Number(el.dataset.leastloadCheck),c=candidates[i];return {nodeUuid:c.nodeUuid,oldIp:c.address,newIp:document.querySelector(`[data-leastload-ip="${i}"]`).value.trim()};});
     if(!mappings.length||mappings.length>50){message('Выберите от 1 до 50 нод');return;}
-    $('leastload-assigned').checked=false;operation('/api/leastload/preview',{panelId:$('leastload-panel').value,mappings});
+    $('leastload-assigned').checked=false;operation('/api/leastload/preview',{panelId:$('leastload-panel').value,mode:$('leastload-mode').value,mappings});
   };
   $('leastload-apply').onclick=()=>{
-    if(!current||!$('leastload-assigned').checked){message('Подтвердите назначение новых IP серверам у хостера');return;}
-    if(!confirm('Выполнить показанный план? Сеть изменится только на нодах, которым это требуется.'))return;
+    if(!current||!$('leastload-assigned').checked){message(current?.mode==='control_plane'?'Подтвердите выполнение без проверки SSH и Netplan':'Подтвердите назначение новых IP серверам у хостера');return;}
+    if(!confirm(current.mode==='control_plane'?'Изменить IP только в Remnawave, DNS и боте без проверки сервера?':'Выполнить показанный план? Сеть изменится только на нодах, которым это требуется.'))return;
     operation('/api/leastload/apply',{jobId:current.id,assigned:true});
   };
 })();

@@ -7,17 +7,23 @@ import (
 	"time"
 )
 
+const (
+	ModeNetwork      = "network"
+	ModeControlPlane = "control_plane"
+)
+
 type Mapping struct {
 	NodeUUID string `json:"nodeUuid"`
 	OldIP    string `json:"oldIp"`
 	NewIP    string `json:"newIp"`
 }
 type Candidate struct {
-	NodeUUID string `json:"nodeUuid"`
-	Name     string `json:"name"`
-	Address  string `json:"address"`
-	Domain   string `json:"domain"`
-	Reason   string `json:"reason,omitempty"`
+	NodeUUID      string `json:"nodeUuid"`
+	Name          string `json:"name"`
+	Address       string `json:"address"`
+	Domain        string `json:"domain"`
+	Reason        string `json:"reason,omitempty"`
+	NetworkReason string `json:"networkReason,omitempty"`
 }
 type Plan struct {
 	OldIP      string                  `json:"oldIp"`
@@ -45,6 +51,7 @@ type Item struct {
 type Job struct {
 	ID        string    `json:"id"`
 	PanelID   string    `json:"panelId"`
+	Mode      string    `json:"mode,omitempty"`
 	Operator  int64     `json:"operator"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

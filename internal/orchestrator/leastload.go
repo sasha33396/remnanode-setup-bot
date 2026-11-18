@@ -58,9 +58,9 @@ func (a *TelegramApplication) ListLeastloadCandidates(ctx context.Context, panel
 		}
 		item, e := a.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, node.UUID)
 		if e != nil {
-			c.Reason = "Нет управляемого SSH-доступа"
+			c.Reason = "Нет управляемой записи ноды в боте"
 		} else if item.SSHHostKeyFingerprint == nil || *item.SSHHostKeyFingerprint == "" {
-			c.Reason = "Нет закреплённого ключа SSH"
+			c.NetworkReason = "Нет закреплённого ключа SSH"
 		}
 		if _, e := netip.ParseAddr(c.Domain); e == nil {
 			c.Reason = "Host использует IP вместо отдельного DNS-имени"
@@ -85,13 +85,16 @@ func (a *TelegramApplication) ListLeastloadJobs(ctx context.Context) ([]leastloa
 	return s.ListLeastloadJobs(ctx)
 }
 
-func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID string, operator int64, mappings []leastload.Mapping, progress func(telegram.NodeActualizeProgress)) (leastload.Job, error) {
+func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID, mode string, operator int64, mappings []leastload.Mapping, progress func(telegram.NodeActualizeProgress)) (leastload.Job, error) {
 	var job leastload.Job
 	store, err := a.leastloadStore()
 	if err != nil {
 		return job, err
 	}
-	if operator <= 0 || len(mappings) == 0 || len(mappings) > 50 {
+	if mode == "" {
+		mode = leastload.ModeNetwork
+	}
+	if operator <= 0 || len(mappings) == 0 || len(mappings) > 50 || (mode != leastload.ModeNetwork && mode != leastload.ModeControlPlane) {
 		return job, ErrInvalidInput
 	}
 	oldSet, newSet, nodeSet := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -114,7 +117,7 @@ func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID stri
 	if err != nil {
 		return job, err
 	}
-	job = leastload.Job{ID: id, PanelID: panelID, Operator: operator, CreatedAt: time.Now().UTC()}
+	job = leastload.Job{ID: id, PanelID: panelID, Mode: mode, Operator: operator, CreatedAt: time.Now().UTC()}
 	for i, m := range mappings {
 		itemID, e := deployment.NewID()
 		if e != nil {
@@ -122,7 +125,11 @@ func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID stri
 		}
 		item := leastload.Item{ID: itemID, Mapping: m, Status: "blocked"}
 		probe, cancel := context.WithTimeout(ctx, 100*time.Second)
-		item, e = a.prepareLeastloadItem(probe, panelID, item)
+		if mode == leastload.ModeControlPlane {
+			item, e = a.prepareLeastloadControlPlaneItem(probe, panelID, item)
+		} else {
+			item, e = a.prepareLeastloadItem(probe, panelID, item)
+		}
 		cancel()
 		if e != nil {
 			item.Status = "blocked"
@@ -140,16 +147,16 @@ func (a *TelegramApplication) PrepareLeastload(ctx context.Context, panelID stri
 	return job, err
 }
 
-func (a *TelegramApplication) checkLeastloadTarget(ctx context.Context, panelID string, item *leastload.Item) (PanelApplicationConfig, deployment.Deployment, error) {
+func (a *TelegramApplication) checkLeastloadTarget(ctx context.Context, panelID string, item *leastload.Item, requireSSH bool) (PanelApplicationConfig, deployment.Deployment, error) {
 	panel, err := a.panel(panelID)
 	if err != nil {
 		return panel, deployment.Deployment{}, err
 	}
 	managed, err := a.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, item.Mapping.NodeUUID)
 	if err != nil {
-		return panel, managed, leastload.Error("Нет управляемого SSH-доступа")
+		return panel, managed, leastload.Error("Нет управляемой записи ноды в боте")
 	}
-	if managed.SSHHostKeyFingerprint == nil || *managed.SSHHostKeyFingerprint == "" {
+	if requireSSH && (managed.SSHHostKeyFingerprint == nil || *managed.SSHHostKeyFingerprint == "") {
 		return panel, managed, leastload.Error("Не закреплён ключ SSH сервера")
 	}
 	nodes, err := panel.Service.remnawave.GetNodes(ctx)
@@ -161,7 +168,7 @@ func (a *TelegramApplication) checkLeastloadTarget(ctx context.Context, panelID 
 		if node.UUID == item.Mapping.NodeUUID {
 			found = true
 			item.Name = node.Name
-			resuming := item.Status == "network_pending" || item.Status == "network_done" || item.Status == "done"
+			resuming := item.Status == "network_pending" || item.Status == "network_done" || item.Status == "control_pending" || item.Status == "done"
 			if node.Address != item.Mapping.OldIP && !(resuming && node.Address == item.Mapping.NewIP) {
 				return panel, managed, leastload.Error("Адрес Node изменился после подготовки")
 			}
@@ -218,7 +225,7 @@ func (a *TelegramApplication) checkLeastloadTarget(ctx context.Context, panelID 
 }
 
 func (a *TelegramApplication) prepareLeastloadItem(ctx context.Context, panelID string, item leastload.Item) (leastload.Item, error) {
-	panel, managed, err := a.checkLeastloadTarget(ctx, panelID, &item)
+	panel, managed, err := a.checkLeastloadTarget(ctx, panelID, &item, true)
 	if err != nil {
 		return item, err
 	}
@@ -242,6 +249,15 @@ func (a *TelegramApplication) prepareLeastloadItem(ctx context.Context, panelID 
 		}
 	}
 	return item, err
+}
+
+func (a *TelegramApplication) prepareLeastloadControlPlaneItem(ctx context.Context, panelID string, item leastload.Item) (leastload.Item, error) {
+	if _, _, err := a.checkLeastloadTarget(ctx, panelID, &item, false); err != nil {
+		return item, err
+	}
+	item.Plan = leastload.Plan{OldIP: item.Mapping.OldIP, NewIP: item.Mapping.NewIP, Mode: leastload.ModeControlPlane}
+	item.Message = "Без SSH/Netplan: изменить Node, DNS и основной IP в боте"
+	return item, nil
 }
 
 func checkEgress(ctx context.Context, s *DeploymentService, nodeID, oldIP string) error {
@@ -324,6 +340,9 @@ func (a *TelegramApplication) ApplyLeastload(ctx context.Context, id string, ope
 	if job.Operator != operator {
 		return job, ErrInvalidInput
 	}
+	if job.Mode == "" {
+		job.Mode = leastload.ModeNetwork
+	}
 	for i := range job.Items {
 		item := &job.Items[i]
 		if item.Status == "done" || item.Status == "blocked" || item.Status == "rolled_back" {
@@ -349,7 +368,11 @@ func (a *TelegramApplication) ApplyLeastload(ctx context.Context, id string, ope
 			job.UpdatedAt = time.Now().UTC()
 			return store.SaveLeastloadJob(ctx, job)
 		}
-		err = a.applyLeastloadItem(ctx, job.PanelID, item, job.CreatedAt, update)
+		if job.Mode == leastload.ModeControlPlane {
+			err = a.applyLeastloadControlPlaneItem(ctx, job.PanelID, item, update)
+		} else {
+			err = a.applyLeastloadItem(ctx, job.PanelID, item, job.CreatedAt, update)
+		}
 		if err != nil {
 			item.Message = safeLeastloadError(err)
 			job.UpdatedAt = time.Now().UTC()
@@ -365,7 +388,7 @@ func (a *TelegramApplication) ApplyLeastload(ctx context.Context, id string, ope
 }
 
 func (a *TelegramApplication) applyLeastloadItem(ctx context.Context, panelID string, item *leastload.Item, created time.Time, update func(string, string) error) error {
-	panel, _, err := a.checkLeastloadTarget(ctx, panelID, item)
+	panel, _, err := a.checkLeastloadTarget(ctx, panelID, item, true)
 	if err != nil {
 		return err
 	}
@@ -435,7 +458,7 @@ func (a *TelegramApplication) applyLeastloadItem(ctx context.Context, panelID st
 		}
 	}
 	if item.Status == "network_done" {
-		if _, _, e := a.checkLeastloadTarget(ctx, panelID, item); e != nil {
+		if _, _, e := a.checkLeastloadTarget(ctx, panelID, item, true); e != nil {
 			return e
 		}
 		// Recheck reachability on every retry; never point the panel at an address
@@ -483,4 +506,31 @@ func (a *TelegramApplication) applyLeastloadItem(ctx context.Context, panelID st
 		}
 	}
 	return nil
+}
+
+func (a *TelegramApplication) applyLeastloadControlPlaneItem(ctx context.Context, panelID string, item *leastload.Item, update func(string, string) error) error {
+	panel, _, err := a.checkLeastloadTarget(ctx, panelID, item, false)
+	if err != nil {
+		return err
+	}
+	if item.Status == "prepared" {
+		if err := update("control_pending", "Обновление Remnawave, DNS и основного IP без SSH"); err != nil {
+			return err
+		}
+	}
+	if item.Status != "control_pending" {
+		return nil
+	}
+	oldIP := netip.MustParseAddr(item.Mapping.OldIP)
+	newIP := netip.MustParseAddr(item.Mapping.NewIP)
+	if _, err := panel.Service.remnawave.UpdateNodeAddress(ctx, remnawave.UpdateNodeAddressInput{UUID: item.Mapping.NodeUUID, Address: newIP}); err != nil {
+		return leastload.Error("Обновление Node в Remnawave требует повтора")
+	}
+	if err := panel.Service.config.DNSRecords.(replaceRecord).ReplaceARecord(ctx, item.Domain, oldIP, newIP, true); err != nil {
+		return leastload.Error("Node обновлена; DNS требует повтора")
+	}
+	if _, err := a.repository.SetTargetVPSIP(ctx, item.DeploymentID, newIP); err != nil {
+		return leastload.Error("Node и DNS обновлены; основной IP в боте требует повтора")
+	}
+	return update("done", "Node, DNS и основной IP бота/веб-интерфейса обновлены без SSH/Netplan")
 }

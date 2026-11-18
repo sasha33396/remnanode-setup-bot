@@ -9,7 +9,7 @@ import (
 
 func (r *Repository) HasPendingLeastload(ctx context.Context, deploymentID, exceptJob string) (bool, error) {
 	var found bool
-	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM leastload_ip_jobs j, jsonb_array_elements(j.job->'items') item WHERE j.id <> $1::uuid AND item->>'deploymentId'=$2 AND item->>'status' IN ('network_pending','network_done'))`, exceptJob, deploymentID).Scan(&found)
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM leastload_ip_jobs j, jsonb_array_elements(j.job->'items') item WHERE j.id <> $1::uuid AND item->>'deploymentId'=$2 AND item->>'status' IN ('network_pending','network_done','control_pending'))`, exceptJob, deploymentID).Scan(&found)
 	return found, err
 }
 
@@ -37,7 +37,7 @@ func (r *Repository) GetLeastloadJob(ctx context.Context, id string) (leastload.
 	return job, err
 }
 func (r *Repository) ListLeastloadJobs(ctx context.Context) ([]leastload.Job, error) {
-	rows, err := r.pool.Query(ctx, `SELECT job FROM leastload_ip_jobs WHERE id IN (SELECT id FROM leastload_ip_jobs ORDER BY updated_at DESC LIMIT 50) OR EXISTS (SELECT 1 FROM jsonb_array_elements(job->'items') item WHERE item->>'status' IN ('network_pending','network_done')) ORDER BY updated_at DESC`)
+	rows, err := r.pool.Query(ctx, `SELECT job FROM leastload_ip_jobs WHERE id IN (SELECT id FROM leastload_ip_jobs ORDER BY updated_at DESC LIMIT 50) OR EXISTS (SELECT 1 FROM jsonb_array_elements(job->'items') item WHERE item->>'status' IN ('network_pending','network_done','control_pending')) ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}

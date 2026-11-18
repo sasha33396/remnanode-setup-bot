@@ -17,7 +17,7 @@ func (p leastloadProvider) ListLeastloadCandidates(context.Context, string) ([]l
 func (p leastloadProvider) ListLeastloadJobs(context.Context) ([]leastload.Job, error) {
 	return []leastload.Job{}, nil
 }
-func (p leastloadProvider) PrepareLeastload(context.Context, string, int64, []leastload.Mapping, func(telegram.NodeActualizeProgress)) (leastload.Job, error) {
+func (p leastloadProvider) PrepareLeastload(context.Context, string, string, int64, []leastload.Mapping, func(telegram.NodeActualizeProgress)) (leastload.Job, error) {
 	return leastload.Job{}, nil
 }
 func (p leastloadProvider) ApplyLeastload(context.Context, string, int64, func(telegram.NodeActualizeProgress)) (leastload.Job, error) {

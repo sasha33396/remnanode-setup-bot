@@ -35,8 +35,9 @@
   <dialog id="leastload-dialog" class="dialog list-dialog">
     <div class="dialog-panel">
       <div class="dialog-heading"><h2>Замена IP leastload</h2><button type="button" class="button ghost" data-close-dialog="leastload-dialog">Закрыть</button></div>
-      <p class="muted">Выберите ноды со скрытыми Host. Проверка покажет, где IP уже настроен, а где потребуется изменить сеть. Дополнительные адреса сохраняются.</p>
+      <p class="muted">Выберите ноды со скрытыми Host. Полный режим проверяет и при необходимости меняет сеть сервера. Режим без SSH меняет только Remnawave, DNS и основной IP в боте.</p>
       <label>Панель<select id="leastload-panel"></select></label>
+      <label>Режим<select id="leastload-mode"><option value="network">С сервером: SSH и Netplan</option><option value="control_plane">Только панель, DNS и основной IP — без SSH</option></select></label>
       <label>Поиск<input id="leastload-search" type="search" placeholder="Имя или IP"></label>
       <div id="leastload-candidates"></div>
       <label>Массовый ввод: старый_IP → новый_IP<textarea id="leastload-mappings" rows="4" placeholder="88.216.214.148 -> новый_IP"></textarea></label>
@@ -44,7 +45,7 @@
       <button id="leastload-preview" class="button primary">Проверить выбранные</button>
       <p id="leastload-status" role="status"></p>
       <div id="leastload-plan"></div>
-      <label><input id="leastload-assigned" type="checkbox"> Новые IP уже назначены нужным серверам у хостера</label>
+      <label><input id="leastload-assigned" type="checkbox"> <span id="leastload-confirm-text">Новые IP уже назначены нужным серверам у хостера</span></label>
       <button id="leastload-apply" class="button primary" disabled>Выполнить готовые / продолжить</button>
       <h3>Сохранённые операции</h3><button id="leastload-history-refresh" class="button secondary">Обновить историю</button>
       <div id="leastload-history"></div>
