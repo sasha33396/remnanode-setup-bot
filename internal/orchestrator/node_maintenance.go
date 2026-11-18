@@ -78,6 +78,20 @@ func (a *TelegramApplication) ActualizeManagedNodes(ctx context.Context) (telegr
 	return a.maintenance.ActualizeManagedNodes(ctx)
 }
 
+func (a *TelegramApplication) RotateNodeTheme(ctx context.Context, panelID, nodeUUID string) (telegram.NodeThemeResult, error) {
+	if a == nil || a.maintenance == nil {
+		return telegram.NodeThemeResult{}, errors.New("node maintenance is unavailable")
+	}
+	return a.maintenance.RotateNodeTheme(ctx, panelID, nodeUUID)
+}
+
+func (a *TelegramApplication) RotateManagedNodeThemes(ctx context.Context) (telegram.ManagedNodesThemeResult, error) {
+	if a == nil || a.maintenance == nil {
+		return telegram.ManagedNodesThemeResult{}, errors.New("node maintenance is unavailable")
+	}
+	return a.maintenance.RotateManagedNodeThemes(ctx)
+}
+
 func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
 	defer clear(input.Password)
 	emitNodeActualizeProgress(input.Progress, "inventory", "Получение данных ноды из Remnawave", 0, 5)
@@ -136,8 +150,11 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	defer connection.Close()
 	emitNodeActualizeProgress(input.Progress, "netplan", "Чтение IP-адресов из netplan", base+1, total)
 	addresses, err := readNetplanAddresses(ctx, connection, m.timeout)
+	netplanSkipped := err != nil
 	if err != nil {
-		return telegram.NodeActualizeResult{}, err
+		addresses = nil
+		m.logger.Warn("node actualization skipped netplan inventory", slog.String("panel_id", input.PanelID), slog.String("node_uuid", input.NodeUUID), slog.String("node_name", name), slog.Any("error", err))
+		emitNodeActualizeProgress(input.Progress, "netplan", "Netplan не прочитан; продолжаю проверку защиты", base+1, total)
 	}
 	config, ok := m.firewall[input.PanelID]
 	if !ok {
@@ -148,19 +165,14 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("firewall reconciliation failed")
 	}
-	emitNodeActualizeProgress(input.Progress, "site_theme", "Смена темы и технического отпечатка сайта", base+3, total)
-	if !adopted {
-		theme, themeErr := provisioner.NewSiteThemeManager(connection, m.siteTheme)
-		if themeErr != nil || theme.Rotate(ctx) != nil {
-			return telegram.NodeActualizeResult{}, errors.New("site theme rotation failed")
+	emitNodeActualizeProgress(input.Progress, "inventory_save", "Сохранение списка IP-адресов для поиска ноды", base+4, total)
+	if !netplanSkipped {
+		if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: input.PanelID, NodeUUID: input.NodeUUID, Addresses: addresses}); err != nil {
+			return telegram.NodeActualizeResult{}, err
 		}
 	}
-	emitNodeActualizeProgress(input.Progress, "inventory_save", "Сохранение списка IP-адресов для поиска ноды", base+4, total)
-	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: input.PanelID, NodeUUID: input.NodeUUID, Addresses: addresses}); err != nil {
-		return telegram.NodeActualizeResult{}, err
-	}
 	emitNodeActualizeProgress(input.Progress, "completed", "Настройки ноды проверены и сохранены", total, total)
-	return telegram.NodeActualizeResult{NodeName: name, Managed: true, Adopted: adopted, Addresses: addresses, FirewallChanged: changed}, nil
+	return telegram.NodeActualizeResult{NodeName: name, Managed: true, Adopted: adopted, Addresses: addresses, NetplanSkipped: netplanSkipped, FirewallChanged: changed}, nil
 }
 
 func nodeAdoptionProgressCompleted(progress Progress) int {
@@ -260,6 +272,58 @@ type managedActualizeTarget struct {
 	address      netip.Addr
 }
 
+func (m *NodeMaintenance) managedTarget(ctx context.Context, panelID, nodeUUID string) (managedActualizeTarget, error) {
+	panel, err := m.app.panel(panelID)
+	if err != nil {
+		return managedActualizeTarget{}, err
+	}
+	item, err := m.app.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, nodeUUID)
+	if err != nil {
+		return managedActualizeTarget{}, errors.New("managed node not found")
+	}
+	nodes, err := panel.Service.remnawave.GetNodes(ctx)
+	if err != nil {
+		return managedActualizeTarget{}, errors.New("load managed Nodes failed")
+	}
+	for _, node := range nodes {
+		if node.UUID != nodeUUID {
+			continue
+		}
+		address, parseErr := netip.ParseAddr(strings.TrimSpace(node.Address))
+		if parseErr != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+			return managedActualizeTarget{}, errors.New("invalid node address")
+		}
+		return managedActualizeTarget{panelID: panelID, panelName: panel.Name, nodeUUID: node.UUID, nodeName: node.Name, deploymentID: item.ID, address: address.Unmap()}, nil
+	}
+	return managedActualizeTarget{}, errors.New("node not found")
+}
+
+func (m *NodeMaintenance) managedTargets(ctx context.Context) ([]managedActualizeTarget, error) {
+	targets := make([]managedActualizeTarget, 0)
+	for _, panelID := range m.app.order {
+		panel := m.app.panels[panelID]
+		nodes, err := panel.Service.remnawave.GetNodes(ctx)
+		if err != nil {
+			return nil, errors.New("load managed Nodes failed")
+		}
+		for _, node := range nodes {
+			item, err := m.app.repository.FindDeploymentByPanelNodeUUID(ctx, panelID, node.UUID)
+			if errors.Is(err, repository.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, errors.New("classify managed Node failed")
+			}
+			address, parseErr := netip.ParseAddr(strings.TrimSpace(node.Address))
+			if parseErr != nil || !address.IsGlobalUnicast() || address.IsPrivate() {
+				address = netip.Addr{}
+			}
+			targets = append(targets, managedActualizeTarget{panelID: panelID, panelName: panel.Name, nodeUUID: node.UUID, nodeName: node.Name, deploymentID: item.ID, address: address.Unmap()})
+		}
+	}
+	return targets, nil
+}
+
 func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.ManagedNodesActualizeResult, error) {
 	m.bulkMu.Lock()
 	if m.bulkRunning {
@@ -298,8 +362,9 @@ func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.M
 	}
 
 	type outcome struct {
-		changed bool
-		reason  string
+		changed        bool
+		netplanSkipped bool
+		reason         string
 	}
 	outcomes := make([]outcome, len(targets))
 	semaphore := make(chan struct{}, nodeNetworkPollConcurrency)
@@ -316,7 +381,7 @@ func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.M
 				outcomes[index].reason = "cancelled"
 				return
 			}
-			outcomes[index].changed, outcomes[index].reason = m.actualizeManagedTarget(ctx, target)
+			outcomes[index].changed, outcomes[index].netplanSkipped, outcomes[index].reason = m.actualizeManagedTarget(ctx, target)
 		}()
 	}
 	workers.Wait()
@@ -326,6 +391,9 @@ func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.M
 		outcome := outcomes[index]
 		if outcome.reason == "" {
 			result.Updated++
+			if outcome.netplanSkipped {
+				result.NetplanSkipped++
+			}
 			if outcome.changed {
 				result.FirewallChanged++
 			}
@@ -338,37 +406,115 @@ func (m *NodeMaintenance) ActualizeManagedNodes(ctx context.Context) (telegram.M
 	return result, nil
 }
 
-func (m *NodeMaintenance) actualizeManagedTarget(ctx context.Context, target managedActualizeTarget) (bool, string) {
+func (m *NodeMaintenance) actualizeManagedTarget(ctx context.Context, target managedActualizeTarget) (bool, bool, string) {
 	if !target.address.IsValid() {
-		return false, "invalid_address"
+		return false, false, "invalid_address"
 	}
 	unlock := m.lockNode(target.panelID, target.nodeUUID)
 	defer unlock()
 	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, target.deploymentID, target.address, "root")
 	if err != nil {
-		return false, "ssh_connect"
+		return false, false, "ssh_connect"
 	}
 	defer connection.Close()
 	addresses, err := readNetplanAddresses(ctx, connection, m.timeout)
+	netplanSkipped := err != nil
 	if err != nil {
-		return false, "netplan_read"
+		addresses = nil
+		m.logger.Warn("managed node synchronization skipped netplan inventory", slog.String("panel_id", target.panelID), slog.String("node_uuid", target.nodeUUID), slog.String("node_name", target.nodeName), slog.Any("error", err))
 	}
 	config, ok := m.firewall[target.panelID]
 	if !ok {
-		return false, "firewall_config"
+		return false, netplanSkipped, "firewall_config"
 	}
 	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout, m.mailGuard)
 	if err != nil {
-		return false, "firewall_reconcile"
+		return false, netplanSkipped, "firewall_reconcile"
 	}
+	if !netplanSkipped {
+		if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: target.panelID, NodeUUID: target.nodeUUID, Addresses: addresses}); err != nil {
+			return changed, false, "inventory_save"
+		}
+	}
+	return changed, netplanSkipped, ""
+}
+
+func (m *NodeMaintenance) RotateNodeTheme(ctx context.Context, panelID, nodeUUID string) (telegram.NodeThemeResult, error) {
+	target, err := m.managedTarget(ctx, panelID, nodeUUID)
+	if err != nil {
+		return telegram.NodeThemeResult{}, err
+	}
+	if reason := m.rotateManagedTargetTheme(ctx, target); reason != "" {
+		return telegram.NodeThemeResult{}, errors.New("site theme rotation failed: " + reason)
+	}
+	return telegram.NodeThemeResult{NodeName: target.nodeName}, nil
+}
+
+func (m *NodeMaintenance) RotateManagedNodeThemes(ctx context.Context) (telegram.ManagedNodesThemeResult, error) {
+	m.bulkMu.Lock()
+	if m.bulkRunning {
+		m.bulkMu.Unlock()
+		return telegram.ManagedNodesThemeResult{}, errors.New("managed Node bulk operation is already running")
+	}
+	m.bulkRunning = true
+	m.bulkMu.Unlock()
+	defer func() {
+		m.bulkMu.Lock()
+		m.bulkRunning = false
+		m.bulkMu.Unlock()
+	}()
+	targets, err := m.managedTargets(ctx)
+	if err != nil {
+		return telegram.ManagedNodesThemeResult{}, err
+	}
+	reasons := make([]string, len(targets))
+	semaphore := make(chan struct{}, nodeNetworkPollConcurrency)
+	var workers sync.WaitGroup
+	for index, target := range targets {
+		index, target := index, target
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				reasons[index] = "cancelled"
+				return
+			}
+			reasons[index] = m.rotateManagedTargetTheme(ctx, target)
+		}()
+	}
+	workers.Wait()
+	result := telegram.ManagedNodesThemeResult{Total: len(targets)}
+	for index, target := range targets {
+		reason := reasons[index]
+		if reason == "" {
+			result.Updated++
+			continue
+		}
+		result.Failed++
+		result.Failures = append(result.Failures, telegram.ManagedNodeActualizeFailure{PanelName: target.panelName, NodeName: target.nodeName, Reason: reason})
+	}
+	return result, nil
+}
+
+func (m *NodeMaintenance) rotateManagedTargetTheme(ctx context.Context, target managedActualizeTarget) string {
+	if !target.address.IsValid() {
+		return "invalid_address"
+	}
+	unlock := m.lockNode(target.panelID, target.nodeUUID)
+	defer unlock()
+	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, target.deploymentID, target.address, "root")
+	if err != nil {
+		return "ssh_connect"
+	}
+	defer connection.Close()
 	theme, err := provisioner.NewSiteThemeManager(connection, m.siteTheme)
 	if err != nil || theme.Rotate(ctx) != nil {
-		return changed, "theme_rotate"
+		return "theme_rotate"
 	}
-	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: target.panelID, NodeUUID: target.nodeUUID, Addresses: addresses}); err != nil {
-		return changed, "inventory_save"
-	}
-	return changed, ""
+	return ""
 }
 
 func (m *NodeMaintenance) lockNode(panelID, nodeUUID string) func() {

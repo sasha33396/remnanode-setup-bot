@@ -41,6 +41,11 @@ type NodeActualizer interface {
 	ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error)
 }
 
+type NodeThemer interface {
+	RotateNodeTheme(context.Context, string, string) (telegram.NodeThemeResult, error)
+	RotateManagedNodeThemes(context.Context) (telegram.ManagedNodesThemeResult, error)
+}
+
 type CertificateAuditor interface {
 	AuditCertificates(context.Context) (telegram.CertificateAuditResult, error)
 }
@@ -66,6 +71,7 @@ type Server struct {
 	config       Config
 	nodes        NodeProvider
 	actualizer   NodeActualizer
+	themer       NodeThemer
 	auditor      CertificateAuditor
 	deployments  DeploymentFinder
 	managedSSH   *sshclient.Client
@@ -88,6 +94,7 @@ type Server struct {
 
 func New(config Config, nodes NodeProvider, deployments DeploymentFinder, managedSSH, legacySSH *sshclient.Client) (*Server, error) {
 	actualizer, _ := nodes.(NodeActualizer)
+	themer, _ := nodes.(NodeThemer)
 	auditor, _ := nodes.(CertificateAuditor)
 	if config.Addr == "" || config.PublicURL == "" || strings.TrimSpace(config.OIDCClientID) == "" || strings.TrimSpace(config.OIDCClientSecret) == "" || len(config.SessionSecret) < 32 || config.SessionTTL <= 0 || config.TerminalTimeout <= 0 || config.MaxSessions <= 0 || len(config.AllowedUsers) == 0 || nodes == nil || deployments == nil || managedSSH == nil || legacySSH == nil {
 		return nil, errors.New("invalid web console configuration")
@@ -102,7 +109,7 @@ func New(config Config, nodes NodeProvider, deployments DeploymentFinder, manage
 	}
 	key := sha256.Sum256([]byte(config.SessionSecret))
 	server := &Server{
-		config: config, nodes: nodes, actualizer: actualizer, auditor: auditor, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
+		config: config, nodes: nodes, actualizer: actualizer, themer: themer, auditor: auditor, deployments: deployments, managedSSH: managedSSH, legacySSH: legacySSH,
 		allowedUsers: make(map[int64]struct{}, len(config.AllowedUsers)), sessionKey: key[:], publicURL: publicURL,
 		login: login, slots: make(chan struct{}, config.MaxSessions), now: time.Now,
 	}
@@ -255,7 +262,13 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		case telegram.NodeActualizeResult:
 			response["result"] = map[string]any{
 				"nodeName": result.NodeName, "managed": result.Managed, "adopted": result.Adopted,
-				"addresses": result.Addresses, "firewallChanged": result.FirewallChanged,
+				"addresses": result.Addresses, "netplanSkipped": result.NetplanSkipped, "firewallChanged": result.FirewallChanged,
+			}
+		case telegram.NodeThemeResult:
+			response["result"] = map[string]any{"nodeName": result.NodeName}
+		case telegram.ManagedNodesThemeResult:
+			response["result"] = map[string]any{
+				"total": result.Total, "updated": result.Updated, "failed": result.Failed, "failures": result.Failures,
 			}
 		default:
 			response["result"] = result
@@ -498,6 +511,10 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 		s.handleBulkActualize(w, r)
 		return
 	}
+	if r.URL.Path == "/api/nodes/theme-managed" {
+		s.handleBulkTheme(w, r)
+		return
+	}
 	if r.URL.Path == "/api/nodes/ip-bulk/preview" {
 		s.handleBulkIPPreview(w, r)
 		return
@@ -508,6 +525,10 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(r.URL.Path, "/actualize") {
 		s.handleActualize(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/theme") {
+		s.handleNodeTheme(w, r)
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/move") {
@@ -550,8 +571,66 @@ func (s *Server) handleBulkActualize(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": result.Total, "updated": result.Updated, "failed": result.Failed,
-		"firewallChanged": result.FirewallChanged, "failures": result.Failures,
+		"netplanSkipped": result.NetplanSkipped, "firewallChanged": result.FirewallChanged, "failures": result.Failures,
 	})
+}
+
+func (s *Server) handleBulkTheme(w http.ResponseWriter, r *http.Request) {
+	user, cookie, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.validCSRF(r, cookie) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if s.themer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Смена шаблонов недоступна"})
+		return
+	}
+	jobID, err := s.startBackgroundJob(user.UserID, "theme-managed", "all", nil, func(ctx context.Context, _ func(telegram.NodeActualizeProgress)) (any, error) {
+		return s.themer.RotateManagedNodeThemes(ctx)
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Смена шаблонов уже выполняется"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
+}
+
+func (s *Server) handleNodeTheme(w http.ResponseWriter, r *http.Request) {
+	user, cookie, ok := s.readSession(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.validCSRF(r, cookie) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	if s.themer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Смена шаблона недоступна"})
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "theme" {
+		http.NotFound(w, r)
+		return
+	}
+	target, err := s.resolveTarget(r.Context(), parts[0], parts[1])
+	if err != nil || !target.Managed {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Смена шаблона доступна только актуальной ноде"})
+		return
+	}
+	jobID, err := s.startBackgroundJob(user.UserID, "theme:"+parts[0], parts[1], nil, func(ctx context.Context, _ func(telegram.NodeActualizeProgress)) (any, error) {
+		return s.themer.RotateNodeTheme(ctx, parts[0], parts[1])
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Для этой ноды уже выполняется операция"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "jobId": jobID})
 }
 
 func (s *Server) handleCertificateAudit(w http.ResponseWriter, r *http.Request) {

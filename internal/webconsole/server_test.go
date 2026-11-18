@@ -285,6 +285,36 @@ func TestBulkActualizeManagedNodes(t *testing.T) {
 	}
 }
 
+func TestRotateNodeThemeRunsAsBackgroundJob(t *testing.T) {
+	server := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	if err := server.issueSessionCookie(recorder, session{UserID: 42, Name: "Operator"}); err != nil {
+		t.Fatal(err)
+	}
+	cookie := recorder.Result().Cookies()[0]
+	request := httptest.NewRequest(http.MethodPost, "https://nodes.example.com/api/nodes/main/11111111-1111-4111-8111-111111111111/theme", nil)
+	request.Header.Set("X-CSRF-Token", server.csrfToken(cookie.Value))
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	var body struct {
+		JobID string `json:"jobId"`
+	}
+	if response.Code != http.StatusAccepted || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.JobID == "" {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if job := waitTestJob(t, server, body.JobID, 42); job.Status != jobCompleted {
+		t.Fatalf("completed job = %#v", job)
+	}
+	jobRequest := httptest.NewRequest(http.MethodGet, "https://nodes.example.com/api/jobs/"+body.JobID, nil)
+	jobRequest.AddCookie(cookie)
+	jobResponse := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(jobResponse, jobRequest)
+	if jobResponse.Code != http.StatusOK || !strings.Contains(jobResponse.Body.String(), `"nodeName":"Managed"`) {
+		t.Fatalf("job status = %d, body = %s", jobResponse.Code, jobResponse.Body.String())
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -329,6 +359,14 @@ func (s *staticNodes) ActualizeNode(_ context.Context, input telegram.NodeActual
 
 func (s *staticNodes) ActualizeManagedNodes(context.Context) (telegram.ManagedNodesActualizeResult, error) {
 	return telegram.ManagedNodesActualizeResult{Total: 1, Updated: 1, FirewallChanged: 1}, nil
+}
+
+func (s *staticNodes) RotateNodeTheme(context.Context, string, string) (telegram.NodeThemeResult, error) {
+	return telegram.NodeThemeResult{NodeName: "Managed"}, nil
+}
+
+func (s *staticNodes) RotateManagedNodeThemes(context.Context) (telegram.ManagedNodesThemeResult, error) {
+	return telegram.ManagedNodesThemeResult{Total: 1, Updated: 1}, nil
 }
 
 type staticDeployments struct{ managed map[string]string }

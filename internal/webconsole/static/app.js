@@ -57,7 +57,7 @@
         <div class="node-address">${escapeHTML(node.address)}</div>
         <div class="node-address">Netplan: ${escapeHTML((node.networkAddresses || []).join(', ') || 'ещё не опрошен')}</div>
         <div class="node-meta"><span class="badge ${node.managed ? 'managed' : 'legacy'}">${node.managed ? 'Актуальная' : 'Legacy'}</span><span class="badge">${node.onlineKnown ? `${node.online} онлайн` : 'онлайн неизвестен'}</span>${node.disabled ? '<span class="badge">выключена</span>' : ''}</div>
-        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<div class="node-actions"><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать защиту</button><button class="button secondary node-ip" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить IP</button><button class="button secondary node-move" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Перенести</button><button class="button secondary node-dns" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">DNS</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div></div>
+        <div class="node-footer"><span class="panel-name">${escapeHTML(node.panelName)}</span>${node.managed ? '' : `<button class="button primary promote" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сделать актуальной</button>`}<div class="node-actions"><button class="button secondary actualize" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Синхронизировать защиту</button>${node.managed ? `<button class="button secondary node-theme" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить шаблон/отпечаток</button>` : ''}<button class="button secondary node-ip" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Сменить IP</button><button class="button secondary node-move" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">Перенести</button><button class="button secondary node-dns" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">DNS</button><button class="button secondary connect" data-panel="${escapeHTML(node.panelId)}" data-uuid="${escapeHTML(node.uuid)}">SSH</button></div></div>
       </article>`).join('');
   }
 
@@ -148,20 +148,32 @@
     if (result.pending) result = await waitForJob(result.jobId, `${node.name}: операция выполняется в фоне, повторно нажимать кнопку не нужно…`);
     await loadNodes();
     const action = result.adopted ? 'легаси-нода полностью переведена под управление и актуализирована' : 'настройки актуализированы';
-    showNotice(`${result.nodeName}: ${action}, IP: ${(result.addresses || []).join(', ') || 'не найдены'}, firewall: ${result.firewallChanged ? 'обновлён' : 'проверен и актуален'}`);
+    showNotice(`${result.nodeName}: ${action}, netplan: ${result.netplanSkipped ? 'не прочитан — пропущен' : 'прочитан'}, IP: ${(result.addresses || []).join(', ') || 'не обновлялись'}, firewall: ${result.firewallChanged ? 'обновлён' : 'проверен и актуален'}`);
   }
 
   async function actualizeManagedNodes() {
     const button = $('#actualize-managed');
-    if (!confirm('Синхронизировать netplan и firewall на всех актуальных нодах?')) return;
+    if (!confirm('Синхронизировать firewall на всех актуальных нодах? Ошибки чтения netplan будут пропущены.')) return;
     clearNotice(); button.disabled = true; button.textContent = 'Синхронизация…';
     try {
       const result = await request('/api/nodes/actualize-managed', { method: 'POST' });
       await loadNodes();
       const failures = (result.failures || []).slice(0, 5).map((item) => `${item.PanelName}: ${item.NodeName} (${item.Reason})`).join('; ');
-      showNotice(`Массовая синхронизация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
+      showNotice(`Массовая синхронизация завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}, netplan пропущен: ${result.netplanSkipped || 0}, firewall изменён: ${result.firewallChanged}.${failures ? ` Ошибки: ${failures}` : ''}`);
     } catch (error) { showNotice(error.message); }
     finally { button.disabled = false; button.textContent = 'Синхронизировать защиту на всех'; }
+  }
+
+  async function rotateManagedThemes() {
+    const button = $('#theme-managed');
+    if (!confirm('Выбрать новые случайные шаблоны и seed на всех актуальных нодах?')) return;
+    clearNotice(); button.disabled = true; button.textContent = 'Смена шаблонов…';
+    try {
+      let result = await request('/api/nodes/theme-managed', { method: 'POST' });
+      if (result.pending) result = await waitForJob(result.jobId, 'Меняю шаблоны и технические отпечатки…');
+      showNotice(`Смена шаблонов завершена: ${result.updated}/${result.total}, ошибок: ${result.failed}.`);
+    } catch (error) { showNotice(error.message); }
+    finally { button.disabled = false; button.textContent = 'Сменить темы/отпечатки на всех'; }
   }
 
   async function auditCertificates() {
@@ -423,6 +435,18 @@
       else { $('#password-title').textContent = `Синхронизация: ${node.name}`; $('#password-description').textContent = 'Так как нода legacy, ввод пароля сначала полностью переведёт её под управление, затем синхронизирует настройки. Пароль не сохраняется.'; $('#password-submit').textContent = 'Сделать актуальной и синхронизировать'; $('#password').value = ''; passwordDialog.showModal(); setTimeout(() => $('#password').focus(), 50); }
       return;
     }
+    const theme = event.target.closest('.node-theme');
+    if (theme) {
+      const node = selectNode(theme.dataset.panel, theme.dataset.uuid); if (!node) return;
+      theme.disabled = true;
+      try {
+        let result = await request(`/api/nodes/${encodeURIComponent(node.panelId)}/${encodeURIComponent(node.uuid)}/theme`, { method: 'POST' });
+        if (result.pending) result = await waitForJob(result.jobId, `${node.name}: меняю шаблон и seed…`);
+        showNotice(`${result.nodeName || node.name}: шаблон и технический отпечаток обновлены.`);
+      } catch (error) { showNotice(error.message); }
+      finally { theme.disabled = false; }
+      return;
+    }
     const connect = event.target.closest('.connect');
     if (connect) {
       const node = selectNode(connect.dataset.panel, connect.dataset.uuid); if (!node) return;
@@ -491,6 +515,7 @@
   terminalDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeTerminal(); });
   $('#refresh').addEventListener('click', loadNodes);
   $('#actualize-managed').addEventListener('click', actualizeManagedNodes);
+  $('#theme-managed').addEventListener('click', rotateManagedThemes);
   $('#certificate-audit').addEventListener('click', auditCertificates);
   $('#network-reports').addEventListener('click', async () => {
     $('#network-dialog').showModal();

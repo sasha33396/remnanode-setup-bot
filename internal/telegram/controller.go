@@ -403,6 +403,10 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 			return c.confirmManagedNodesActualize(ctx, callback)
 		case "actualize_all_confirm":
 			return c.startManagedNodesActualize(ctx, callback)
+		case "theme":
+			return c.rotateNodeTheme(ctx, callback, action.uuid)
+		case "theme_all":
+			return c.rotateManagedNodeThemes(ctx, callback)
 		}
 	}
 	if action, deploymentID, valid := parseDeploymentCallback(callback.Data); valid {

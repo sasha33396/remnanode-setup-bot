@@ -35,8 +35,9 @@ credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 
 The Xray SNI placeholder is built from a randomly selected template in the
 pinned `NODE_TEMPLATES_REPO_URL` / `NODE_TEMPLATES_REF` source. Provisioning
-and explicit single/bulk protection synchronization install a newly selected
-template with a fresh `uniquify-theme.sh` seed. Each Node also runs an atomic
+installs the initial template. Explicit per-Node and bulk theme actions select
+a new template with a fresh `uniquify-theme.sh` seed; ordinary protection
+synchronization does not change it. Each Node also runs an atomic
 local fingerprint rotation every `NODE_THEME_ROTATION_INTERVAL` (72 hours by
 default), with up to `NODE_THEME_ROTATION_JITTER` (12 hours) of jitter. The
 local rotation keeps the current visual template, validates Caddy and HTTPS,
@@ -55,6 +56,11 @@ SNI port 9443. Certificates inside the renewal window are issued centrally via
 DNS-01 and distributed to every reachable Node. There is no designated source
 Node: an offline or deleted Node is deferred while the other Nodes continue to
 receive the new version, and the scheduler retries unavailable targets later.
+
+Netplan inventory is best-effort during single and bulk protection
+synchronization. If it cannot be read or parsed, the warning is logged, the
+last stored IP inventory is preserved, and firewall/Mail Guard reconciliation
+continues.
 
 Multi-panel mode is configured in `config/panels.yml`. Copy
 `config/panels.yml.example`, edit the panel URLs and set

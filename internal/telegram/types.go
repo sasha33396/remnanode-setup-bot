@@ -197,6 +197,7 @@ type NodeActualizeResult struct {
 	Managed         bool
 	Adopted         bool
 	Addresses       []string
+	NetplanSkipped  bool
 	FirewallChanged bool
 }
 
@@ -210,8 +211,20 @@ type ManagedNodesActualizeResult struct {
 	Total           int
 	Updated         int
 	Failed          int
+	NetplanSkipped  int
 	FirewallChanged int
 	Failures        []ManagedNodeActualizeFailure
+}
+
+type NodeThemeResult struct {
+	NodeName string
+}
+
+type ManagedNodesThemeResult struct {
+	Total    int
+	Updated  int
+	Failed   int
+	Failures []ManagedNodeActualizeFailure
 }
 
 // NodeIPChangeTarget is an operator-safe projection used by the IP-change
@@ -538,6 +551,13 @@ type NodeIPApplication interface {
 type NodeActualizeApplication interface {
 	ActualizeNode(context.Context, NodeActualizeInput) (NodeActualizeResult, error)
 	ActualizeManagedNodes(context.Context) (ManagedNodesActualizeResult, error)
+}
+
+// NodeThemeApplication rotates the decoy-site template and its technical
+// fingerprint independently from firewall and network synchronization.
+type NodeThemeApplication interface {
+	RotateNodeTheme(context.Context, string, string) (NodeThemeResult, error)
+	RotateManagedNodeThemes(context.Context) (ManagedNodesThemeResult, error)
 }
 
 type CertificateAuditApplication interface {
