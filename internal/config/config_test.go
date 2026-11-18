@@ -23,6 +23,9 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if cfg.XraySNIRepoURL != defaultXraySNIRepoURL || cfg.XraySNIRef != defaultXraySNIRef {
 		t.Fatalf("xray-sni defaults = %q %q", cfg.XraySNIRepoURL, cfg.XraySNIRef)
 	}
+	if cfg.NodeTemplatesRepoURL != defaultNodeTemplatesURL || cfg.NodeTemplatesRef != defaultNodeTemplatesRef || cfg.NodeThemeRotationInterval != 72*time.Hour || cfg.NodeThemeRotationJitter != 12*time.Hour {
+		t.Fatalf("node theme defaults = %#v", cfg)
+	}
 	if len(cfg.Panels) != 1 || cfg.Panels[0].ID != "default" || cfg.Panels[0].DNSMode != DNSModeEnabled {
 		t.Fatalf("legacy panel = %#v", cfg.Panels)
 	}
@@ -31,6 +34,25 @@ func TestLoadValidConfiguration(t *testing.T) {
 	}
 	if !cfg.MailGuardEnabled || len(cfg.MailGuardPorts) != 11 {
 		t.Fatalf("mail guard defaults = enabled %v ports %v", cfg.MailGuardEnabled, cfg.MailGuardPorts)
+	}
+}
+
+func TestLoadNodeThemeOverrides(t *testing.T) {
+	values := validValues()
+	values["NODE_TEMPLATES_REPO_URL"] = "https://git.example.com/templates.git"
+	values["NODE_TEMPLATES_REF"] = "v2.1.0"
+	values["NODE_THEME_ROTATION_INTERVAL"] = "96h"
+	values["NODE_THEME_ROTATION_JITTER"] = "6h"
+	cfg, err := load(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodeTemplatesRef != "v2.1.0" || cfg.NodeThemeRotationInterval != 96*time.Hour || cfg.NodeThemeRotationJitter != 6*time.Hour {
+		t.Fatalf("node theme overrides = %#v", cfg)
+	}
+	values["NODE_THEME_ROTATION_JITTER"] = "96h"
+	if _, err := load(mapLookup(values)); err == nil || !strings.Contains(err.Error(), "NODE_THEME_ROTATION_JITTER") {
+		t.Fatalf("invalid theme jitter error = %v", err)
 	}
 }
 

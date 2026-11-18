@@ -33,6 +33,15 @@ poll interval, thresholds, cooldown and retention are configurable in `.env`.
 credential-free HTTPS URL. `XRAY_SNI_REF` defaults to the pinned
 `v0.1.0-external` tag; branch names such as `main` are rejected.
 
+The Xray SNI placeholder is built from a randomly selected template in the
+pinned `NODE_TEMPLATES_REPO_URL` / `NODE_TEMPLATES_REF` source. Provisioning
+and explicit single/bulk protection synchronization install a newly selected
+template with a fresh `uniquify-theme.sh` seed. Each Node also runs an atomic
+local fingerprint rotation every `NODE_THEME_ROTATION_INTERVAL` (72 hours by
+default), with up to `NODE_THEME_ROTATION_JITTER` (12 hours) of jitter. The
+local rotation keeps the current visual template, validates Caddy and HTTPS,
+and restores the previous site if activation fails.
+
 `ACME_EMAIL` is the ACME account contact. `CF_API_TOKEN` is used by the
 central DNS-01 client and for direct Advanced Balancer Host A records; it is
 never copied to a Node. Certificate versions and

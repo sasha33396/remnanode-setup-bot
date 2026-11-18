@@ -101,6 +101,7 @@ func run() int {
 
 	registry := metrics.New()
 	mailGuard := provisioner.MailGuardConfig{Enabled: cfg.MailGuardEnabled, Ports: cfg.MailGuardPorts}
+	siteTheme := provisioner.SiteThemeConfig{RepositoryURL: cfg.NodeTemplatesRepoURL, Ref: cfg.NodeTemplatesRef, RotationEvery: cfg.NodeThemeRotationInterval, RotationJitter: cfg.NodeThemeRotationJitter, CommandTimeout: cfg.SSHCommandTimeout}
 	distributor, err := certmanager.NewSSHDistributor(ssh, certmanager.SSHDistributorConfig{RepositoryURL: cfg.XraySNIRepoURL, Ref: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MaxConcurrent: cfg.MaxCertificateDistributions})
 	if err != nil {
 		logger.Error("certificate distributor initialization failed")
@@ -113,7 +114,7 @@ func run() int {
 	recoveredJobs := 0
 	for _, panel := range cfg.Panels {
 		nodeFirewallConfigs[panel.ID] = orchestrator.NodeFirewallConfig{PanelIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP}
-		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MailGuard: mailGuard})
+		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MailGuard: mailGuard, SiteTheme: siteTheme})
 		if provisionerErr != nil {
 			logger.Error("VPS provisioner initialization failed", slog.String("panel_id", panel.ID))
 			return 1
@@ -234,7 +235,7 @@ func run() int {
 		logger.Error("Royal IP application initialization failed")
 		return 1
 	}
-	nodeMaintenance, err := orchestrator.NewNodeMaintenance(application, repository, ssh, serverIPSSH, nodeFirewallConfigs, cfg.SSHCommandTimeout, mailGuard, logger)
+	nodeMaintenance, err := orchestrator.NewNodeMaintenance(application, repository, ssh, serverIPSSH, nodeFirewallConfigs, cfg.SSHCommandTimeout, mailGuard, siteTheme, logger)
 	if err != nil {
 		logger.Error("node maintenance initialization failed")
 		return 1

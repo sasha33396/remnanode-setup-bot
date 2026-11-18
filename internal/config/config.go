@@ -43,6 +43,8 @@ const (
 	defaultHealthAddr       = ":8080"
 	defaultXraySNIRepoURL   = "https://github.com/sasha33396/sni-external.git"
 	defaultXraySNIRef       = "v0.1.0-external"
+	defaultNodeTemplatesURL = "https://github.com/Mrvibecodic/node-templates.git"
+	defaultNodeTemplatesRef = "845187fbee8fff72f66d1570af436438e859e40d"
 	defaultACMEDirectory    = "https://acme-v02.api.letsencrypt.org/directory"
 	defaultCertificateStore = "/var/lib/deployer/certificates"
 	defaultWebAddr          = ":8081"
@@ -68,6 +70,10 @@ type Config struct {
 	DeploySSHPrivateKey         string
 	XraySNIRepoURL              string
 	XraySNIRef                  string
+	NodeTemplatesRepoURL        string
+	NodeTemplatesRef            string
+	NodeThemeRotationInterval   time.Duration
+	NodeThemeRotationJitter     time.Duration
 	HealthAddr                  string
 	HTTPTimeout                 time.Duration
 	SSHConnectTimeout           time.Duration
@@ -162,6 +168,10 @@ func load(lookup lookupFunc) (Config, error) {
 		DeploySSHPrivateKey:         required("DEPLOY_SSH_PRIVATE_KEY"),
 		XraySNIRepoURL:              defaultXraySNIRepoURL,
 		XraySNIRef:                  defaultXraySNIRef,
+		NodeTemplatesRepoURL:        defaultNodeTemplatesURL,
+		NodeTemplatesRef:            defaultNodeTemplatesRef,
+		NodeThemeRotationInterval:   72 * time.Hour,
+		NodeThemeRotationJitter:     12 * time.Hour,
 		HealthAddr:                  defaultHealthAddr,
 		ACMEDirectoryURL:            defaultACMEDirectory,
 		CertificateStorePath:        defaultCertificateStore,
@@ -224,6 +234,12 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 	if value, ok := lookup("XRAY_SNI_REF"); ok && strings.TrimSpace(value) != "" {
 		cfg.XraySNIRef = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("NODE_TEMPLATES_REPO_URL"); ok && strings.TrimSpace(value) != "" {
+		cfg.NodeTemplatesRepoURL = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("NODE_TEMPLATES_REF"); ok && strings.TrimSpace(value) != "" {
+		cfg.NodeTemplatesRef = strings.TrimSpace(value)
 	}
 	if value, ok := lookup("ACME_DIRECTORY_URL"); ok && strings.TrimSpace(value) != "" {
 		cfg.ACMEDirectoryURL = strings.TrimSpace(value)
@@ -303,6 +319,7 @@ func load(lookup lookupFunc) (Config, error) {
 		{"SSH_COMMAND_TIMEOUT", &cfg.SSHCommandTimeout}, {"NODE_CONNECT_TIMEOUT", &cfg.NodeConnectTimeout},
 		{"TELEGRAM_POLL_TIMEOUT", &cfg.TelegramPollTimeout}, {"TELEGRAM_SESSION_TTL", &cfg.TelegramSessionTTL},
 		{"NODE_NETWORK_POLL_INTERVAL", &cfg.NodeNetworkPollInterval},
+		{"NODE_THEME_ROTATION_INTERVAL", &cfg.NodeThemeRotationInterval}, {"NODE_THEME_ROTATION_JITTER", &cfg.NodeThemeRotationJitter},
 		{"CERTIFICATE_RENEW_BEFORE", &cfg.CertificateRenewBefore}, {"CERTIFICATE_RENEW_INTERVAL", &cfg.CertificateRenewInterval},
 		{"CERTIFICATE_DISTRIBUTION_RETRY_INTERVAL", &cfg.CertificateRetryInterval},
 		{"CERTIFICATE_ISSUE_TIMEOUT", &cfg.CertificateIssueTimeout}, {"DNS_PROPAGATION_TIMEOUT", &cfg.DNSPropagationTimeout},
@@ -366,11 +383,12 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 
 	for name, value := range map[string]string{
-		"REMNAWAVE_URL":      cfg.RemnawaveURL,
-		"DNS_BALANCER_URL":   cfg.DNSBalancerURL,
-		"XRAY_SNI_REPO_URL":  cfg.XraySNIRepoURL,
-		"DATABASE_URL":       cfg.DatabaseURL,
-		"ACME_DIRECTORY_URL": cfg.ACMEDirectoryURL,
+		"REMNAWAVE_URL":           cfg.RemnawaveURL,
+		"DNS_BALANCER_URL":        cfg.DNSBalancerURL,
+		"XRAY_SNI_REPO_URL":       cfg.XraySNIRepoURL,
+		"NODE_TEMPLATES_REPO_URL": cfg.NodeTemplatesRepoURL,
+		"DATABASE_URL":            cfg.DatabaseURL,
+		"ACME_DIRECTORY_URL":      cfg.ACMEDirectoryURL,
 	} {
 		if value != "" && !validURL(value, name == "DATABASE_URL") {
 			validationErrors = append(validationErrors, fmt.Errorf("%s must be a valid URL", name))
@@ -392,6 +410,15 @@ func load(lookup lookupFunc) (Config, error) {
 	}
 	if !validPinnedRef(cfg.XraySNIRef) {
 		validationErrors = append(validationErrors, errors.New("XRAY_SNI_REF must be a pinned tag or commit, not a branch HEAD"))
+	}
+	if !validXraySNIRepositoryURL(cfg.NodeTemplatesRepoURL) {
+		validationErrors = append(validationErrors, errors.New("NODE_TEMPLATES_REPO_URL must be a credential-free HTTPS URL"))
+	}
+	if !validPinnedRef(cfg.NodeTemplatesRef) {
+		validationErrors = append(validationErrors, errors.New("NODE_TEMPLATES_REF must be a pinned tag or commit, not a branch HEAD"))
+	}
+	if cfg.NodeThemeRotationJitter >= cfg.NodeThemeRotationInterval {
+		validationErrors = append(validationErrors, errors.New("NODE_THEME_ROTATION_JITTER must be shorter than NODE_THEME_ROTATION_INTERVAL"))
 	}
 	if cfg.WebEnabled {
 		if _, _, err := net.SplitHostPort(cfg.WebAddr); err != nil {

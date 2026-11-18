@@ -96,7 +96,7 @@ WantedBy=multi-user.target
 `
 
 	systemInspect := fmt.Sprintf(`ready=true
-	for package in mc htop btop iftop curl wget ca-certificates git; do
+	for package in mc htop btop iftop curl wget ca-certificates git perl util-linux; do
     dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed' || ready=false
 done
 if [ "$(timedatectl show -p Timezone --value)" != %q ]; then ready=false; fi
@@ -105,7 +105,7 @@ if [ "$ready" = true ]; then printf ready; else printf pending; fi`, config.Time
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get upgrade -y
-apt-get install -y mc htop btop iftop curl wget ca-certificates git
+apt-get install -y mc htop btop iftop curl wget ca-certificates git perl util-linux
 timedatectl set-timezone %s`, config.Timezone)
 
 	dockerInspect := `if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && systemctl is-active --quiet docker; then printf ready; else printf pending; fi`

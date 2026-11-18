@@ -1,0 +1,76 @@
+package provisioner
+
+import (
+	"context"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSiteThemeManagerInstallsTimerAndRotatesTemplate(t *testing.T) {
+	runner := &captureRunner{}
+	manager, err := NewSiteThemeManager(runner, DefaultSiteThemeConfig(4*time.Minute))
+	if err != nil {
+		t.Fatalf("NewSiteThemeManager() error = %v", err)
+	}
+	if err := manager.Rotate(context.Background()); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	joined := ""
+	for _, request := range runner.requests {
+		joined += request.Command + "\n" + string(request.Stdin) + "\n"
+	}
+	for _, required := range []string{
+		"target='/usr/local/sbin/node-theme-rotate'",
+		"target='/etc/node-theme.conf'",
+		"OnUnitActiveSec=259200s",
+		"RandomizedDelaySec=43200s",
+		"ExecStart=/usr/local/sbin/node-theme-rotate --rotate-seed --offline",
+		"systemctl enable --now node-theme-rotate.timer",
+		"/usr/local/sbin/node-theme-rotate --rotate-template",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("managed commands do not contain %q", required)
+		}
+	}
+}
+
+func TestSiteThemeScriptBashSyntax(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is unavailable")
+	}
+	command := exec.Command("bash", "-n")
+	command.Stdin = strings.NewReader(siteThemeScript)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("bash -n failed: %v: %s", err, output)
+	}
+}
+
+func TestSiteThemeScriptUsesAtomicRollbackAndPinnedSource(t *testing.T) {
+	for _, required := range []string{
+		`git -C "$SOURCE" checkout --detach --force "$REPOSITORY_REF"`,
+		`bash "$SOURCE/uniquify-theme.sh" --src "$SOURCE/$theme" --seed "$seed" --no-install-deps --no-zip`,
+		`if [ "$MODE" = "--rotate-seed" ] && valid_theme "$current_theme"`,
+		`if ! activate; then`,
+		`mv "$BACKUP" "$ACTIVE"`,
+		`cmp -s "$ACTIVE/index.html" "$response"`,
+	} {
+		if !strings.Contains(siteThemeScript, required) {
+			t.Fatalf("rotation script does not contain %q", required)
+		}
+	}
+}
+
+func TestSiteThemeManagerRejectsMovingRefAndUnsafeRepository(t *testing.T) {
+	config := DefaultSiteThemeConfig(time.Minute)
+	config.Ref = "main"
+	if _, err := NewSiteThemeManager(&captureRunner{}, config); err == nil {
+		t.Fatal("moving ref was accepted")
+	}
+	config = DefaultSiteThemeConfig(time.Minute)
+	config.RepositoryURL = "https://user:secret@example.com/themes.git"
+	if _, err := NewSiteThemeManager(&captureRunner{}, config); err == nil {
+		t.Fatal("credential-bearing repository URL was accepted")
+	}
+}

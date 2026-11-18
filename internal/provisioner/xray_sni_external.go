@@ -35,6 +35,7 @@ type ExternalXraySNIConfig struct {
 	Ref           string
 	SNIDomain     string
 	Timeout       time.Duration
+	SiteTheme     SiteThemeConfig
 }
 
 // ExternalXraySNIInstaller installs the external-certificate xray-sni fork.
@@ -43,6 +44,7 @@ type ExternalXraySNIInstaller struct {
 	runner   sshclient.CommandRunner
 	config   ExternalXraySNIConfig
 	material certificates.Material
+	theme    *SiteThemeManager
 	now      func() time.Time
 }
 
@@ -53,12 +55,19 @@ func NewExternalXraySNIInstaller(runner sshclient.CommandRunner, config External
 	if config.Timeout <= 0 {
 		config.Timeout = 5 * time.Minute
 	}
+	if strings.TrimSpace(config.SiteTheme.RepositoryURL) == "" {
+		config.SiteTheme = DefaultSiteThemeConfig(config.Timeout)
+	}
+	theme, err := NewSiteThemeManager(runner, config.SiteTheme)
+	if err != nil {
+		return nil, ErrInvalidXraySNIConfiguration
+	}
 	material = material.Clone()
 	if err := validateCertificateMaterial(material, config.SNIDomain, time.Now()); err != nil {
 		material.Destroy()
 		return nil, err
 	}
-	return &ExternalXraySNIInstaller{runner: runner, config: config, material: material, now: time.Now}, nil
+	return &ExternalXraySNIInstaller{runner: runner, config: config, material: material, theme: theme, now: time.Now}, nil
 }
 
 // Destroy clears the adapter's retained private-key copy.
@@ -94,6 +103,13 @@ func (a *ExternalXraySNIInstaller) Inspect(ctx context.Context) (Inspection, err
 			return Inspection{}, ctx.Err()
 		}
 		return Inspection{Summary: "xray-sni runtime requires repair"}, nil
+	}
+	ready, err := a.theme.Inspect(ctx)
+	if err != nil {
+		return Inspection{}, err
+	}
+	if !ready {
+		return Inspection{Summary: "managed static site requires installation"}, nil
 	}
 	return Inspection{Satisfied: true, Summary: "xray-sni external mode is healthy"}, nil
 }
@@ -156,7 +172,7 @@ func (a *ExternalXraySNIInstaller) Install(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return a.theme.Ensure(ctx)
 }
 
 func (a *ExternalXraySNIInstaller) Validate(ctx context.Context) error {
@@ -167,7 +183,10 @@ func (a *ExternalXraySNIInstaller) Validate(ctx context.Context) error {
 	if err := a.validateRuntime(ctx); err != nil {
 		return err
 	}
-	return a.cleanupPreviousCertificates(ctx)
+	if err := a.cleanupPreviousCertificates(ctx); err != nil {
+		return err
+	}
+	return a.theme.Validate(ctx)
 }
 
 // UpdateCertificate applies only the finalized external-certificate contract:
@@ -379,7 +398,7 @@ if [ -d "$directory/.git" ]; then
     expected=$(git -C "$directory" rev-parse --verify %s'^{commit}' 2>/dev/null || true)
     actual=$(git -C "$directory" rev-parse --verify HEAD 2>/dev/null || true)
     [ -n "$expected" ] && [ "$actual" = "$expected" ] && ref_matches=true
-    git -C "$directory" diff --quiet && git -C "$directory" diff --cached --quiet && worktree_clean=true
+    git -C "$directory" diff --quiet -- . ':(exclude)html' && git -C "$directory" diff --cached --quiet -- . ':(exclude)html' && worktree_clean=true
 fi
 [ -f "$directory/docker-compose.yml" ] && [ -f "$directory/Caddyfile.external" ] && [ -f "$directory/Dockerfile" ] && compose_exists=true
 [ -n "$actual" ] && [ "$(cat "$directory/.deployed-commit" 2>/dev/null)" = "$actual" ] && deployed_commit_matches=true

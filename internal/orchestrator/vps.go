@@ -19,6 +19,7 @@ type SSHProvisionerConfig struct {
 	XrayRef        string
 	CommandTimeout time.Duration
 	MailGuard      provisioner.MailGuardConfig
+	SiteTheme      provisioner.SiteThemeConfig
 }
 
 // SSHProvisioner connects the orchestration VPS port to the verified SSH,
@@ -142,6 +143,7 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 		Ref:           v.config.XrayRef,
 		SNIDomain:     input.SNIDomain,
 		Timeout:       v.config.CommandTimeout,
+		SiteTheme:     v.config.SiteTheme,
 	}, input.Certificate)
 	if err != nil {
 		return provisioningPhase("xray-sni adapter could not be initialized")

@@ -39,6 +39,10 @@ services:
       DEPLOY_SSH_PRIVATE_KEY: /run/secrets/deploy_ssh_private_key
       XRAY_SNI_REPO_URL: ${XRAY_SNI_REPO_URL:-https://github.com/sasha33396/sni-external.git}
       XRAY_SNI_REF: ${XRAY_SNI_REF:-v0.1.0-external}
+      NODE_TEMPLATES_REPO_URL: ${NODE_TEMPLATES_REPO_URL:-https://github.com/Mrvibecodic/node-templates.git}
+      NODE_TEMPLATES_REF: ${NODE_TEMPLATES_REF:-845187fbee8fff72f66d1570af436438e859e40d}
+      NODE_THEME_ROTATION_INTERVAL: ${NODE_THEME_ROTATION_INTERVAL:-72h}
+      NODE_THEME_ROTATION_JITTER: ${NODE_THEME_ROTATION_JITTER:-12h}
       HEALTH_ADDR: :8080
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-30s}
       SSH_CONNECT_TIMEOUT: ${SSH_CONNECT_TIMEOUT:-20s}

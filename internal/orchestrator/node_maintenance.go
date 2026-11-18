@@ -43,16 +43,17 @@ type NodeMaintenance struct {
 	bulkRunning bool
 	reportMu    sync.Mutex
 	mailGuard   provisioner.MailGuardConfig
+	siteTheme   provisioner.SiteThemeConfig
 }
 
-func NewNodeMaintenance(app *TelegramApplication, store repository.NodeNetworkStore, managedSSH, legacySSH *sshclient.Client, firewall map[string]NodeFirewallConfig, timeout time.Duration, mailGuard provisioner.MailGuardConfig, logger *slog.Logger) (*NodeMaintenance, error) {
+func NewNodeMaintenance(app *TelegramApplication, store repository.NodeNetworkStore, managedSSH, legacySSH *sshclient.Client, firewall map[string]NodeFirewallConfig, timeout time.Duration, mailGuard provisioner.MailGuardConfig, siteTheme provisioner.SiteThemeConfig, logger *slog.Logger) (*NodeMaintenance, error) {
 	if app == nil || store == nil || managedSSH == nil || legacySSH == nil || len(firewall) == 0 || timeout <= 0 {
 		return nil, errors.New("invalid node maintenance configuration")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &NodeMaintenance{app: app, store: store, managedSSH: managedSSH, legacySSH: legacySSH, firewall: firewall, timeout: timeout, mailGuard: mailGuard, logger: logger}, nil
+	return &NodeMaintenance{app: app, store: store, managedSSH: managedSSH, legacySSH: legacySSH, firewall: firewall, timeout: timeout, mailGuard: mailGuard, siteTheme: siteTheme, logger: logger}, nil
 }
 
 func (a *TelegramApplication) SetNodeMaintenance(service *NodeMaintenance) error {
@@ -79,7 +80,7 @@ func (a *TelegramApplication) ActualizeManagedNodes(ctx context.Context) (telegr
 
 func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.NodeActualizeInput) (telegram.NodeActualizeResult, error) {
 	defer clear(input.Password)
-	emitNodeActualizeProgress(input.Progress, "inventory", "Получение данных ноды из Remnawave", 0, 4)
+	emitNodeActualizeProgress(input.Progress, "inventory", "Получение данных ноды из Remnawave", 0, 5)
 	panel, err := m.app.panel(input.PanelID)
 	if err != nil {
 		return telegram.NodeActualizeResult{}, err
@@ -112,7 +113,7 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 			NodeUUID:       input.NodeUUID,
 			Password:       input.Password,
 		}, func(progress Progress) {
-			emitNodeActualizeProgress(input.Progress, progress.Step, nodeActualizeProgressMessage(progress.Step, progress.SafeMessage), nodeAdoptionProgressCompleted(progress), 21)
+			emitNodeActualizeProgress(input.Progress, progress.Step, nodeActualizeProgressMessage(progress.Step, progress.SafeMessage), nodeAdoptionProgressCompleted(progress), 22)
 		})
 		if err != nil {
 			m.logger.Warn("legacy Node adoption failed", slog.String("panel_id", input.PanelID), slog.String("node_uuid", input.NodeUUID), slog.String("node_name", name), slog.Any("error", err))
@@ -123,9 +124,9 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 		return telegram.NodeActualizeResult{}, errors.New("classify node failed")
 	}
 	base := 0
-	total := 4
+	total := 5
 	if adopted {
-		base, total = 17, 21
+		base, total = 17, 22
 	}
 	emitNodeActualizeProgress(input.Progress, "ssh", "Подключение по установленному deploy-key", base, total)
 	connection, err := m.managedSSH.ConnectWithDeploymentKey(ctx, managedDeployment.ID, address.Unmap(), "root")
@@ -147,7 +148,14 @@ func (m *NodeMaintenance) ActualizeNode(ctx context.Context, input telegram.Node
 	if err != nil {
 		return telegram.NodeActualizeResult{}, errors.New("firewall reconciliation failed")
 	}
-	emitNodeActualizeProgress(input.Progress, "inventory_save", "Сохранение списка IP-адресов для поиска ноды", base+3, total)
+	emitNodeActualizeProgress(input.Progress, "site_theme", "Смена темы и технического отпечатка сайта", base+3, total)
+	if !adopted {
+		theme, themeErr := provisioner.NewSiteThemeManager(connection, m.siteTheme)
+		if themeErr != nil || theme.Rotate(ctx) != nil {
+			return telegram.NodeActualizeResult{}, errors.New("site theme rotation failed")
+		}
+	}
+	emitNodeActualizeProgress(input.Progress, "inventory_save", "Сохранение списка IP-адресов для поиска ноды", base+4, total)
 	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: input.PanelID, NodeUUID: input.NodeUUID, Addresses: addresses}); err != nil {
 		return telegram.NodeActualizeResult{}, err
 	}
@@ -232,6 +240,7 @@ func nodeActualizeProgressMessage(step, fallback string) string {
 		"create_remnawave_node":           "Привязка существующей ноды к managed deployment",
 		"wait_remnawave":                  "Ожидание подключения ноды к Remnawave",
 		"add_dns":                         "Проверка и обновление DNS",
+		"site_theme":                      "Смена темы и технического отпечатка сайта",
 	}
 	if label := labels[step]; label != "" {
 		return label
@@ -351,6 +360,10 @@ func (m *NodeMaintenance) actualizeManagedTarget(ctx context.Context, target man
 	changed, err := provisioner.ReconcileFirewall(ctx, connection, config.PanelIP, config.MetricsIP, m.timeout, m.mailGuard)
 	if err != nil {
 		return false, "firewall_reconcile"
+	}
+	theme, err := provisioner.NewSiteThemeManager(connection, m.siteTheme)
+	if err != nil || theme.Rotate(ctx) != nil {
+		return changed, "theme_rotate"
 	}
 	if err := m.store.UpsertNodeNetworkInventory(ctx, repository.NodeNetworkInventory{PanelID: target.panelID, NodeUUID: target.nodeUUID, Addresses: addresses}); err != nil {
 		return changed, "inventory_save"
