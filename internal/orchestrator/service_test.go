@@ -647,6 +647,22 @@ func TestDeploymentServiceExposesSafeTerminalNodeStatus(t *testing.T) {
 	}
 }
 
+func TestDeploymentServiceWaitsThroughEmptyInitialNodeStatus(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.remnawave.pollStates = []remnawave.Node{
+		{UUID: testNodeUUID, IsConnected: false, IsConnecting: false},
+		{UUID: testNodeUUID, IsConnected: true, IsConnecting: false},
+	}
+	prepared := fixture.prepare(t, "node-initial-status", "1.0.0.2")
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatalf("Deploy() error = %v", err)
+	}
+	stored := fixture.repo.mustGet(prepared.Deployment.ID)
+	if stored.Status != deployment.StatusCompleted {
+		t.Fatalf("status=%s", stored.Status)
+	}
+}
+
 func TestDeploymentServiceDNSFailureAndRetry(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.dns.addErr = errors.New("DNS service unavailable")

@@ -108,6 +108,17 @@ func (s *Service) RecheckRemnawave(ctx context.Context, deploymentID string) (Re
 }
 
 func (s *Service) classify(ctx context.Context, item deployment.Deployment) (Result, error) {
+	// Provisioning is implemented as persisted inspect/apply/validate stages.
+	// Completed stages are skipped and an interrupted running stage starts again
+	// from inspection, so a deployer restart is recoverable without blindly
+	// repeating the stage side effect.
+	if item.CurrentStep == "provisioning" && (item.Status == deployment.StatusProvisioning || item.Status == deployment.StatusManualReview) {
+		message := "Provisioning was interrupted; retry resumes from the last incomplete inspected stage"
+		if _, err := s.repository.UpdateDeploymentState(ctx, item.ID, repository.UpdateDeploymentStateParams{Status: deployment.StatusFailed, CurrentStep: item.CurrentStep, SafeErrorCode: pointer("RETRY_AFTER_RESTART"), SafeErrorMessage: &message}); err != nil {
+			return Result{}, errors.New("persist provisioning recovery state failed")
+		}
+		return Result{DeploymentID: item.ID, Classification: SafeToRecheck, SafeMessage: message}, nil
+	}
 	if item.Kind == deployment.KindAdvancedBalancer && !item.Status.Terminal() {
 		switch item.CurrentStep {
 		case "prepare_certificate", "provisioning", "create_config_profile", "create_remnawave_node", "wait_remnawave", "add_dns", "create_host", "add_to_squad":

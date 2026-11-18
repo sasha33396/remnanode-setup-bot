@@ -31,8 +31,9 @@ func TestRecoveryFindsExistingNodeAndCompletedDNS(t *testing.T) {
 	}
 }
 
-func TestRecoveryDoesNotRepeatUnknownProvisioningSideEffect(t *testing.T) {
+func TestRecoveryMakesInterruptedProvisioningExplicitlyRetryable(t *testing.T) {
 	item := recoveryDeployment(deployment.StatusProvisioning)
+	item.CurrentStep = "provisioning"
 	repo := newRecoveryRepository(item)
 	remna := &recoveryRemnawave{}
 	service, _ := New(repo, remna, &recoveryDNS{})
@@ -40,12 +41,26 @@ func TestRecoveryDoesNotRepeatUnknownProvisioningSideEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if results[0].Classification != NeedsManualReview || remna.calls != 0 {
+	if results[0].Classification != SafeToRecheck || remna.calls != 0 {
 		t.Fatalf("results=%#v Remnawave calls=%d", results, remna.calls)
 	}
 	updated, _ := repo.GetDeployment(context.Background(), item.ID)
-	if updated.Status != deployment.StatusManualReview {
-		t.Fatalf("status = %s", updated.Status)
+	if updated.Status != deployment.StatusFailed || updated.SafeErrorCode == nil || *updated.SafeErrorCode != "RETRY_AFTER_RESTART" {
+		t.Fatalf("deployment = %#v", updated)
+	}
+}
+
+func TestRecoveryConvertsLegacyProvisioningManualReviewToRetryable(t *testing.T) {
+	item := recoveryDeployment(deployment.StatusManualReview)
+	item.CurrentStep = "provisioning"
+	repo := newRecoveryRepository(item)
+	service, _ := New(repo, &recoveryRemnawave{}, &recoveryDNS{})
+	result, err := service.RecheckRemnawave(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification != SafeToRecheck || repo.item.Status != deployment.StatusFailed {
+		t.Fatalf("result=%#v deployment=%#v", result, repo.item)
 	}
 }
 

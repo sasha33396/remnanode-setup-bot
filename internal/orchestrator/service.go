@@ -1098,7 +1098,7 @@ func (s *DeploymentService) RetryFailedStep(ctx context.Context, deploymentID st
 	if err != nil {
 		return safeError("PERSISTENCE_READ_FAILED", "Could not load deployment", ErrPersistenceFailed)
 	}
-	if current.Status != deployment.StatusFailed {
+	if current.Status != deployment.StatusFailed && !(current.Status == deployment.StatusManualReview && current.CurrentStep == stepProvisioning) {
 		return ErrDeploymentNotRunnable
 	}
 	if s.logger != nil {
@@ -1247,11 +1247,14 @@ func (s *DeploymentService) pollNode(ctx context.Context, uuid string, progress 
 			if node.IsConnected {
 				return node, nil
 			}
-			if !node.IsConnecting {
+			// A newly enabled Node may briefly report neither connected nor
+			// connecting while Remnawave has not received its first heartbeat.
+			// Treat that empty state as pending. Only a non-empty status message
+			// is an explicit terminal rejection; otherwise the normal connection
+			// timeout remains the authoritative failure boundary.
+			if !node.IsConnecting && node.LastStatusMessage != nil && strings.TrimSpace(*node.LastStatusMessage) != "" {
 				message := "Remnawave Node stopped connecting"
-				if node.LastStatusMessage != nil {
-					message = safeText(*node.LastStatusMessage, message)
-				}
+				message = safeText(*node.LastStatusMessage, message)
 				return remnawave.Node{}, &nodeConnectionError{code: "NODE_CONNECTION_REJECTED", message: message, kind: ErrNodeConnectionFailed}
 			}
 			emit(progress, Progress{Step: stepWaitNode, Completed: 4, Total: workflowStepCount, SafeMessage: "Waiting for Remnawave Node connection", Status: deployment.StepStatusRunning})
