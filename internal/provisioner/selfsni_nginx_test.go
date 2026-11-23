@@ -43,10 +43,16 @@ func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
 	if strings.Contains(request.Command, "top-secret-cloudflare-token") || !strings.Contains(string(request.Stdin), "top-secret-cloudflare-token") {
 		t.Fatal("Cloudflare token was not isolated to SSH stdin")
 	}
-	for _, marker := range []string{"python3-certbot-dns-cloudflare", "127.0.0.1:9443 ssl proxy_protocol", "--dns-cloudflare", "certbot.timer", "reality-live-fallback"} {
+	for _, marker := range []string{"python3-certbot-dns-cloudflare", "127.0.0.1:9443 ssl proxy_protocol", "--dns-cloudflare", "certbot.timer", "reality-live-fallback", "Technology that moves forward.", `<span class="pill">LIVE</span>`, `background:radial-gradient`} {
 		if !strings.Contains(request.Command, marker) {
 			t.Errorf("installer command is missing %q", marker)
 		}
+	}
+	if strings.Contains(request.Command, "<h1>Welcome</h1>") || strings.Contains(request.Command, "The service is online.") {
+		t.Fatal("installer still contains the simplified placeholder page")
+	}
+	if strings.Contains(request.Command, "%!") {
+		t.Fatal("placeholder CSS was corrupted while formatting the remote command")
 	}
 	if !strings.Contains(request.Command, "domain='entry.example.com'") || strings.Contains(request.Command, "cover.example.net") {
 		t.Fatal("installer did not keep the certificate Host domain separate from Reality serverNames")

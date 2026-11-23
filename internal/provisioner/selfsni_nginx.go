@@ -121,8 +121,42 @@ printf '%%s\n' "$token_hash" > "$base/.cloudflare-token.sha256"
 chmod 0600 "$base/.selfsni-domain" "$base/.cloudflare-token.sha256"
 unset cf_token
 
-cat > "$base/site/index.html" <<'HTML'
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#172033}main{max-width:44rem;padding:3rem}h1{font-size:2.4rem}</style></head><body><main><h1>Welcome</h1><p>The service is online.</p></main></body></html>
+cat > "$base/site/index.html" <<HTML
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="description" content="$domain — digital services and infrastructure">
+  <title>$domain</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;
+      background:radial-gradient(circle at 80%% 15%%,#17325a 0,transparent 45%%),#0b1220;
+      color:#eef4ff; font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif; }
+    main { width:min(790px,100%%); padding:clamp(28px,6vw,64px); background:#131f33e6;
+      border:1px solid #30435e; border-radius:24px; box-shadow:0 24px 80px #0005; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:18px;
+      color:#a7cfff; font-weight:700; letter-spacing:.06em; }
+    .pill { border:1px solid #375278; border-radius:999px; padding:5px 12px; font-size:.75rem; }
+    h1 { font-size:clamp(2.3rem,6vw,3.6rem); line-height:1.12; letter-spacing:-.04em; margin:48px 0 20px; }
+    p { max-width:58ch; color:#b9c9de; }
+    .small { color:#7ea8dd; font-size:.85rem; margin-top:36px; overflow-wrap:anywhere; }
+    footer { margin-top:50px; padding-top:18px; border-top:1px solid #30435e;
+      font-size:.85rem; color:#8da4c3; }
+  </style>
+</head>
+<body>
+  <main>
+    <header><span>$domain</span><span class="pill">LIVE</span></header>
+    <h1>Technology that moves forward.</h1>
+    <p>Simple, reliable digital experiences. Infrastructure and thoughtful engineering for a connected world.</p>
+    <div class="small">$domain</div>
+    <footer>&copy; $(date +%%Y) $domain</footer>
+  </main>
+</body>
+</html>
 HTML
 
 policy=--keep-until-expiring
