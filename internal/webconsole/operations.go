@@ -151,6 +151,7 @@ type balancerDeploymentRequest struct {
 	HostType        string `json:"hostType"`
 	HostFQDN        string `json:"hostFqdn"`
 	RealitySNI      string `json:"realitySni"`
+	Fingerprint     string `json:"fingerprint"`
 	NodeName        string `json:"nodeName"`
 	IngressIP       string `json:"ingressIp"`
 	EgressIP        string `json:"egressIp"`
@@ -336,8 +337,9 @@ func (s *Server) handleBalancerDeployment(w http.ResponseWriter, r *http.Request
 		}
 	}
 	hostType := deployment.AdvancedHostType(strings.ToUpper(strings.TrimSpace(body.HostType))).Normalize()
+	fingerprint := deployment.HostFingerprint(body.Fingerprint).Normalize()
 	realityValid := hostType != deployment.AdvancedHostTypeSelfSNI || (validDeploymentText(body.RealitySNI, 253) && !strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(body.RealitySNI), "."), strings.TrimSuffix(strings.TrimSpace(body.HostFQDN), ".")))
-	if !hostType.Valid() || !realityValid || !validDeploymentText(body.PanelID, 128) || !validDeploymentText(body.InternalSquadID, 128) || !validDeploymentText(body.BalancerTag, 128) || !validDeploymentText(body.HostFQDN, 253) || !validDeploymentText(body.NodeName, 120) || !ingressOK || body.Password == "" || len(body.Password) > 1024 {
+	if !hostType.Valid() || !fingerprint.Valid() || !realityValid || !validDeploymentText(body.PanelID, 128) || !validDeploymentText(body.InternalSquadID, 128) || !validDeploymentText(body.BalancerTag, 128) || !validDeploymentText(body.HostFQDN, 253) || !validDeploymentText(body.NodeName, 120) || !ingressOK || body.Password == "" || len(body.Password) > 1024 {
 		body.Password = ""
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Проверьте панель, squad, тег, FQDN, IP и root-пароль"})
 		return
@@ -346,7 +348,7 @@ func (s *Server) handleBalancerDeployment(w http.ResponseWriter, r *http.Request
 	body.Password = ""
 	jobID, err := s.startBackgroundJob(user.UserID, "balancer:"+body.PanelID, body.HostFQDN, password, func(ctx context.Context, progress func(telegram.NodeActualizeProgress)) (any, error) {
 		progress(telegram.NodeActualizeProgress{Step: "preflight", Message: "Проверка SSH и подготовка собственного Host", Completed: 0, Total: 2})
-		prepared, err := advanced.PreflightAdvancedBalancer(ctx, telegram.AdvancedBalancerPreflightInput{PanelID: body.PanelID, OperatorUserID: user.UserID, InternalSquadID: body.InternalSquadID, BalancerTag: body.BalancerTag, HostType: hostType, HostFQDN: strings.ToLower(strings.TrimSuffix(body.HostFQDN, ".")), RealitySNI: strings.ToLower(strings.TrimSuffix(body.RealitySNI, ".")), NodeName: body.NodeName, IngressIP: ingress, EgressIP: egress, Password: password})
+		prepared, err := advanced.PreflightAdvancedBalancer(ctx, telegram.AdvancedBalancerPreflightInput{PanelID: body.PanelID, OperatorUserID: user.UserID, InternalSquadID: body.InternalSquadID, BalancerTag: body.BalancerTag, HostType: hostType, HostFQDN: strings.ToLower(strings.TrimSuffix(body.HostFQDN, ".")), RealitySNI: strings.ToLower(strings.TrimSuffix(body.RealitySNI, ".")), Fingerprint: fingerprint, NodeName: body.NodeName, IngressIP: ingress, EgressIP: egress, Password: password})
 		if err != nil || strings.TrimSpace(prepared.PreparedDeploymentID) == "" {
 			if strings.TrimSpace(prepared.PreparedDeploymentID) != "" {
 				_ = app.CancelDeployment(ctx, prepared.PreparedDeploymentID)

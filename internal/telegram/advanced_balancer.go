@@ -75,6 +75,45 @@ func (c *Controller) selectBalancerType(ctx context.Context, callback *CallbackQ
 	}
 	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerType, func(current *wizard) {
 		current.advancedHostType = hostType
+		current.state = stateSelectingBalancerFingerprint
+	}) {
+		return c.expiredCallback(ctx, callback)
+	}
+	current, _, _ := c.loadSession(session.userID)
+	return c.showBalancerFingerprints(ctx, current, callback.Message.ID)
+}
+
+var balancerFingerprints = []deployment.HostFingerprint{
+	deployment.HostFingerprintChrome, deployment.HostFingerprintFirefox, deployment.HostFingerprintSafari,
+	deployment.HostFingerprintIOS, deployment.HostFingerprintAndroid, deployment.HostFingerprintEdge,
+	deployment.HostFingerprintQQ, deployment.HostFingerprintRandom, deployment.HostFingerprintRandomized,
+}
+
+func (c *Controller) showBalancerFingerprints(ctx context.Context, session *wizard, messageID int) error {
+	rows := make([][]Button, 0, 3)
+	for index, fingerprint := range balancerFingerprints {
+		button := Button{Text: string(fingerprint), CallbackData: fmt.Sprintf("bal:fp:%s:%d", session.nonce, index)}
+		if index%3 == 0 {
+			rows = append(rows, []Button{button})
+		} else {
+			rows[len(rows)-1] = append(rows[len(rows)-1], button)
+		}
+	}
+	text := "Выберите обязательный uTLS fingerprint для нового Host:"
+	if messageID != 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, messageID, text, Keyboard{Inline: rows})
+	}
+	_, err := c.messenger.SendMessage(ctx, session.chatID, text, Keyboard{Inline: rows})
+	return err
+}
+
+func (c *Controller) selectBalancerFingerprint(ctx context.Context, callback *CallbackQuery, session *wizard, index int) error {
+	if session.state != stateSelectingBalancerFingerprint || index < 0 || index >= len(balancerFingerprints) {
+		return c.expiredCallback(ctx, callback)
+	}
+	fingerprint := balancerFingerprints[index]
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerFingerprint, func(current *wizard) {
+		current.hostFingerprint = fingerprint
 		current.state = stateSelectingBalancerSquad
 	}) {
 		return c.expiredCallback(ctx, callback)
@@ -306,7 +345,7 @@ func (c *Controller) acceptBalancerPasswordWorker(ctx context.Context, message *
 	}
 	close(ready)
 	defer func() { _ = c.messenger.DeleteMessage(ctx, message.ChatID, status.ID) }()
-	result, err := c.app.(AdvancedBalancerApplication).PreflightAdvancedBalancer(ctx, AdvancedBalancerPreflightInput{PanelID: current.panel.ID, OperatorUserID: current.userID, InternalSquadID: current.selectedSquad.ID, BalancerTag: current.balancerTag, HostFQDN: current.hostFQDN, HostType: current.advancedHostType, RealitySNI: current.realitySNI, NodeName: current.nodeName, IngressIP: current.vpsIP, EgressIP: current.egressIP, Password: requestPassword})
+	result, err := c.app.(AdvancedBalancerApplication).PreflightAdvancedBalancer(ctx, AdvancedBalancerPreflightInput{PanelID: current.panel.ID, OperatorUserID: current.userID, InternalSquadID: current.selectedSquad.ID, BalancerTag: current.balancerTag, HostFQDN: current.hostFQDN, HostType: current.advancedHostType, RealitySNI: current.realitySNI, Fingerprint: current.hostFingerprint, NodeName: current.nodeName, IngressIP: current.vpsIP, EgressIP: current.egressIP, Password: requestPassword})
 	clearBytes(requestPassword)
 	if err != nil || strings.TrimSpace(result.PreparedDeploymentID) == "" {
 		removed := c.takeSession(session.userID, session.nonce, stateBalancerPreflighting)
@@ -372,6 +411,7 @@ func renderAdvancedBalancerConfirmation(session *wizard) string {
 		hostType = "SelfSNI"
 		reality = session.realitySNI
 	}
+	hostType += " / fingerprint " + string(session.hostFingerprint)
 	return fmt.Sprintf("Подтвердите Advanced Balancer Host\nТип: %s\nПанель: %s\nInternal Squad: %s\nТег: %s\nHost/FQDN: %s\nReality SNI: %s\nConfig Profile: %s\nNode: %s\nВходной IP (Node, SSH, Cloudflare A): %s\nВыходной IP (интернет): %s\nРежим IP: %s\n\nБудут созданы отдельные Config Profile, Node, скрытый Host и inbound в Squad.", hostType, safeLine(session.panel.Name, 80), safeLine(session.selectedSquad.Name, 80), session.balancerTag, session.hostFQDN, reality, profileName, safeLine(session.nodeName, 60), session.vpsIP, egress, mode)
 }
 

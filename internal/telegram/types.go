@@ -157,6 +157,7 @@ type AdvancedBalancerPreflightInput struct {
 	HostFQDN        string
 	HostType        deployment.AdvancedHostType
 	RealitySNI      string
+	Fingerprint     deployment.HostFingerprint
 	NodeName        string
 	IngressIP       netip.Addr
 	EgressIP        netip.Addr
@@ -417,6 +418,7 @@ type DeploymentSummary struct {
 	PanelName        string
 	Kind             string
 	AdvancedHostType string
+	Fingerprint      string
 	ID               string
 	NodeName         string
 	Status           string

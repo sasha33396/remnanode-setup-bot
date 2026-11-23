@@ -15,6 +15,15 @@ var (
 	configProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9_\s-]+$`)
 )
 
+func validHostFingerprint(value string) bool {
+	switch value {
+	case "chrome", "firefox", "safari", "ios", "android", "edge", "qq", "random", "randomized":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Client) GetConfigProfiles(ctx context.Context) ([]ConfigProfile, error) {
 	var envelope configProfilesEnvelope
 	if err := c.doJSON(ctx, http.MethodGet, "/api/config-profiles", nil, http.StatusOK, &envelope); err != nil {
@@ -142,11 +151,15 @@ func (c *Client) AddInboundToInternalSquad(ctx context.Context, squadUUID, inbou
 }
 
 func (c *Client) CreateHost(ctx context.Context, input CreateHostInput) (Host, error) {
+	fingerprint := strings.ToLower(strings.TrimSpace(input.Fingerprint))
+	if !validHostFingerprint(fingerprint) {
+		return Host{}, ErrInvalidInput
+	}
 	input.Remark, input.Address, input.Tag = strings.TrimSpace(input.Remark), strings.TrimSpace(input.Address), strings.TrimSpace(input.Tag)
 	if input.Remark == "" || len(input.Remark) > 40 || input.Address == "" || input.Port < 1 || input.Port > 65535 || !hostTagPattern.MatchString(input.Tag) || len(input.Tag) > 36 || !validUUID(input.ConfigProfileUUID) || !validUUID(input.InboundUUID) || !validUUID(input.NodeUUID) {
 		return Host{}, fmt.Errorf("Host: %w", ErrInvalidInput)
 	}
-	request := createHostRequest{Remark: input.Remark, Address: input.Address, Port: input.Port, Tag: &input.Tag, Tags: []string{input.Tag}, IsHidden: true, Nodes: []string{input.NodeUUID}}
+	request := createHostRequest{Remark: input.Remark, Address: input.Address, Port: input.Port, Fingerprint: &fingerprint, Tag: &input.Tag, Tags: []string{input.Tag}, IsHidden: true, Nodes: []string{input.NodeUUID}}
 	request.Inbound.ConfigProfileUUID = input.ConfigProfileUUID
 	request.Inbound.InboundUUID = input.InboundUUID
 	var envelope struct {

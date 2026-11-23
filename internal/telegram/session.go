@@ -53,6 +53,7 @@ const (
 	stateBulkIPCompleted
 	stateSelectingBalancerPanel
 	stateSelectingBalancerType
+	stateSelectingBalancerFingerprint
 	stateSelectingBalancerSquad
 	stateSelectingBalancerTag
 	stateAwaitingBalancerFQDN
@@ -105,6 +106,7 @@ type wizard struct {
 	selectedSquad      InternalSquad
 	balancerTag        string
 	advancedHostType   deployment.AdvancedHostType
+	hostFingerprint    deployment.HostFingerprint
 	hostFQDN           string
 	realitySNI         string
 	egressIP           netip.Addr

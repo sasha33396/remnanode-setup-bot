@@ -152,7 +152,7 @@ func TestAdvancedAPIContractPathsAndPayloads(t *testing.T) {
 			fmt.Fprint(w, `{"response":{"uuid":"`+squadUUID+`","name":"Default","inbounds":[{"uuid":"`+testInboundUUID+`","tag":"VLESS_TCP_REALITY_TEST"}]}}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/hosts":
 			var body createHostRequest
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.IsHidden || body.Address != "edge.example.com" || body.Inbound.ConfigProfileUUID != testProfileUUID || len(body.Nodes) != 1 || body.Nodes[0] != testNodeUUID || body.Tag == nil || *body.Tag != "BALANCER_2" || len(body.Tags) != 1 || body.Tags[0] != "BALANCER_2" {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.IsHidden || body.Address != "edge.example.com" || body.Fingerprint == nil || *body.Fingerprint != "firefox" || body.Inbound.ConfigProfileUUID != testProfileUUID || len(body.Nodes) != 1 || body.Nodes[0] != testNodeUUID || body.Tag == nil || *body.Tag != "BALANCER_2" || len(body.Tags) != 1 || body.Tags[0] != "BALANCER_2" {
 				t.Errorf("host body = %#v, %v", body, err)
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -176,7 +176,7 @@ func TestAdvancedAPIContractPathsAndPayloads(t *testing.T) {
 	if err != nil || len(squad.Inbounds) != 1 {
 		t.Fatalf("AddInboundToInternalSquad() = %#v, %v", squad, err)
 	}
-	host, err := client.CreateHost(ctx, CreateHostInput{Remark: "edge.example.com", Address: "edge.example.com", Port: 443, Tag: "BALANCER_2", ConfigProfileUUID: testProfileUUID, InboundUUID: testInboundUUID, NodeUUID: testNodeUUID})
+	host, err := client.CreateHost(ctx, CreateHostInput{Remark: "edge.example.com", Address: "edge.example.com", Port: 443, Tag: "BALANCER_2", Fingerprint: "firefox", ConfigProfileUUID: testProfileUUID, InboundUUID: testInboundUUID, NodeUUID: testNodeUUID})
 	if err != nil || host.UUID != hostUUID || !host.IsHidden {
 		t.Fatalf("CreateHost() = %#v, %v", host, err)
 	}

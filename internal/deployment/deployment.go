@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -107,6 +108,7 @@ type Deployment struct {
 	AdvancedInboundUUID       string
 	AdvancedHostType          AdvancedHostType
 	AdvancedRealitySNI        string
+	AdvancedFingerprint       HostFingerprint
 	Status                    Status
 	CurrentStep               string
 	SafeErrorCode             *string
@@ -115,6 +117,36 @@ type Deployment struct {
 	UpdatedAt                 time.Time
 	StartedAt                 *time.Time
 	CompletedAt               *time.Time
+}
+
+// HostFingerprint is the uTLS fingerprint written to a Remnawave Host.
+type HostFingerprint string
+
+const (
+	HostFingerprintChrome     HostFingerprint = "chrome"
+	HostFingerprintFirefox    HostFingerprint = "firefox"
+	HostFingerprintSafari     HostFingerprint = "safari"
+	HostFingerprintIOS        HostFingerprint = "ios"
+	HostFingerprintAndroid    HostFingerprint = "android"
+	HostFingerprintEdge       HostFingerprint = "edge"
+	HostFingerprintQQ         HostFingerprint = "qq"
+	HostFingerprintRandom     HostFingerprint = "random"
+	HostFingerprintRandomized HostFingerprint = "randomized"
+)
+
+func (f HostFingerprint) Normalize() HostFingerprint {
+	return HostFingerprint(strings.ToLower(strings.TrimSpace(string(f))))
+}
+
+func (f HostFingerprint) Valid() bool {
+	switch f.Normalize() {
+	case HostFingerprintChrome, HostFingerprintFirefox, HostFingerprintSafari,
+		HostFingerprintIOS, HostFingerprintAndroid, HostFingerprintEdge,
+		HostFingerprintQQ, HostFingerprintRandom, HostFingerprintRandomized:
+		return true
+	default:
+		return false
+	}
 }
 
 // AdvancedHostType selects how the local REALITY fallback is served for an

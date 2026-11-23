@@ -152,6 +152,19 @@ func TestSelfSNIMigrationPersistsModeAndPublicSNIWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestAdvancedHostFingerprintMigrationContainsSupportedValues(t *testing.T) {
+	contents, err := Files.ReadFile("000013_advanced_host_fingerprint.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(contents))
+	for _, required := range []string{"advanced_fingerprint", "chrome", "firefox", "safari", "ios", "android", "edge", "qq", "random", "randomized"} {
+		if !strings.Contains(lower, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 func TestAbuseMonitorMigrationScopesIdentityAndStoresNoCredentials(t *testing.T) {
 	contents, err := Files.ReadFile("000009_abuse_monitor.up.sql")
 	if err != nil {

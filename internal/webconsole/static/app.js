@@ -388,7 +388,7 @@
     if (item.CanRecheck) actions.push(['recheck', 'Перепроверить ноду']);
     if (item.CanCancel) actions.push(['cancel', 'Отменить']);
     const details = $('#deployment-details');
-    const deploymentType = item.AdvancedHostType ? `${item.Kind} / ${item.AdvancedHostType}` : item.Kind;
+    const deploymentType = item.AdvancedHostType ? `${item.Kind} / ${item.AdvancedHostType}${item.Fingerprint ? ` / ${item.Fingerprint}` : ''}` : item.Kind;
     details.innerHTML = `<h3>${escapeHTML(item.NodeName || item.ID)}</h3><p class="muted">${escapeHTML(item.PanelName)} · ${escapeHTML(deploymentType)} · ${escapeHTML(item.Status)}</p><p>Текущий шаг: <strong>${escapeHTML(item.CurrentStep || '—')}</strong></p>${item.SafeError ? `<p class="danger-text">${escapeHTML(item.SafeError)}</p>` : ''}<div class="deployment-actions"><button type="button" class="button secondary deployment-logs" data-id="${escapeHTML(id)}">Журнал</button>${actions.map(([action,label]) => `<button type="button" class="button ${action === 'cancel' ? 'ghost' : 'secondary'} deployment-action" data-id="${escapeHTML(id)}" data-action="${action}">${escapeHTML(label)}</button>`).join('')}</div><div id="deployment-logs"></div>`;
     details.classList.remove('hidden');
   }
@@ -484,7 +484,7 @@
   $('#add-balancer-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const dialog = $('#add-balancer-dialog');
     const password = $('#balancer-password').value; $('#balancer-password').value = ''; dialog.close();
-    try { await runOperation('/api/deployments/balancer', { panelId: $('#balancer-panel').value, internalSquadId: $('#balancer-squad').value, balancerTag: $('#balancer-tag').value, hostType: $('#balancer-host-type').value, hostFqdn: $('#balancer-fqdn').value.trim(), realitySni: $('#balancer-reality-sni').value.trim(), nodeName: $('#balancer-name').value.trim(), ingressIp: $('#balancer-ingress').value.trim(), egressIp: $('#balancer-egress').value.trim(), password }, `Создание балансировщика ${$('#balancer-name').value.trim()}`); }
+    try { await runOperation('/api/deployments/balancer', { panelId: $('#balancer-panel').value, internalSquadId: $('#balancer-squad').value, balancerTag: $('#balancer-tag').value, hostType: $('#balancer-host-type').value, fingerprint: $('#balancer-fingerprint').value, hostFqdn: $('#balancer-fqdn').value.trim(), realitySni: $('#balancer-reality-sni').value.trim(), nodeName: $('#balancer-name').value.trim(), ingressIp: $('#balancer-ingress').value.trim(), egressIp: $('#balancer-egress').value.trim(), password }, `Создание балансировщика ${$('#balancer-name').value.trim()}`); }
     catch (error) { showNotice(error.message); }
   });
   $('#node-operation-form').addEventListener('submit', async (event) => {

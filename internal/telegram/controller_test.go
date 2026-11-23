@@ -956,6 +956,7 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuAddBalancer)
 	handleCallback(t, controller, "type", "bal:type:fixed-nonce:0", messenger.lastSent().message)
+	handleCallback(t, controller, "fingerprint", "bal:fp:fixed-nonce:1", messenger.lastSent().message)
 	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
 	edits := messenger.editsSnapshot()
 	tagPicker := edits[len(edits)-1]
@@ -970,7 +971,7 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	handleMessage(t, controller, 6, "1.1.1.1")
 	handleMessage(t, controller, 7, "temporary-password")
 	controller.Wait()
-	if application.advancedCalls != 1 || application.advancedInput.HostType != "SELFSTEAL" || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
+	if application.advancedCalls != 1 || application.advancedInput.HostType != "SELFSTEAL" || application.advancedInput.Fingerprint != "firefox" || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
 		t.Fatalf("advanced preflight input = %#v; calls=%d", application.advancedInput, application.advancedCalls)
 	}
 	confirmation := messenger.lastSent()
@@ -991,6 +992,7 @@ func TestAdvancedBalancerWizardCollectsSelfSNISeparatelyFromHostAddress(t *testi
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuAddBalancer)
 	handleCallback(t, controller, "type", "bal:type:fixed-nonce:1", messenger.lastSent().message)
+	handleCallback(t, controller, "fingerprint", "bal:fp:fixed-nonce:0", messenger.lastSent().message)
 	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
 	handleCallback(t, controller, "tag", "bal:tag:fixed-nonce:0", messenger.lastSent().message)
 	handleMessage(t, controller, 2, "node-entry.example.com")

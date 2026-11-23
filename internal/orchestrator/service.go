@@ -207,7 +207,8 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, safeError("ADVANCED_API_UNAVAILABLE", "Remnawave Advanced API is unavailable", ErrHostUnavailable)
 	}
 	input.HostType = input.HostType.Normalize()
-	if s.config.DNSRecords == nil || (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || !input.HostType.Valid() || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.IngressIP) || len(input.Password) == 0 {
+	input.Fingerprint = input.Fingerprint.Normalize()
+	if s.config.DNSRecords == nil || (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || !input.HostType.Valid() || !input.Fingerprint.Valid() || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.IngressIP) || len(input.Password) == 0 {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	tag := strings.ToUpper(strings.TrimSpace(input.BalancerTag))
@@ -293,7 +294,7 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		NodeName: strings.TrimSpace(input.NodeName), TargetVPSIP: input.IngressIP.Unmap(),
 		Kind: deployment.KindAdvancedBalancer, AdvancedBalancerTag: tag,
 		AdvancedEgressIP: input.EgressIP, AdvancedInternalSquadUUID: input.InternalSquadID,
-		AdvancedHostType: input.HostType, AdvancedRealitySNI: realitySNI,
+		AdvancedHostType: input.HostType, AdvancedRealitySNI: realitySNI, AdvancedFingerprint: input.Fingerprint,
 	})
 	if err != nil {
 		return PreparedDeployment{}, safeError("PERSISTENCE_CREATE_FAILED", "Could not create deployment state", ErrPersistenceFailed)
@@ -1043,7 +1044,7 @@ func (s *DeploymentService) finishAdvanced(ctx context.Context, current *deploym
 			}
 		}
 		if selected == nil {
-			created, createErr := advanced.CreateHost(ctx, remnawave.CreateHostInput{Remark: current.SNIDomain, Address: current.SNIDomain, Port: 443, Tag: current.AdvancedBalancerTag, ConfigProfileUUID: current.AdvancedConfigProfileUUID, InboundUUID: current.AdvancedInboundUUID, NodeUUID: *current.RemnawaveNodeUUID})
+			created, createErr := advanced.CreateHost(ctx, remnawave.CreateHostInput{Remark: current.SNIDomain, Address: current.SNIDomain, Port: 443, Tag: current.AdvancedBalancerTag, Fingerprint: string(current.AdvancedFingerprint.Normalize()), ConfigProfileUUID: current.AdvancedConfigProfileUUID, InboundUUID: current.AdvancedInboundUUID, NodeUUID: *current.RemnawaveNodeUUID})
 			if createErr != nil {
 				return s.failStage(ctx, current.ID, stepCreateHost, deployment.StatusFailed, "HOST_CREATE_FAILED", "Hidden injected Host could not be created", ErrRemnawaveCreationFailed)
 			}

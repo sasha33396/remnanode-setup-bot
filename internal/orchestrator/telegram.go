@@ -190,7 +190,7 @@ func (a *TelegramApplication) PreflightAdvancedBalancer(ctx context.Context, inp
 	}
 	prepared, err := panel.Service.PrepareAdvancedBalancer(ctx, PrepareAdvancedBalancerInput{
 		PanelID: input.PanelID, OperatorUserID: input.OperatorUserID, InternalSquadID: input.InternalSquadID,
-		BalancerTag: input.BalancerTag, HostFQDN: input.HostFQDN, HostType: input.HostType, RealitySNI: input.RealitySNI, NodeName: input.NodeName,
+		BalancerTag: input.BalancerTag, HostFQDN: input.HostFQDN, HostType: input.HostType, RealitySNI: input.RealitySNI, Fingerprint: input.Fingerprint, NodeName: input.NodeName,
 		IngressIP: input.IngressIP, EgressIP: input.EgressIP, Password: input.Password,
 	})
 	if err != nil {
@@ -748,6 +748,7 @@ func telegramDeploymentSummary(item deployment.Deployment, panelName string) tel
 		PanelName:        panelName,
 		Kind:             string(item.Kind),
 		AdvancedHostType: advancedHostTypeLabel(item),
+		Fingerprint:      string(item.AdvancedFingerprint.Normalize()),
 		ID:               item.ID,
 		NodeName:         item.NodeName,
 		Status:           string(item.Status),

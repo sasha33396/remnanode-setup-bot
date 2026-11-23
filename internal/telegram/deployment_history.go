@@ -50,7 +50,7 @@ func renderDeploymentCard(details DeploymentDetails, notice string) string {
 		if hostType == "" {
 			hostType = "SelfSteal"
 		}
-		fmt.Fprintf(&builder, "Тип: Advanced Balancer Host / %s\nFQDN: %s\n", safeLine(hostType, 20), safeLine(details.SNI, 255))
+		fmt.Fprintf(&builder, "Тип: Advanced Balancer Host / %s\nFingerprint: %s\nFQDN: %s\n", safeLine(hostType, 20), safeLine(details.Fingerprint, 20), safeLine(details.SNI, 255))
 	}
 	if details.TargetIP.IsValid() {
 		fmt.Fprintf(&builder, "IP сервера: %s\n", details.TargetIP)

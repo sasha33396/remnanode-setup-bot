@@ -32,6 +32,7 @@ type CreateDeploymentParams struct {
 	AdvancedInternalSquadUUID string
 	AdvancedHostType          deployment.AdvancedHostType
 	AdvancedRealitySNI        string
+	AdvancedFingerprint       deployment.HostFingerprint
 }
 
 type SetAdvancedProfileParams struct {

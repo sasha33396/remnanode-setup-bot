@@ -930,7 +930,7 @@ func (r *memoryRepository) CreateDeployment(_ context.Context, params repository
 	if panelID == "" {
 		panelID = "default"
 	}
-	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Kind: params.Kind, AdvancedBalancerTag: params.AdvancedBalancerTag, AdvancedEgressIP: params.AdvancedEgressIP, AdvancedInternalSquadUUID: params.AdvancedInternalSquadUUID, AdvancedHostType: params.AdvancedHostType, AdvancedRealitySNI: params.AdvancedRealitySNI, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
+	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Kind: params.Kind, AdvancedBalancerTag: params.AdvancedBalancerTag, AdvancedEgressIP: params.AdvancedEgressIP, AdvancedInternalSquadUUID: params.AdvancedInternalSquadUUID, AdvancedHostType: params.AdvancedHostType, AdvancedRealitySNI: params.AdvancedRealitySNI, AdvancedFingerprint: params.AdvancedFingerprint, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
 	r.items[id] = item
 	return item, nil
 }
@@ -1035,7 +1035,8 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 	prepared, err := fixture.service.PrepareAdvancedBalancer(context.Background(), PrepareAdvancedBalancerInput{
 		OperatorUserID: 42, InternalSquadID: squadUUID, BalancerTag: "BALANCER_2",
 		HostFQDN: "gmb.example.com", NodeName: "gmb-node", IngressIP: netip.MustParseAddr("8.8.8.8"),
-		EgressIP: netip.MustParseAddr("1.1.1.1"), Password: []byte("temporary-password"),
+		Fingerprint: deployment.HostFingerprintFirefox,
+		EgressIP:    netip.MustParseAddr("1.1.1.1"), Password: []byte("temporary-password"),
 	})
 	if err != nil {
 		t.Fatalf("PrepareAdvancedBalancer() error = %v", err)
@@ -1076,7 +1077,8 @@ func TestSelfSNIAdvancedBalancerDelegatesCertificateToNodeCertbot(t *testing.T) 
 	prepared, err := fixture.service.PrepareAdvancedBalancer(context.Background(), PrepareAdvancedBalancerInput{
 		OperatorUserID: 42, InternalSquadID: squadUUID, BalancerTag: "BALANCER_2",
 		HostType: deployment.AdvancedHostTypeSelfSNI, HostFQDN: "entry.example.com", RealitySNI: "cover.example.net",
-		NodeName: "selfsni-node", IngressIP: netip.MustParseAddr("8.8.8.8"), Password: []byte("temporary-password"),
+		Fingerprint: deployment.HostFingerprintChrome,
+		NodeName:    "selfsni-node", IngressIP: netip.MustParseAddr("8.8.8.8"), Password: []byte("temporary-password"),
 	})
 	if err != nil {
 		t.Fatalf("PrepareAdvancedBalancer(SelfSNI) error = %v", err)

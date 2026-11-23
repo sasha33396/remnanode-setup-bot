@@ -16,6 +16,7 @@ type Host struct {
 	Remark               string
 	Address              string
 	SNI                  *string
+	Fingerprint          *string
 	IsDisabled           bool
 	IsHidden             bool
 	Tags                 []string
@@ -137,6 +138,7 @@ type CreateHostInput struct {
 	Address           string
 	Port              int
 	Tag               string
+	Fingerprint       string
 	ConfigProfileUUID string
 	InboundUUID       string
 	NodeUUID          string

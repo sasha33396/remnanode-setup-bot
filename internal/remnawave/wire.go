@@ -17,6 +17,7 @@ type hostWire struct {
 	Remark               *string          `json:"remark"`
 	Address              *string          `json:"address"`
 	SNI                  *string          `json:"sni"`
+	Fingerprint          *string          `json:"fingerprint"`
 	IsDisabled           *bool            `json:"isDisabled"`
 	IsHidden             *bool            `json:"isHidden"`
 	Tag                  *string          `json:"tag"`
@@ -56,6 +57,7 @@ func (h hostWire) model() (Host, error) {
 		Remark:               *h.Remark,
 		Address:              *h.Address,
 		SNI:                  h.SNI,
+		Fingerprint:          h.Fingerprint,
 		IsDisabled:           *h.IsDisabled,
 		IsHidden:             h.IsHidden != nil && *h.IsHidden,
 		Tags:                 tags,
@@ -316,10 +318,11 @@ type createHostRequest struct {
 		ConfigProfileUUID string `json:"configProfileUuid"`
 		InboundUUID       string `json:"configProfileInboundUuid"`
 	} `json:"inbound"`
-	Remark  string  `json:"remark"`
-	Address string  `json:"address"`
-	Port    int     `json:"port"`
-	SNI     *string `json:"sni,omitempty"`
+	Remark      string  `json:"remark"`
+	Address     string  `json:"address"`
+	Port        int     `json:"port"`
+	SNI         *string `json:"sni,omitempty"`
+	Fingerprint *string `json:"fingerprint,omitempty"`
 	// Tag is the Remnawave 2.7.x field; Tags is the 2.8.x field. Sending both
 	// is safe because each version strips the unknown counterpart.
 	Tag        *string  `json:"tag,omitempty"`

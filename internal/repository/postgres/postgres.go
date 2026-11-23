@@ -37,6 +37,7 @@ const deploymentColumns = `
     advanced_inbound_uuid::text,
 	advanced_host_type,
 	advanced_reality_sni,
+	advanced_fingerprint,
     status,
     current_step,
     safe_error_code,
@@ -91,7 +92,7 @@ func New(pool *pgxpool.Pool) *Repository {
 // service reports readiness.
 func (r *Repository) CheckSchema(ctx context.Context) error {
 	var deployments, certificateRecords, certificateVersions, certificateTargetReviews, nodeNetworkInventory, abuseCheckpoints, abuseEvents, abuseAggregates, abuseIPCache, abuseIncidents *string
-	var panelColumns, advancedColumns, selfSNIColumns int
+	var panelColumns, advancedColumns, selfSNIColumns, fingerprintColumns int
 	if err := r.pool.QueryRow(ctx, `
         SELECT to_regclass('public.deployments')::text,
                to_regclass('public.certificate_records')::text,
@@ -111,10 +112,13 @@ func (r *Repository) CheckSchema(ctx context.Context) error {
 	                  AND column_name IN ('deployment_kind', 'advanced_balancer_tag', 'advanced_egress_ip', 'advanced_internal_squad_uuid', 'advanced_config_profile_uuid', 'advanced_config_profile_name', 'advanced_inbound_uuid')),
 	               (SELECT count(*) FROM information_schema.columns
 	                WHERE table_schema = 'public' AND table_name = 'deployments'
-	                  AND column_name IN ('advanced_host_type', 'advanced_reality_sni'))`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &nodeNetworkInventory, &abuseCheckpoints, &abuseEvents, &abuseAggregates, &abuseIPCache, &abuseIncidents, &panelColumns, &advancedColumns, &selfSNIColumns); err != nil {
+	                  AND column_name IN ('advanced_host_type', 'advanced_reality_sni')),
+	               (SELECT count(*) FROM information_schema.columns
+	                WHERE table_schema = 'public' AND table_name = 'deployments'
+	                  AND column_name = 'advanced_fingerprint')`).Scan(&deployments, &certificateRecords, &certificateVersions, &certificateTargetReviews, &nodeNetworkInventory, &abuseCheckpoints, &abuseEvents, &abuseAggregates, &abuseIPCache, &abuseIncidents, &panelColumns, &advancedColumns, &selfSNIColumns, &fingerprintColumns); err != nil {
 		return errors.New("verify PostgreSQL schema failed")
 	}
-	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || nodeNetworkInventory == nil || abuseCheckpoints == nil || abuseEvents == nil || abuseAggregates == nil || abuseIPCache == nil || abuseIncidents == nil || panelColumns != 5 || advancedColumns != 7 || selfSNIColumns != 2 {
+	if deployments == nil || certificateRecords == nil || certificateVersions == nil || certificateTargetReviews == nil || nodeNetworkInventory == nil || abuseCheckpoints == nil || abuseEvents == nil || abuseAggregates == nil || abuseIPCache == nil || abuseIncidents == nil || panelColumns != 5 || advancedColumns != 7 || selfSNIColumns != 2 || fingerprintColumns != 1 {
 		return errors.New("required PostgreSQL migrations are not applied")
 	}
 	return nil
@@ -144,9 +148,9 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
             id, panel_id, telegram_operator_user_id, selected_remnawave_host_uuid,
             selected_host_remark, sni_domain, node_name, target_vps_ip,
             deployment_kind, advanced_balancer_tag, advanced_egress_ip,
-		advanced_internal_squad_uuid, advanced_host_type, advanced_reality_sni,
+		advanced_internal_squad_uuid, advanced_host_type, advanced_reality_sni, advanced_fingerprint,
 		status, current_step
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING `+deploymentColumns,
 		params.ID,
 		params.PanelID,
@@ -162,6 +166,7 @@ func (r *Repository) CreateDeployment(ctx context.Context, params repositorycont
 		nullString(params.AdvancedInternalSquadUUID),
 		params.AdvancedHostType.Normalize(),
 		nullString(params.AdvancedRealitySNI),
+		nullString(string(params.AdvancedFingerprint.Normalize())),
 		deployment.StatusCreated,
 		"created",
 	)
@@ -527,7 +532,7 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 	var result deployment.Deployment
 	var ip string
 	var egressIP *string
-	var advancedTag, squadUUID, profileUUID, profileName, inboundUUID, realitySNI *string
+	var advancedTag, squadUUID, profileUUID, profileName, inboundUUID, realitySNI, fingerprint *string
 	err := row.Scan(
 		&result.ID,
 		&result.PanelID,
@@ -548,6 +553,7 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 		&inboundUUID,
 		&result.AdvancedHostType,
 		&realitySNI,
+		&fingerprint,
 		&result.Status,
 		&result.CurrentStep,
 		&result.SafeErrorCode,
@@ -581,6 +587,9 @@ func scanDeployment(row scanner) (deployment.Deployment, error) {
 	}
 	if realitySNI != nil {
 		result.AdvancedRealitySNI = *realitySNI
+	}
+	if fingerprint != nil {
+		result.AdvancedFingerprint = deployment.HostFingerprint(*fingerprint).Normalize()
 	}
 	if egressIP != nil {
 		result.AdvancedEgressIP, err = netip.ParseAddr(*egressIP)
@@ -631,7 +640,7 @@ func validateCreate(params repositorycontract.CreateDeploymentParams) error {
 		return invalid("deployment kind")
 	}
 	if params.Kind == deployment.KindAdvancedBalancer {
-		if strings.TrimSpace(params.AdvancedBalancerTag) == "" || !validUUID(params.AdvancedInternalSquadUUID) || !params.AdvancedHostType.Valid() {
+		if strings.TrimSpace(params.AdvancedBalancerTag) == "" || !validUUID(params.AdvancedInternalSquadUUID) || !params.AdvancedHostType.Valid() || !params.AdvancedFingerprint.Valid() {
 			return invalid("advanced balancer metadata")
 		}
 		if params.AdvancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI && strings.TrimSpace(params.AdvancedRealitySNI) == "" {

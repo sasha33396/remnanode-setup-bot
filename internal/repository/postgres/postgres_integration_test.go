@@ -63,7 +63,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql", "000006_multi_panel_scope.up.sql", "000007_advanced_balancer_hosts.up.sql", "000008_node_network_inventory.up.sql", "000009_abuse_monitor.up.sql", "000010_network_reports.up.sql", "000011_leastload_ip_jobs.up.sql", "000012_selfsni_advanced_hosts.up.sql"} {
+	for _, migration := range []string{"000001_deployments.up.sql", "000002_deployment_ssh_host_key.up.sql", "000003_certificate_manager.up.sql", "000004_production_recovery.up.sql", "000005_certificate_legacy_targets.up.sql", "000006_multi_panel_scope.up.sql", "000007_advanced_balancer_hosts.up.sql", "000008_node_network_inventory.up.sql", "000009_abuse_monitor.up.sql", "000010_network_reports.up.sql", "000011_leastload_ip_jobs.up.sql", "000012_selfsni_advanced_hosts.up.sql", "000013_advanced_host_fingerprint.up.sql"} {
 		upSQL, err := migrations.Files.ReadFile(migration)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", migration, err)
