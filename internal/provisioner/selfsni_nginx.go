@@ -74,6 +74,8 @@ test "$(cat /opt/reality-live-fallback/.cloudflare-token.sha256 2>/dev/null || t
 test -s "/etc/letsencrypt/live/$domain/fullchain.pem" || ready=false
 test -s "/etc/letsencrypt/live/$domain/privkey.pem" || ready=false
 openssl x509 -checkend 86400 -noout -in "/etc/letsencrypt/live/$domain/fullchain.pem" >/dev/null 2>&1 || ready=false
+test "$(stat -c '%%a' /opt/reality-live-fallback/site/index.html 2>/dev/null || true)" = 644 || ready=false
+grep -Fq 'Technology that moves forward.' /opt/reality-live-fallback/site/index.html 2>/dev/null || ready=false
 docker inspect -f '{{.State.Running}}' reality-live-fallback 2>/dev/null | grep -qx true || ready=false
 if [ "$ready" = true ]; then printf ready; else printf pending; fi`, domain, hash)
 	result, err := a.runner.Run(ctx, sshclient.CommandRequest{Command: command, Timeout: a.config.Timeout})
@@ -158,6 +160,7 @@ cat > "$base/site/index.html" <<HTML
 </body>
 </html>
 HTML
+chmod 0644 "$base/site/index.html"
 
 policy=--keep-until-expiring
 renewal="/etc/letsencrypt/renewal/$domain.conf"

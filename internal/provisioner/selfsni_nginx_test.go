@@ -43,7 +43,7 @@ func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
 	if strings.Contains(request.Command, "top-secret-cloudflare-token") || !strings.Contains(string(request.Stdin), "top-secret-cloudflare-token") {
 		t.Fatal("Cloudflare token was not isolated to SSH stdin")
 	}
-	for _, marker := range []string{"python3-certbot-dns-cloudflare", "127.0.0.1:9443 ssl proxy_protocol", "--dns-cloudflare", "certbot.timer", "reality-live-fallback", "Technology that moves forward.", `<span class="pill">LIVE</span>`, `background:radial-gradient`} {
+	for _, marker := range []string{"python3-certbot-dns-cloudflare", "127.0.0.1:9443 ssl proxy_protocol", "--dns-cloudflare", "certbot.timer", "reality-live-fallback", "Technology that moves forward.", `<span class="pill">LIVE</span>`, `background:radial-gradient`, `chmod 0644 "$base/site/index.html"`} {
 		if !strings.Contains(request.Command, marker) {
 			t.Errorf("installer command is missing %q", marker)
 		}
@@ -71,6 +71,27 @@ func TestSelfSNINginxInstallerRejectsInvalidConfiguration(t *testing.T) {
 	} {
 		if _, err := NewSelfSNINginxInstaller(runner, config); err == nil {
 			t.Fatalf("accepted invalid configuration %#v", config)
+		}
+	}
+}
+
+func TestSelfSNINginxInspectRejectsUnreadableOrLegacyPlaceholder(t *testing.T) {
+	runner := &selfSNIRunner{}
+	installer, err := NewSelfSNINginxInstaller(runner, SelfSNINginxConfig{
+		CertificateDomain: "entry.example.com", Email: "ops@example.net", CloudflareToken: []byte("token"), Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installer.Destroy()
+
+	if _, err := installer.Inspect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	command := runner.requests[0].Command
+	for _, marker := range []string{`stat -c '%a'`, "= 644", "Technology that moves forward."} {
+		if !strings.Contains(command, marker) {
+			t.Errorf("inspection command is missing %q", marker)
 		}
 	}
 }
