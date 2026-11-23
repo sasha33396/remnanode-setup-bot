@@ -21,10 +21,10 @@ var (
 )
 
 type SelfSNINginxConfig struct {
-	Domain          string
-	Email           string
-	CloudflareToken []byte
-	Timeout         time.Duration
+	CertificateDomain string
+	Email             string
+	CloudflareToken   []byte
+	Timeout           time.Duration
 }
 
 type SelfSNINginxInstaller struct {
@@ -33,9 +33,9 @@ type SelfSNINginxInstaller struct {
 }
 
 func NewSelfSNINginxInstaller(runner sshclient.CommandRunner, config SelfSNINginxConfig) (*SelfSNINginxInstaller, error) {
-	config.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(config.Domain), "."))
+	config.CertificateDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(config.CertificateDomain), "."))
 	config.Email = strings.TrimSpace(config.Email)
-	if runner == nil || !validSelfSNIDomain(config.Domain) || len(config.CloudflareToken) == 0 || config.Timeout <= 0 {
+	if runner == nil || !validSelfSNIDomain(config.CertificateDomain) || len(config.CloudflareToken) == 0 || config.Timeout <= 0 {
 		return nil, ErrInvalidSelfSNIConfiguration
 	}
 	address, err := mail.ParseAddress(config.Email)
@@ -51,11 +51,15 @@ func (a *SelfSNINginxInstaller) Destroy() {
 	a.config.CloudflareToken = nil
 }
 
-func (*SelfSNINginxInstaller) String() string   { return "SelfSNINginxInstaller{CloudflareToken:[REDACTED]}" }
-func (*SelfSNINginxInstaller) GoString() string { return "SelfSNINginxInstaller{CloudflareToken:[REDACTED]}" }
+func (*SelfSNINginxInstaller) String() string {
+	return "SelfSNINginxInstaller{CloudflareToken:[REDACTED]}"
+}
+func (*SelfSNINginxInstaller) GoString() string {
+	return "SelfSNINginxInstaller{CloudflareToken:[REDACTED]}"
+}
 
 func (a *SelfSNINginxInstaller) Inspect(ctx context.Context) (Inspection, error) {
-	domain, _ := shellQuote(a.config.Domain)
+	domain, _ := shellQuote(a.config.CertificateDomain)
 	tokenHash := sha256.Sum256(a.config.CloudflareToken)
 	hash, _ := shellQuote(hex.EncodeToString(tokenHash[:]))
 	command := fmt.Sprintf(`# selfsni:inspect
@@ -80,7 +84,7 @@ if [ "$ready" = true ]; then printf ready; else printf pending; fi`, domain, has
 }
 
 func (a *SelfSNINginxInstaller) Install(ctx context.Context) error {
-	domain, _ := shellQuote(a.config.Domain)
+	domain, _ := shellQuote(a.config.CertificateDomain)
 	email, _ := shellQuote(a.config.Email)
 	tokenHash := sha256.Sum256(a.config.CloudflareToken)
 	hash, _ := shellQuote(hex.EncodeToString(tokenHash[:]))
@@ -195,7 +199,7 @@ docker compose up -d --remove-orphans
 }
 
 func (a *SelfSNINginxInstaller) Validate(ctx context.Context) error {
-	domain, _ := shellQuote(a.config.Domain)
+	domain, _ := shellQuote(a.config.CertificateDomain)
 	command := fmt.Sprintf(`# selfsni:validate
 set -eu
 domain=%s

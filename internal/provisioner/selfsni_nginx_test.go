@@ -26,7 +26,7 @@ func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
 	runner := &selfSNIRunner{}
 	token := []byte("top-secret-cloudflare-token")
 	installer, err := NewSelfSNINginxInstaller(runner, SelfSNINginxConfig{
-		Domain: "cover.example.net", Email: "ops@example.net", CloudflareToken: token, Timeout: time.Minute,
+		CertificateDomain: "entry.example.com", Email: "ops@example.net", CloudflareToken: token, Timeout: time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +48,9 @@ func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
 			t.Errorf("installer command is missing %q", marker)
 		}
 	}
+	if !strings.Contains(request.Command, "domain='entry.example.com'") || strings.Contains(request.Command, "cover.example.net") {
+		t.Fatal("installer did not keep the certificate Host domain separate from Reality serverNames")
+	}
 	if strings.Contains(installer.String(), "top-secret") || strings.Contains(installer.GoString(), "top-secret") {
 		t.Fatal("installer formatting exposed the Cloudflare token")
 	}
@@ -56,9 +59,9 @@ func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
 func TestSelfSNINginxInstallerRejectsInvalidConfiguration(t *testing.T) {
 	runner := &selfSNIRunner{}
 	for _, config := range []SelfSNINginxConfig{
-		{Domain: "invalid", Email: "ops@example.net", CloudflareToken: []byte("token"), Timeout: time.Minute},
-		{Domain: "cover.example.net", Email: "invalid", CloudflareToken: []byte("token"), Timeout: time.Minute},
-		{Domain: "cover.example.net", Email: "ops@example.net", Timeout: time.Minute},
+		{CertificateDomain: "invalid", Email: "ops@example.net", CloudflareToken: []byte("token"), Timeout: time.Minute},
+		{CertificateDomain: "entry.example.com", Email: "invalid", CloudflareToken: []byte("token"), Timeout: time.Minute},
+		{CertificateDomain: "entry.example.com", Email: "ops@example.net", Timeout: time.Minute},
 	} {
 		if _, err := NewSelfSNINginxInstaller(runner, config); err == nil {
 			t.Fatalf("accepted invalid configuration %#v", config)

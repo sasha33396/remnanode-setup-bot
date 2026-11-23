@@ -151,7 +151,10 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 	var xray provisioner.XraySNIInstaller
 	var destroy func()
 	if hostType == deployment.AdvancedHostTypeSelfSNI {
-		installer, installerErr := provisioner.NewSelfSNINginxInstaller(connection, provisioner.SelfSNINginxConfig{Domain: input.RealitySNI, Email: v.config.ACMEEmail, CloudflareToken: v.config.CloudflareToken, Timeout: v.config.CommandTimeout})
+		// The public Host address is the certificate domain managed in
+		// Cloudflare. RealitySNI is only the Xray serverNames camouflage value
+		// and must never be sent to Certbot or looked up in Cloudflare.
+		installer, installerErr := provisioner.NewSelfSNINginxInstaller(connection, selfSNINginxConfig(input, v.config))
 		if installerErr != nil {
 			return provisioningPhase("SelfSNI Certbot/NGINX adapter could not be initialized")
 		}
@@ -183,6 +186,15 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 		return provisioningPhase("Provisioner engine failed; inspect stage logs")
 	}
 	return nil
+}
+
+func selfSNINginxConfig(input ProvisionVPSInput, config SSHProvisionerConfig) provisioner.SelfSNINginxConfig {
+	return provisioner.SelfSNINginxConfig{
+		CertificateDomain: input.SNIDomain,
+		Email:             config.ACMEEmail,
+		CloudflareToken:   config.CloudflareToken,
+		Timeout:           config.CommandTimeout,
+	}
 }
 
 var _ VPSOperator = (*SSHProvisioner)(nil)

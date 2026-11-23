@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSafePreflightFailurePreservesOnlyTrustedPhase(t *testing.T) {
@@ -24,5 +25,23 @@ func TestSafeInitialSSHFailureClassifiesAuthenticationWithoutLeakingDetails(t *t
 	code, message := safePreflightFailure(err)
 	if code != "SSH_AUTHENTICATION_FAILED" || strings.Contains(message, "protected-value") {
 		t.Fatalf("safe SSH failure = %q, %q", code, message)
+	}
+}
+
+func TestSelfSNINginxUsesHostForCertificateAndNotRealitySNI(t *testing.T) {
+	config := selfSNINginxConfig(ProvisionVPSInput{
+		SNIDomain:  "entry.example.com",
+		RealitySNI: "storage.accoil.ru",
+	}, SSHProvisionerConfig{
+		ACMEEmail:       "ops@example.com",
+		CloudflareToken: []byte("token"),
+		CommandTimeout:  time.Minute,
+	})
+
+	if config.CertificateDomain != "entry.example.com" {
+		t.Fatalf("certificate domain = %q, want Host FQDN", config.CertificateDomain)
+	}
+	if config.CertificateDomain == "storage.accoil.ru" {
+		t.Fatal("Reality serverName was incorrectly used as the Cloudflare certificate domain")
 	}
 }
