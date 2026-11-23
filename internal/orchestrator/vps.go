@@ -7,19 +7,22 @@ import (
 	"strings"
 	"time"
 
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/provisioner"
 	sshclient "remnanode-setup-bot/internal/ssh"
 )
 
 type SSHProvisionerConfig struct {
-	RemnawaveAPIIP netip.Addr
-	MetricsIP      netip.Addr
-	Preflight      provisioner.Requirements
-	XrayRepository string
-	XrayRef        string
-	CommandTimeout time.Duration
-	MailGuard      provisioner.MailGuardConfig
-	SiteTheme      provisioner.SiteThemeConfig
+	RemnawaveAPIIP  netip.Addr
+	MetricsIP       netip.Addr
+	Preflight       provisioner.Requirements
+	XrayRepository  string
+	XrayRef         string
+	CommandTimeout  time.Duration
+	MailGuard       provisioner.MailGuardConfig
+	SiteTheme       provisioner.SiteThemeConfig
+	ACMEEmail       string
+	CloudflareToken []byte
 }
 
 // SSHProvisioner connects the orchestration VPS port to the verified SSH,
@@ -80,7 +83,7 @@ func safeInitialSSHFailure(ctx context.Context, err error) error {
 }
 
 func NewSSHProvisioner(ssh *sshclient.Client, store provisioner.StepStore, config SSHProvisionerConfig) (*SSHProvisioner, error) {
-	if ssh == nil || store == nil || !config.RemnawaveAPIIP.IsValid() || !config.MetricsIP.IsValid() || strings.TrimSpace(config.XrayRepository) == "" || strings.TrimSpace(config.XrayRef) == "" {
+	if ssh == nil || store == nil || !config.RemnawaveAPIIP.IsValid() || !config.MetricsIP.IsValid() || strings.TrimSpace(config.XrayRepository) == "" || strings.TrimSpace(config.XrayRef) == "" || strings.TrimSpace(config.ACMEEmail) == "" || len(config.CloudflareToken) == 0 {
 		return nil, errors.New("invalid SSH provisioner configuration")
 	}
 	if config.CommandTimeout <= 0 {
@@ -123,7 +126,14 @@ func (v *SSHProvisioner) Preflight(ctx context.Context, input PreflightVPSInput)
 }
 
 func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput, progress func(provisioner.Report)) error {
-	if strings.TrimSpace(input.DeploymentID) == "" || !input.Address.IsValid() || strings.TrimSpace(input.SNIDomain) == "" || len(input.RemnanodeSecretKey) == 0 || len(input.Certificate.FullchainPEM) == 0 || len(input.Certificate.PrivateKeyPEM) == 0 {
+	hostType := input.AdvancedHostType.Normalize()
+	if strings.TrimSpace(input.DeploymentID) == "" || !input.Address.IsValid() || strings.TrimSpace(input.SNIDomain) == "" || !hostType.Valid() || len(input.RemnanodeSecretKey) == 0 {
+		return ErrInvalidInput
+	}
+	if hostType == deployment.AdvancedHostTypeSelfSteal && (len(input.Certificate.FullchainPEM) == 0 || len(input.Certificate.PrivateKeyPEM) == 0) {
+		return ErrInvalidInput
+	}
+	if hostType == deployment.AdvancedHostTypeSelfSNI && strings.TrimSpace(input.RealitySNI) == "" {
 		return ErrInvalidInput
 	}
 	connection, err := v.ssh.ConnectWithDeploymentKey(ctx, input.DeploymentID, input.Address, "root")
@@ -138,17 +148,28 @@ func (v *SSHProvisioner) Provision(ctx context.Context, input ProvisionVPSInput,
 	}
 	defer config.Destroy()
 	config.MailGuard = v.config.MailGuard
-	xray, err := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{
-		RepositoryURL: v.config.XrayRepository,
-		Ref:           v.config.XrayRef,
-		SNIDomain:     input.SNIDomain,
-		Timeout:       v.config.CommandTimeout,
-		SiteTheme:     v.config.SiteTheme,
-	}, input.Certificate)
-	if err != nil {
-		return provisioningPhase("xray-sni adapter could not be initialized")
+	var xray provisioner.XraySNIInstaller
+	var destroy func()
+	if hostType == deployment.AdvancedHostTypeSelfSNI {
+		installer, installerErr := provisioner.NewSelfSNINginxInstaller(connection, provisioner.SelfSNINginxConfig{Domain: input.RealitySNI, Email: v.config.ACMEEmail, CloudflareToken: v.config.CloudflareToken, Timeout: v.config.CommandTimeout})
+		if installerErr != nil {
+			return provisioningPhase("SelfSNI Certbot/NGINX adapter could not be initialized")
+		}
+		xray, destroy = installer, installer.Destroy
+	} else {
+		installer, installerErr := provisioner.NewExternalXraySNIInstaller(connection, provisioner.ExternalXraySNIConfig{
+			RepositoryURL: v.config.XrayRepository,
+			Ref:           v.config.XrayRef,
+			SNIDomain:     input.SNIDomain,
+			Timeout:       v.config.CommandTimeout,
+			SiteTheme:     v.config.SiteTheme,
+		}, input.Certificate)
+		if installerErr != nil {
+			return provisioningPhase("xray-sni adapter could not be initialized")
+		}
+		xray, destroy = installer, installer.Destroy
 	}
-	defer xray.Destroy()
+	defer destroy()
 	stages, err := provisioner.NewDefaultStages(connection, config, xray)
 	if err != nil {
 		return provisioningPhase("Provisioning stages could not be created")

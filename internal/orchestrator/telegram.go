@@ -190,7 +190,7 @@ func (a *TelegramApplication) PreflightAdvancedBalancer(ctx context.Context, inp
 	}
 	prepared, err := panel.Service.PrepareAdvancedBalancer(ctx, PrepareAdvancedBalancerInput{
 		PanelID: input.PanelID, OperatorUserID: input.OperatorUserID, InternalSquadID: input.InternalSquadID,
-		BalancerTag: input.BalancerTag, HostFQDN: input.HostFQDN, NodeName: input.NodeName,
+		BalancerTag: input.BalancerTag, HostFQDN: input.HostFQDN, HostType: input.HostType, RealitySNI: input.RealitySNI, NodeName: input.NodeName,
 		IngressIP: input.IngressIP, EgressIP: input.EgressIP, Password: input.Password,
 	})
 	if err != nil {
@@ -745,17 +745,18 @@ func (a *TelegramApplication) ListDeployments(ctx context.Context, limit int) ([
 
 func telegramDeploymentSummary(item deployment.Deployment, panelName string) telegram.DeploymentSummary {
 	result := telegram.DeploymentSummary{
-		PanelName:   panelName,
-		Kind:        string(item.Kind),
-		ID:          item.ID,
-		NodeName:    item.NodeName,
-		Status:      string(item.Status),
-		CurrentStep: item.CurrentStep,
-		TargetIP:    item.TargetVPSIP,
-		CreatedAt:   item.CreatedAt,
-		UpdatedAt:   item.UpdatedAt,
-		StartedAt:   item.StartedAt,
-		CompletedAt: item.CompletedAt,
+		PanelName:        panelName,
+		Kind:             string(item.Kind),
+		AdvancedHostType: advancedHostTypeLabel(item),
+		ID:               item.ID,
+		NodeName:         item.NodeName,
+		Status:           string(item.Status),
+		CurrentStep:      item.CurrentStep,
+		TargetIP:         item.TargetVPSIP,
+		CreatedAt:        item.CreatedAt,
+		UpdatedAt:        item.UpdatedAt,
+		StartedAt:        item.StartedAt,
+		CompletedAt:      item.CompletedAt,
 	}
 	if item.SafeErrorCode != nil {
 		result.SafeErrorCode = *item.SafeErrorCode
@@ -764,6 +765,16 @@ func telegramDeploymentSummary(item deployment.Deployment, panelName string) tel
 		result.SafeError = *item.SafeErrorMessage
 	}
 	return result
+}
+
+func advancedHostTypeLabel(item deployment.Deployment) string {
+	if item.Kind != deployment.KindAdvancedBalancer {
+		return ""
+	}
+	if item.AdvancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI {
+		return "SelfSNI"
+	}
+	return "SelfSteal"
 }
 
 func telegramCertificateReadiness(value CertificateReadiness) telegram.Readiness {

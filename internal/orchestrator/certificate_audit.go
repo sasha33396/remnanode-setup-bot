@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"remnanode-setup-bot/internal/certmanager"
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository"
 	"remnanode-setup-bot/internal/telegram"
@@ -36,6 +37,7 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 	for _, panelID := range a.order {
 		panel := a.panels[panelID]
 		domains := make(map[string]struct{})
+		selfSNIDomains := make(map[string]struct{})
 		hosts, err := panel.Service.remnawave.GetHosts(ctx)
 		if err != nil {
 			result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "hosts_unavailable"})
@@ -66,10 +68,22 @@ func (a *TelegramApplication) AuditCertificates(ctx context.Context) (telegram.C
 					result.Failures = append(result.Failures, telegram.CertificateAuditFailure{PanelName: panel.Name, Reason: "deployment_inventory_unavailable"})
 					break
 				}
+				if item.Kind == deployment.KindAdvancedBalancer && item.AdvancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI {
+					for _, rawDomain := range []string{item.SNIDomain, item.AdvancedRealitySNI} {
+						if domain, normalizeErr := certmanager.NormalizeSNI(rawDomain); normalizeErr == nil {
+							selfSNIDomains[domain] = struct{}{}
+							delete(domains, domain)
+						}
+					}
+					continue
+				}
 				if domain, normalizeErr := certmanager.NormalizeSNI(item.SNIDomain); normalizeErr == nil {
 					domains[domain] = struct{}{}
 				}
 			}
+		}
+		for domain := range selfSNIDomains {
+			delete(domains, domain)
 		}
 		auditor, ok := panel.Service.certificates.(CertificateAuditor)
 		if !ok {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/netip"
 	"time"
+
+	"remnanode-setup-bot/internal/deployment"
 )
 
 const (
@@ -153,6 +155,8 @@ type AdvancedBalancerPreflightInput struct {
 	InternalSquadID string
 	BalancerTag     string
 	HostFQDN        string
+	HostType        deployment.AdvancedHostType
+	RealitySNI      string
 	NodeName        string
 	IngressIP       netip.Addr
 	EgressIP        netip.Addr
@@ -410,19 +414,20 @@ type RoyalIPResult struct {
 }
 
 type DeploymentSummary struct {
-	PanelName     string
-	Kind          string
-	ID            string
-	NodeName      string
-	Status        string
-	CurrentStep   string
-	TargetIP      netip.Addr
-	SafeErrorCode string
-	SafeError     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	StartedAt     *time.Time
-	CompletedAt   *time.Time
+	PanelName        string
+	Kind             string
+	AdvancedHostType string
+	ID               string
+	NodeName         string
+	Status           string
+	CurrentStep      string
+	TargetIP         netip.Addr
+	SafeErrorCode    string
+	SafeError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	StartedAt        *time.Time
+	CompletedAt      *time.Time
 }
 
 type DeploymentDetails struct {

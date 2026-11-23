@@ -2,8 +2,10 @@ package orchestrator
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
+	"remnanode-setup-bot/internal/deployment"
 	"remnanode-setup-bot/internal/remnawave"
 	"remnanode-setup-bot/internal/repository"
 )
@@ -24,6 +26,31 @@ func TestCertificateAuditEnumeratesHostOnceAndAggregatesNodes(t *testing.T) {
 	}
 	if result.Hosts != 1 || result.Checked != 2 || result.Healthy != 1 || result.Repaired != 1 || fixture.cert.auditCalls != 1 {
 		t.Fatalf("audit result = %#v, calls = %d", result, fixture.cert.auditCalls)
+	}
+}
+
+func TestCertificateAuditSkipsSelfSNIHostsManagedByNodeCertbot(t *testing.T) {
+	fixture := newFixture(t)
+	item := deployment.Deployment{
+		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", PanelID: "default", Kind: deployment.KindAdvancedBalancer,
+		AdvancedHostType: deployment.AdvancedHostTypeSelfSNI, AdvancedRealitySNI: "cover.example.net",
+		SNIDomain: "entry.example.com", NodeName: "selfsni-node", TargetVPSIP: netip.MustParseAddr("8.8.8.8"),
+		RemnawaveNodeUUID: stringPtr(testNodeUUID),
+	}
+	fixture.repo.items[item.ID] = item
+	fixture.remnawave.hosts[0].Address = "entry.example.com"
+	fixture.remnawave.hosts[0].Nodes = []string{testNodeUUID}
+	fixture.remnawave.nodes = []remnawave.Node{{UUID: testNodeUUID, Name: item.NodeName, Address: item.TargetVPSIP.String(), IsConnected: true}}
+	app, err := NewTelegramApplication(fixture.service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.AuditCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hosts != 0 || fixture.cert.auditCalls != 0 {
+		t.Fatalf("SelfSNI certificate was sent to central audit: result=%#v calls=%d SNIs=%v", result, fixture.cert.auditCalls, fixture.cert.auditSNIs)
 	}
 }
 

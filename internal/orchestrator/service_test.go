@@ -930,7 +930,7 @@ func (r *memoryRepository) CreateDeployment(_ context.Context, params repository
 	if panelID == "" {
 		panelID = "default"
 	}
-	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Kind: params.Kind, AdvancedBalancerTag: params.AdvancedBalancerTag, AdvancedEgressIP: params.AdvancedEgressIP, AdvancedInternalSquadUUID: params.AdvancedInternalSquadUUID, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
+	item := deployment.Deployment{ID: id, PanelID: panelID, TelegramOperatorUserID: params.TelegramOperatorUserID, SelectedRemnawaveHostUUID: params.SelectedRemnawaveHostUUID, SelectedHostRemark: params.SelectedHostRemark, SNIDomain: params.SNIDomain, NodeName: params.NodeName, TargetVPSIP: params.TargetVPSIP, Kind: params.Kind, AdvancedBalancerTag: params.AdvancedBalancerTag, AdvancedEgressIP: params.AdvancedEgressIP, AdvancedInternalSquadUUID: params.AdvancedInternalSquadUUID, AdvancedHostType: params.AdvancedHostType, AdvancedRealitySNI: params.AdvancedRealitySNI, Status: deployment.StatusCreated, CurrentStep: "created", CreatedAt: now, UpdatedAt: now}
 	r.items[id] = item
 	return item, nil
 }
@@ -1063,6 +1063,46 @@ func TestAdvancedBalancerDeploymentCreatesIsolatedResourcesAndCloudflareRecord(t
 	assertBefore(t, events, "remnawave.connected", "cloudflare.a")
 	assertBefore(t, events, "cloudflare.a", "remnawave.host")
 	assertBefore(t, events, "remnawave.host", "remnawave.squad")
+}
+
+func TestSelfSNIAdvancedBalancerDelegatesCertificateToNodeCertbot(t *testing.T) {
+	fixture := newFixture(t)
+	const squadUUID = "77777777-7777-4777-8777-777777777777"
+	fixture.remnawave.hosts[0].Tags = []string{"BALANCER_2"}
+	fixture.remnawave.hosts[0].XrayJSONTemplateUUID = stringPtr("88888888-8888-4888-8888-888888888888")
+	fixture.remnawave.squads = []remnawave.InternalSquad{{UUID: squadUUID, Name: "Default-Squad"}}
+	dnsRecords := &fakeDNSRecords{events: fixture.events}
+	fixture.service.config.DNSRecords = dnsRecords
+	prepared, err := fixture.service.PrepareAdvancedBalancer(context.Background(), PrepareAdvancedBalancerInput{
+		OperatorUserID: 42, InternalSquadID: squadUUID, BalancerTag: "BALANCER_2",
+		HostType: deployment.AdvancedHostTypeSelfSNI, HostFQDN: "entry.example.com", RealitySNI: "cover.example.net",
+		NodeName: "selfsni-node", IngressIP: netip.MustParseAddr("8.8.8.8"), Password: []byte("temporary-password"),
+	})
+	if err != nil {
+		t.Fatalf("PrepareAdvancedBalancer(SelfSNI) error = %v", err)
+	}
+	if prepared.Deployment.AdvancedHostType != deployment.AdvancedHostTypeSelfSNI || prepared.Deployment.AdvancedRealitySNI != "cover.example.net" {
+		t.Fatalf("prepared SelfSNI deployment = %#v", prepared.Deployment)
+	}
+	if err := fixture.service.Deploy(context.Background(), startInput(prepared.Deployment), nil); err != nil {
+		t.Fatalf("Deploy(SelfSNI) error = %v", err)
+	}
+	if fixture.vps.lastProvision.AdvancedHostType != deployment.AdvancedHostTypeSelfSNI || fixture.vps.lastProvision.RealitySNI != "cover.example.net" || len(fixture.vps.lastProvision.Certificate.FullchainPEM) != 0 {
+		t.Fatalf("SelfSNI VPS input = %#v", fixture.vps.lastProvision)
+	}
+	for _, event := range fixture.events.snapshot() {
+		if strings.HasPrefix(event, "certificate.prepare") {
+			t.Fatalf("SelfSNI unexpectedly requested a central certificate: %v", fixture.events.snapshot())
+		}
+	}
+	config := fixture.remnawave.lastProfileConfig.(map[string]any)
+	reality := config["inbounds"].([]any)[0].(map[string]any)["streamSettings"].(map[string]any)["realitySettings"].(map[string]any)
+	if names := reality["serverNames"].([]string); len(names) != 1 || names[0] != "cover.example.net" {
+		t.Fatalf("SelfSNI serverNames = %#v", reality["serverNames"])
+	}
+	if dnsRecords.fqdn != "entry.example.com" || dnsRecords.address.String() != "8.8.8.8" {
+		t.Fatalf("SelfSNI Host A record = %#v", dnsRecords)
+	}
 }
 
 func TestAdvancedProfileNameUsesDomainWithoutTLD(t *testing.T) {
@@ -1492,6 +1532,7 @@ type fakeVPS struct {
 	provisionStarted         chan struct{}
 	provisionRelease         chan struct{}
 	preflightAllowedExisting bool
+	lastProvision            ProvisionVPSInput
 }
 
 type limitedVPS struct {
@@ -1540,6 +1581,9 @@ func (f *fakeVPS) Preflight(_ context.Context, input PreflightVPSInput) (provisi
 func (f *fakeVPS) Provision(ctx context.Context, input ProvisionVPSInput, progress func(provisioner.Report)) error {
 	f.mu.Lock()
 	f.provisionCalls++
+	f.lastProvision = input
+	f.lastProvision.RemnanodeSecretKey = append([]byte(nil), input.RemnanodeSecretKey...)
+	f.lastProvision.Certificate = input.Certificate.Clone()
 	f.secret = append([]byte(nil), input.RemnanodeSecretKey...)
 	started, release := f.provisionStarted, f.provisionRelease
 	f.mu.Unlock()

@@ -1,0 +1,67 @@
+package provisioner
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	sshclient "remnanode-setup-bot/internal/ssh"
+)
+
+type selfSNIRunner struct {
+	requests []sshclient.CommandRequest
+}
+
+func (r *selfSNIRunner) Run(_ context.Context, request sshclient.CommandRequest) (sshclient.CommandResult, error) {
+	request.Stdin = append([]byte(nil), request.Stdin...)
+	r.requests = append(r.requests, request)
+	if strings.Contains(request.Command, "# selfsni:inspect") {
+		return sshclient.CommandResult{Stdout: "ready"}, nil
+	}
+	return sshclient.CommandResult{}, nil
+}
+
+func TestSelfSNINginxInstallerKeepsCloudflareTokenOutOfCommand(t *testing.T) {
+	runner := &selfSNIRunner{}
+	token := []byte("top-secret-cloudflare-token")
+	installer, err := NewSelfSNINginxInstaller(runner, SelfSNINginxConfig{
+		Domain: "cover.example.net", Email: "ops@example.net", CloudflareToken: token, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installer.Destroy()
+	clear(token)
+	if err := installer.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("requests = %d", len(runner.requests))
+	}
+	request := runner.requests[0]
+	if strings.Contains(request.Command, "top-secret-cloudflare-token") || !strings.Contains(string(request.Stdin), "top-secret-cloudflare-token") {
+		t.Fatal("Cloudflare token was not isolated to SSH stdin")
+	}
+	for _, marker := range []string{"python3-certbot-dns-cloudflare", "127.0.0.1:9443 ssl proxy_protocol", "--dns-cloudflare", "certbot.timer", "reality-live-fallback"} {
+		if !strings.Contains(request.Command, marker) {
+			t.Errorf("installer command is missing %q", marker)
+		}
+	}
+	if strings.Contains(installer.String(), "top-secret") || strings.Contains(installer.GoString(), "top-secret") {
+		t.Fatal("installer formatting exposed the Cloudflare token")
+	}
+}
+
+func TestSelfSNINginxInstallerRejectsInvalidConfiguration(t *testing.T) {
+	runner := &selfSNIRunner{}
+	for _, config := range []SelfSNINginxConfig{
+		{Domain: "invalid", Email: "ops@example.net", CloudflareToken: []byte("token"), Timeout: time.Minute},
+		{Domain: "cover.example.net", Email: "invalid", CloudflareToken: []byte("token"), Timeout: time.Minute},
+		{Domain: "cover.example.net", Email: "ops@example.net", Timeout: time.Minute},
+	} {
+		if _, err := NewSelfSNINginxInstaller(runner, config); err == nil {
+			t.Fatalf("accepted invalid configuration %#v", config)
+		}
+	}
+}

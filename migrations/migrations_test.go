@@ -134,6 +134,24 @@ func TestNodeNetworkInventoryMigrationContainsNoCredentials(t *testing.T) {
 	}
 }
 
+func TestSelfSNIMigrationPersistsModeAndPublicSNIWithoutSecrets(t *testing.T) {
+	contents, err := Files.ReadFile("000012_selfsni_advanced_hosts.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(contents))
+	for _, required := range []string{"advanced_host_type", "advanced_reality_sni", "selfsteal", "selfsni"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("SelfSNI migration does not contain %q", required)
+		}
+	}
+	for _, forbidden := range []string{"password", "private_key", "cloudflare_token", "cf_api_token"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("SelfSNI migration contains forbidden secret field %q", forbidden)
+		}
+	}
+}
+
 func TestAbuseMonitorMigrationScopesIdentityAndStoresNoCredentials(t *testing.T) {
 	contents, err := Files.ReadFile("000009_abuse_monitor.up.sql")
 	if err != nil {

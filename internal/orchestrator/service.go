@@ -206,7 +206,8 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 	if !ok {
 		return PreparedDeployment{}, safeError("ADVANCED_API_UNAVAILABLE", "Remnawave Advanced API is unavailable", ErrHostUnavailable)
 	}
-	if s.config.DNSRecords == nil || (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.IngressIP) || len(input.Password) == 0 {
+	input.HostType = input.HostType.Normalize()
+	if s.config.DNSRecords == nil || (strings.TrimSpace(input.PanelID) != "" && input.PanelID != s.config.PanelID) || input.OperatorUserID <= 0 || !input.HostType.Valid() || remnawave.ValidateNodeName(input.NodeName) != nil || !publicIP(input.IngressIP) || len(input.Password) == 0 {
 		return PreparedDeployment{}, ErrInvalidInput
 	}
 	tag := strings.ToUpper(strings.TrimSpace(input.BalancerTag))
@@ -217,6 +218,13 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 	profileName, profileNameOK := advancedProfileName(fqdn)
 	if err != nil || len(fqdn) > 40 || !profileNameOK {
 		return PreparedDeployment{}, ErrInvalidInput
+	}
+	realitySNI := fqdn
+	if input.HostType == deployment.AdvancedHostTypeSelfSNI {
+		realitySNI, err = certmanager.NormalizeSNI(input.RealitySNI)
+		if err != nil || len(realitySNI) > 253 || normalizeDomain(realitySNI) == normalizeDomain(fqdn) {
+			return PreparedDeployment{}, safeError("SELFSNI_INVALID", "SelfSNI requires a valid SNI different from the Host address", ErrInvalidInput)
+		}
 	}
 	if input.EgressIP.IsValid() {
 		input.EgressIP = input.EgressIP.Unmap()
@@ -285,6 +293,7 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		NodeName: strings.TrimSpace(input.NodeName), TargetVPSIP: input.IngressIP.Unmap(),
 		Kind: deployment.KindAdvancedBalancer, AdvancedBalancerTag: tag,
 		AdvancedEgressIP: input.EgressIP, AdvancedInternalSquadUUID: input.InternalSquadID,
+		AdvancedHostType: input.HostType, AdvancedRealitySNI: realitySNI,
 	})
 	if err != nil {
 		return PreparedDeployment{}, safeError("PERSISTENCE_CREATE_FAILED", "Could not create deployment state", ErrPersistenceFailed)
@@ -329,8 +338,10 @@ func (s *DeploymentService) PrepareAdvancedBalancer(ctx context.Context, input P
 		return PreparedDeployment{}, safeError("PERSISTENCE_READ_FAILED", "Could not load prepared deployment", ErrPersistenceFailed)
 	}
 	prepared := PreparedDeployment{Deployment: created, DNSZone: fqdn, ConfigProfileReadiness: true, CertificateReadiness: CertificateUnknown}
-	if readiness, readinessErr := s.certificates.Readiness(runCtx, fqdn); readinessErr == nil {
-		prepared.CertificateReadiness = readiness
+	if input.HostType == deployment.AdvancedHostTypeSelfSteal {
+		if readiness, readinessErr := s.certificates.Readiness(runCtx, fqdn); readinessErr == nil {
+			prepared.CertificateReadiness = readiness
+		}
 	}
 	for _, warning := range result.Warnings {
 		if text := safeText(warning.Message, ""); text != "" {
@@ -495,6 +506,7 @@ func (s *DeploymentService) deploy(ctx context.Context, input StartInput, progre
 
 func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *deployment.Deployment, progress ProgressSink, existingTarget, newTarget bool) error {
 	emit(progress, Progress{Step: stepPrepareCertificate, Completed: 1, Total: workflowStepCount, SafeMessage: "Preparing certificate", Status: deployment.StepStatusRunning})
+	selfSNI := current.Kind == deployment.KindAdvancedBalancer && current.AdvancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI
 	if current.Status != deployment.StatusProvisioning {
 		if err := s.beginStage(ctx, current.ID, deployment.StatusPreparingCertificate, stepPrepareCertificate); err != nil {
 			return err
@@ -502,7 +514,10 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 	}
 	var material certificates.Material
 	var err error
-	if existingTarget {
+	if selfSNI {
+		// SelfSNI obtains and renews its own certificate with Certbot on the
+		// target node. It must not enter centralized Caddy distribution.
+	} else if existingTarget {
 		provider, ok := s.certificates.(ExistingTargetCertificateProvider)
 		if !ok {
 			return s.failStage(ctx, current.ID, stepPrepareCertificate, deployment.StatusFailed, "EXISTING_TARGET_CERTIFICATE_UNAVAILABLE", "Certificate preparation for an existing Node is unavailable", ErrCertificateUnavailable)
@@ -537,7 +552,11 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 	}
 	defer material.Destroy()
 	if current.Status != deployment.StatusProvisioning {
-		if err := s.completeStage(ctx, current.ID, stepPrepareCertificate, "Certificate prepared"); err != nil {
+		summary := "Certificate prepared"
+		if selfSNI {
+			summary = "Certificate delegated to node Certbot"
+		}
+		if err := s.completeStage(ctx, current.ID, stepPrepareCertificate, summary); err != nil {
 			return err
 		}
 	}
@@ -560,6 +579,8 @@ func (s *DeploymentService) prepareAndProvision(ctx context.Context, current *de
 		DeploymentID:       current.ID,
 		Address:            current.TargetVPSIP,
 		SNIDomain:          current.SNIDomain,
+		AdvancedHostType:   current.AdvancedHostType,
+		RealitySNI:         current.AdvancedRealitySNI,
 		RemnanodeSecretKey: secretBytes,
 		Certificate:        material,
 	}, func(report provisioner.Report) {
@@ -949,7 +970,16 @@ func (s *DeploymentService) createAdvancedProfile(ctx context.Context, current *
 			value := current.AdvancedEgressIP
 			egress = &value
 		}
-		created, createErr := advanced.CreateConfigProfile(ctx, remnawave.CreateConfigProfileInput{Name: profileName, Config: remnawave.AdvancedBalancerConfig(inboundTag, current.SNIDomain, pair.PrivateKey, egress)})
+		profileConfig := remnawave.AdvancedBalancerConfig(inboundTag, current.SNIDomain, pair.PrivateKey, egress)
+		if current.AdvancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI {
+			shortID, shortErr := randomRealityShortID()
+			if shortErr != nil {
+				pair.PrivateKey = ""
+				return s.failStage(ctx, current.ID, stepCreateProfile, deployment.StatusFailed, "SHORT_ID_GENERATION_FAILED", "Could not generate Reality short ID", ErrRemnawaveCreationFailed)
+			}
+			profileConfig = remnawave.SelfSNIAdvancedBalancerConfig(inboundTag, current.AdvancedRealitySNI, pair.PrivateKey, shortID, egress)
+		}
+		created, createErr := advanced.CreateConfigProfile(ctx, remnawave.CreateConfigProfileInput{Name: profileName, Config: profileConfig})
 		pair.PrivateKey = ""
 		pair.PublicKey = ""
 		if createErr != nil {

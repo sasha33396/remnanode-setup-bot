@@ -30,6 +30,8 @@ type CreateDeploymentParams struct {
 	AdvancedBalancerTag       string
 	AdvancedEgressIP          netip.Addr
 	AdvancedInternalSquadUUID string
+	AdvancedHostType          deployment.AdvancedHostType
+	AdvancedRealitySNI        string
 }
 
 type SetAdvancedProfileParams struct {

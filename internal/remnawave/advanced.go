@@ -295,3 +295,38 @@ func AdvancedBalancerConfig(inboundTag, fqdn, privateKey string, egressIP *netip
 		}},
 	}
 }
+
+// SelfSNIAdvancedBalancerConfig builds the dedicated Reality profile whose
+// fallback is a node-local Certbot/NGINX service. Host address and serverName
+// are deliberately independent.
+func SelfSNIAdvancedBalancerConfig(inboundTag, realitySNI, privateKey, shortID string, egressIP *netip.Addr) map[string]any {
+	directSettings := map[string]any{"domainStrategy": "ForceIPv4"}
+	direct := map[string]any{"tag": "DIRECT", "protocol": "freedom", "settings": directSettings}
+	if egressIP != nil && egressIP.IsValid() {
+		direct["sendThrough"] = egressIP.Unmap().String()
+	}
+	return map[string]any{
+		"log": map[string]any{"error": "/var/log/remnanode/error.log", "access": "/var/log/remnanode/access.log", "loglevel": "warning"},
+		"inbounds": []any{map[string]any{
+			"tag": inboundTag, "port": 443, "listen": "0.0.0.0", "protocol": "vless",
+			"settings": map[string]any{"clients": []any{}, "decryption": "none"},
+			"sniffing": map[string]any{"enabled": true, "destOverride": []string{"http", "tls"}},
+			"streamSettings": map[string]any{
+				"network":     "raw",
+				"sockopt":     map[string]any{"tcpKeepAliveIdle": 60, "tcpKeepAliveInterval": 15},
+				"security":    "reality",
+				"rawSettings": map[string]any{"header": map[string]any{"type": "none"}},
+				"realitySettings": map[string]any{
+					"show": false, "xver": 1, "target": "127.0.0.1:9443", "shortIds": []string{shortID}, "privateKey": privateKey, "serverNames": []string{realitySNI}, "minClientVer": "0.0.0",
+				},
+			},
+		}},
+		"outbounds": []any{direct, map[string]any{"tag": "BLOCK", "protocol": "blackhole"}},
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"ip": []string{"geoip:private"}, "type": "field", "outboundTag": "BLOCK"},
+			map[string]any{"type": "field", "domain": []string{"geosite:private"}, "outboundTag": "BLOCK"},
+			map[string]any{"type": "field", "protocol": []string{"bittorrent"}, "outboundTag": "BLOCK"},
+			map[string]any{"port": "25", "type": "field", "network": "tcp", "outboundTag": "BLOCK"},
+		}},
+	}
+}

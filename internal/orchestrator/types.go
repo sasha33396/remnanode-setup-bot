@@ -86,6 +86,8 @@ type ProvisionVPSInput struct {
 	DeploymentID       string
 	Address            netip.Addr
 	SNIDomain          string
+	AdvancedHostType   deployment.AdvancedHostType
+	RealitySNI         string
 	RemnanodeSecretKey []byte
 	Certificate        certificates.Material
 }
@@ -186,6 +188,8 @@ type PrepareAdvancedBalancerInput struct {
 	InternalSquadID string
 	BalancerTag     string
 	HostFQDN        string
+	HostType        deployment.AdvancedHostType
+	RealitySNI      string
 	NodeName        string
 	IngressIP       netip.Addr
 	EgressIP        netip.Addr

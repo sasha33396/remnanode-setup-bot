@@ -187,7 +187,7 @@ in `DATABASE_URL` and the deployment key path in `DEPLOY_SSH_PRIVATE_KEY`, then:
 go run ./cmd/deployer
 ```
 
-Migrations `000001` through `000008` must be applied first. Startup verifies
+Migrations `000001` through `000012` must be applied first. Startup verifies
 PostgreSQL and the required schema before starting Telegram.
 
 ## Telegram operator UI
@@ -210,7 +210,9 @@ uses the standard preflight/provisioning workflow including firewall and Mail
 Guard. Remnawave 2.7.4 and 2.8.1 limit Host remarks to 40 characters, so this
 wizard accepts FQDNs up to that length.
 
-The **Add balancer** wizard creates a separate Xray JSON config profile, Node,
+The **Add balancer** wizard first asks for the fallback type: **SelfSteal**
+(the existing Caddy-based flow) or **SelfSNI** (a separately entered Reality
+SNI served by Certbot + NGINX on `127.0.0.1:9443`). It then creates a separate Xray JSON config profile, Node,
 hidden Host, and inbound-to-internal-squad association for every physical
 balancer host. It asks whether the server has one IP or separate ingress and
 egress IPs. The ingress IP is used for SSH, the Node address, and a direct
@@ -406,7 +408,9 @@ Node.
 Deployments are bounded by an in-process concurrency limit and honor context
 cancellation. A DNS failure preserves the healthy Remnawave Node, records
 `DNS_FAILED`, and can be resumed with the DNS-only retry operation. Certificate
-material is obtained only through the centralized Certificate Manager.
+material is normally obtained through the centralized Certificate Manager.
+SelfSNI advanced-balancer deployments are the explicit exception: their
+separate Reality certificate is issued and renewed locally by Certbot DNS-01.
 
 The manager enforces one active certificate per panel and normalized SNI, obtains and
 renews certificates with a panel-scoped ACME account and Cloudflare credential, stores protected
@@ -450,12 +454,16 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_invent
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000010_network_reports.up.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000011_leastload_ip_jobs.up.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000012_selfsni_advanced_hosts.up.sql
 ```
 
 The down migration is provided for controlled rollback. It drops deployment
 tables and must only be run intentionally:
 
 ```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000012_selfsni_advanced_hosts.down.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000011_leastload_ip_jobs.down.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000010_network_reports.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000009_abuse_monitor.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000008_node_network_inventory.down.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/000007_advanced_balancer_hosts.down.sql

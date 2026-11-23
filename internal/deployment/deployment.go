@@ -105,6 +105,8 @@ type Deployment struct {
 	AdvancedConfigProfileUUID string
 	AdvancedConfigProfileName string
 	AdvancedInboundUUID       string
+	AdvancedHostType          AdvancedHostType
+	AdvancedRealitySNI        string
 	Status                    Status
 	CurrentStep               string
 	SafeErrorCode             *string
@@ -113,6 +115,27 @@ type Deployment struct {
 	UpdatedAt                 time.Time
 	StartedAt                 *time.Time
 	CompletedAt               *time.Time
+}
+
+// AdvancedHostType selects how the local REALITY fallback is served for an
+// Advanced Balancer deployment. Existing deployments remain SelfSteal.
+type AdvancedHostType string
+
+const (
+	AdvancedHostTypeSelfSteal AdvancedHostType = "SELFSTEAL"
+	AdvancedHostTypeSelfSNI   AdvancedHostType = "SELFSNI"
+)
+
+func (t AdvancedHostType) Normalize() AdvancedHostType {
+	if t == "" {
+		return AdvancedHostTypeSelfSteal
+	}
+	return t
+}
+
+func (t AdvancedHostType) Valid() bool {
+	t = t.Normalize()
+	return t == AdvancedHostTypeSelfSteal || t == AdvancedHostTypeSelfSNI
 }
 
 type Kind string

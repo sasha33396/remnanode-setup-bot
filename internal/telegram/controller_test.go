@@ -955,8 +955,10 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	messenger := &fakeMessenger{}
 	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
 	handleMessage(t, controller, 1, MenuAddBalancer)
+	handleCallback(t, controller, "type", "bal:type:fixed-nonce:0", messenger.lastSent().message)
 	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
-	tagPicker := messenger.editsSnapshot()[0]
+	edits := messenger.editsSnapshot()
+	tagPicker := edits[len(edits)-1]
 	if len(tagPicker.keyboard.Inline) != 1 || len(tagPicker.keyboard.Inline[0]) != 2 || tagPicker.keyboard.Inline[0][0].Text != "BALANCER_2" {
 		t.Fatalf("tag picker = %q %#v", tagPicker.text, tagPicker.keyboard)
 	}
@@ -968,7 +970,7 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	handleMessage(t, controller, 6, "1.1.1.1")
 	handleMessage(t, controller, 7, "temporary-password")
 	controller.Wait()
-	if application.advancedCalls != 1 || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
+	if application.advancedCalls != 1 || application.advancedInput.HostType != "SELFSTEAL" || application.advancedInput.IngressIP.String() != "8.8.8.8" || application.advancedInput.EgressIP.String() != "1.1.1.1" || application.advancedInput.BalancerTag != "BALANCER_2" {
 		t.Fatalf("advanced preflight input = %#v; calls=%d", application.advancedInput, application.advancedCalls)
 	}
 	confirmation := messenger.lastSent()
@@ -976,6 +978,33 @@ func TestAdvancedBalancerWizardCollectsSeparateIngressAndEgressIPs(t *testing.T)
 	controller.Wait()
 	if base.deploymentInput.PreparedDeploymentID != deploymentID || base.deploymentInput.HostID != deploymentID {
 		t.Fatalf("deployment input = %#v", base.deploymentInput)
+	}
+}
+
+func TestAdvancedBalancerWizardCollectsSelfSNISeparatelyFromHostAddress(t *testing.T) {
+	base := &fakeApplication{preflightResult: PreflightResult{PreparedDeploymentID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CertificateReadiness: ReadinessUnknown, ConfigProfileReadiness: ReadinessReady}}
+	application := &fakeAdvancedApplication{fakeApplication: base, options: AdvancedBalancerOptions{
+		Squads: []InternalSquad{{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Name: "Default-Squad"}},
+		Tags:   []string{"BALANCER_2"},
+	}}
+	messenger := &fakeMessenger{}
+	controller := testController(t, application, messenger, func() time.Time { return time.Unix(100, 0) })
+	handleMessage(t, controller, 1, MenuAddBalancer)
+	handleCallback(t, controller, "type", "bal:type:fixed-nonce:1", messenger.lastSent().message)
+	handleCallback(t, controller, "squad", "bal:squad:fixed-nonce:0", messenger.lastSent().message)
+	handleCallback(t, controller, "tag", "bal:tag:fixed-nonce:0", messenger.lastSent().message)
+	handleMessage(t, controller, 2, "node-entry.example.com")
+	handleMessage(t, controller, 3, "reality-cover.example.net")
+	handleMessage(t, controller, 4, "selfsni-node")
+	handleCallback(t, controller, "mode", "bal:ipmode:fixed-nonce:0", messenger.lastSent().message)
+	handleMessage(t, controller, 5, "8.8.8.8")
+	handleMessage(t, controller, 6, "temporary-password")
+	controller.Wait()
+	if application.advancedCalls != 1 || application.advancedInput.HostType != "SELFSNI" || application.advancedInput.HostFQDN != "node-entry.example.com" || application.advancedInput.RealitySNI != "reality-cover.example.net" {
+		t.Fatalf("SelfSNI preflight input = %#v; calls=%d", application.advancedInput, application.advancedCalls)
+	}
+	if confirmation := messenger.lastSent().text; !strings.Contains(confirmation, "SelfSNI") || !strings.Contains(confirmation, "reality-cover.example.net") {
+		t.Fatalf("SelfSNI confirmation = %q", confirmation)
 	}
 }
 

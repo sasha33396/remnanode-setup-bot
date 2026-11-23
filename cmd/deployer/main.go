@@ -114,7 +114,7 @@ func run() int {
 	recoveredJobs := 0
 	for _, panel := range cfg.Panels {
 		nodeFirewallConfigs[panel.ID] = orchestrator.NodeFirewallConfig{PanelIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP}
-		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MailGuard: mailGuard, SiteTheme: siteTheme})
+		vps, provisionerErr := orchestrator.NewSSHProvisioner(ssh, repository, orchestrator.SSHProvisionerConfig{RemnawaveAPIIP: panel.RemnawaveAPIIP, MetricsIP: cfg.MetricsIP, Preflight: provisioner.Requirements{CommandTimeout: cfg.SSHCommandTimeout}, XrayRepository: cfg.XraySNIRepoURL, XrayRef: cfg.XraySNIRef, CommandTimeout: cfg.SSHCommandTimeout, MailGuard: mailGuard, SiteTheme: siteTheme, ACMEEmail: cfg.ACMEEmail, CloudflareToken: []byte(panel.CloudflareAPIToken)})
 		if provisionerErr != nil {
 			logger.Error("VPS provisioner initialization failed", slog.String("panel_id", panel.ID))
 			return 1

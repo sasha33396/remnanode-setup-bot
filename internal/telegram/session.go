@@ -3,6 +3,8 @@ package telegram
 import (
 	"net/netip"
 	"time"
+
+	"remnanode-setup-bot/internal/deployment"
 )
 
 type wizardState uint8
@@ -50,9 +52,11 @@ const (
 	stateBulkIPRunning
 	stateBulkIPCompleted
 	stateSelectingBalancerPanel
+	stateSelectingBalancerType
 	stateSelectingBalancerSquad
 	stateSelectingBalancerTag
 	stateAwaitingBalancerFQDN
+	stateAwaitingBalancerRealitySNI
 	stateAwaitingBalancerNodeName
 	stateSelectingBalancerIPMode
 	stateAwaitingBalancerIngressIP
@@ -100,7 +104,9 @@ type wizard struct {
 	balancerTags       []string
 	selectedSquad      InternalSquad
 	balancerTag        string
+	advancedHostType   deployment.AdvancedHostType
 	hostFQDN           string
+	realitySNI         string
 	egressIP           netip.Addr
 	dualIP             bool
 	profileHost        bool

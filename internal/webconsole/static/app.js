@@ -286,6 +286,13 @@
     } catch (error) { showNotice(error.message); }
   }
 
+  function updateBalancerHostType() {
+    const selfSNI = $('#balancer-host-type').value === 'selfsni';
+    $('#balancer-reality-sni-label').classList.toggle('hidden', !selfSNI);
+    $('#balancer-reality-sni').required = selfSNI;
+    if (!selfSNI) $('#balancer-reality-sni').value = '';
+  }
+
   async function openAddProfileHost() {
     clearNotice();
     try {
@@ -381,7 +388,8 @@
     if (item.CanRecheck) actions.push(['recheck', 'Перепроверить ноду']);
     if (item.CanCancel) actions.push(['cancel', 'Отменить']);
     const details = $('#deployment-details');
-    details.innerHTML = `<h3>${escapeHTML(item.NodeName || item.ID)}</h3><p class="muted">${escapeHTML(item.PanelName)} · ${escapeHTML(item.Kind)} · ${escapeHTML(item.Status)}</p><p>Текущий шаг: <strong>${escapeHTML(item.CurrentStep || '—')}</strong></p>${item.SafeError ? `<p class="danger-text">${escapeHTML(item.SafeError)}</p>` : ''}<div class="deployment-actions"><button type="button" class="button secondary deployment-logs" data-id="${escapeHTML(id)}">Журнал</button>${actions.map(([action,label]) => `<button type="button" class="button ${action === 'cancel' ? 'ghost' : 'secondary'} deployment-action" data-id="${escapeHTML(id)}" data-action="${action}">${escapeHTML(label)}</button>`).join('')}</div><div id="deployment-logs"></div>`;
+    const deploymentType = item.AdvancedHostType ? `${item.Kind} / ${item.AdvancedHostType}` : item.Kind;
+    details.innerHTML = `<h3>${escapeHTML(item.NodeName || item.ID)}</h3><p class="muted">${escapeHTML(item.PanelName)} · ${escapeHTML(deploymentType)} · ${escapeHTML(item.Status)}</p><p>Текущий шаг: <strong>${escapeHTML(item.CurrentStep || '—')}</strong></p>${item.SafeError ? `<p class="danger-text">${escapeHTML(item.SafeError)}</p>` : ''}<div class="deployment-actions"><button type="button" class="button secondary deployment-logs" data-id="${escapeHTML(id)}">Журнал</button>${actions.map(([action,label]) => `<button type="button" class="button ${action === 'cancel' ? 'ghost' : 'secondary'} deployment-action" data-id="${escapeHTML(id)}" data-action="${action}">${escapeHTML(label)}</button>`).join('')}</div><div id="deployment-logs"></div>`;
     details.classList.remove('hidden');
   }
 
@@ -476,7 +484,7 @@
   $('#add-balancer-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const dialog = $('#add-balancer-dialog');
     const password = $('#balancer-password').value; $('#balancer-password').value = ''; dialog.close();
-    try { await runOperation('/api/deployments/balancer', { panelId: $('#balancer-panel').value, internalSquadId: $('#balancer-squad').value, balancerTag: $('#balancer-tag').value, hostFqdn: $('#balancer-fqdn').value.trim(), nodeName: $('#balancer-name').value.trim(), ingressIp: $('#balancer-ingress').value.trim(), egressIp: $('#balancer-egress').value.trim(), password }, `Создание балансировщика ${$('#balancer-name').value.trim()}`); }
+    try { await runOperation('/api/deployments/balancer', { panelId: $('#balancer-panel').value, internalSquadId: $('#balancer-squad').value, balancerTag: $('#balancer-tag').value, hostType: $('#balancer-host-type').value, hostFqdn: $('#balancer-fqdn').value.trim(), realitySni: $('#balancer-reality-sni').value.trim(), nodeName: $('#balancer-name').value.trim(), ingressIp: $('#balancer-ingress').value.trim(), egressIp: $('#balancer-egress').value.trim(), password }, `Создание балансировщика ${$('#balancer-name').value.trim()}`); }
     catch (error) { showNotice(error.message); }
   });
   $('#node-operation-form').addEventListener('submit', async (event) => {
@@ -532,9 +540,11 @@
   $('#profile-host-inbound').addEventListener('change', renderProfileHostDomains);
   $('#profile-host-domain-choice').addEventListener('change', updateProfileHostManualDomain);
   $('#balancer-panel').addEventListener('change', (event) => loadBalancerOptions(event.target.value).catch((error) => showNotice(error.message)));
+  $('#balancer-host-type').addEventListener('change', updateBalancerHostType);
   $('#search').addEventListener('input', (event) => { state.query = event.target.value; render(); });
   document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.filter').forEach((item) => item.classList.remove('active')); button.classList.add('active'); state.filter = button.dataset.filter; render(); }));
   $('#logout').addEventListener('click', async () => { try { await request('/logout', { method: 'POST' }); location.href = '/login'; } catch (error) { showNotice(error.message); } });
 
+  updateBalancerHostType();
   (async () => { try { const session = await request('/api/session'); state.csrf = session.csrfToken; $('#operator').textContent = session.user.name || `Telegram ${session.user.id}`; await Promise.all([loadNodes(), loadCapabilities()]); } catch (error) { showNotice(error.message); } })();
 })();

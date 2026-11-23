@@ -12,6 +12,29 @@ as independent Remnawave resources:
 The direct Cloudflare record is intentionally not added to the DNS-balancer
 service.
 
+## SelfSteal and SelfSNI
+
+The operator selects the fallback type before the squad and Host settings:
+
+- **SelfSteal** preserves the existing Caddy/xray-sni provisioning and uses the
+  Host FQDN as its SNI.
+- **SelfSNI** requests a second, different full FQDN for Reality
+  `serverNames`. The Host address still receives the direct DNS-only
+  Cloudflare A record pointing to the Node ingress IP. The separate Reality
+  SNI is issued on the Node through Certbot DNS-01 and served by an NGINX
+  container on `127.0.0.1:9443` with PROXY protocol and TLS 1.3.
+
+SelfSNI stores the panel Cloudflare credential only in a root-only Certbot
+credentials file on the Node so `certbot.timer` can renew the certificate.
+The token is sent to SSH over stdin and is never embedded in a command,
+deployment record, callback, or log. SelfSNI certificates are deliberately
+excluded from the central Caddy certificate audit/distribution workflow.
+
+The generated SelfSNI inbound uses `xver: 1`, target
+`127.0.0.1:9443`, a generated X25519 private key and a random 16-hex-character
+short ID. TCP port 25, private networks/domains, and BitTorrent remain routed
+to `BLOCK`; the optional egress IP is written to `DIRECT.sendThrough`.
+
 The Config Profile name is derived from the Host FQDN using Remnawave's allowed
 characters. The final DNS label is removed and remaining dots become
 underscores: `gmb.wey-land.net` becomes `gmb_wey-land`. The Node name is

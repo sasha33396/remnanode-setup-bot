@@ -163,7 +163,7 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 	}
 
 	switch session.state {
-	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel, stateSelectingBalancerPanel, stateSelectingBalancerSquad, stateSelectingBalancerIPMode, stateSelectingProfileHostPanel, stateSelectingProfileHostInbound, stateSelectingProfileHostDomain:
+	case stateSelectingPanel, stateSelectingIPPanel, stateSelectingServerIPPanel, stateSelectingDNSSyncPanel, stateSelectingBulkIPPanel, stateSelectingBalancerPanel, stateSelectingBalancerType, stateSelectingBalancerSquad, stateSelectingBalancerIPMode, stateSelectingProfileHostPanel, stateSelectingProfileHostInbound, stateSelectingProfileHostDomain:
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Выберите панель кнопкой.", Keyboard{})
 		return err
 	case stateSelectingBalancerTag:
@@ -183,6 +183,8 @@ func (c *Controller) handleMessage(ctx context.Context, message *Message) error 
 		return c.acceptPassword(ctx, message, session)
 	case stateAwaitingBalancerFQDN:
 		return c.acceptBalancerFQDN(ctx, message, session)
+	case stateAwaitingBalancerRealitySNI:
+		return c.acceptBalancerRealitySNI(ctx, message, session)
 	case stateAwaitingBalancerNodeName:
 		return c.acceptBalancerNodeName(ctx, message, session)
 	case stateAwaitingBalancerIngressIP:
@@ -435,6 +437,8 @@ func (c *Controller) handleCallback(ctx context.Context, callback *CallbackQuery
 		return c.selectProfileHostDomain(ctx, callback, session, index)
 	case "bal_panel":
 		return c.selectBalancerPanel(ctx, callback, session, index)
+	case "bal_type":
+		return c.selectBalancerType(ctx, callback, session, index)
 	case "bal_squad":
 		return c.selectBalancerSquad(ctx, callback, session, index)
 	case "bal_tag":
@@ -1931,9 +1935,9 @@ func parseCallbackData(data string) (action, nonce string, index int, valid bool
 		}
 		return "ph_" + parts[1], parts[2], parsed, true
 	}
-	if parts[0] == "bal" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "squad" || parts[1] == "tag" || parts[1] == "ipmode") {
+	if parts[0] == "bal" && len(parts) == 4 && (parts[1] == "panel" || parts[1] == "type" || parts[1] == "squad" || parts[1] == "tag" || parts[1] == "ipmode") {
 		parsed, err := strconv.Atoi(parts[3])
-		if err != nil || parsed < 0 || (parts[1] == "ipmode" && parsed > 1) {
+		if err != nil || parsed < 0 || ((parts[1] == "ipmode" || parts[1] == "type") && parsed > 1) {
 			return "", "", 0, false
 		}
 		return "bal_" + parts[1], parts[2], parsed, true

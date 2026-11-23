@@ -108,9 +108,11 @@
       <p class="muted">Создаёт отдельный Host, Config Profile и inbound. Такая нода не обязана входить в общую DNS-балансировку.</p>
       <div class="form-grid">
         <label>Панель<select id="balancer-panel" required></select></label>
+        <label>Тип Host/ноды<select id="balancer-host-type" required><option value="selfsteal">SelfSteal</option><option value="selfsni">SelfSNI</option></select></label>
         <label>Internal Squad<select id="balancer-squad" required></select></label>
         <label>Тег Host<select id="balancer-tag" required></select></label>
         <label>FQDN собственного Host<input id="balancer-fqdn" required maxlength="253" autocomplete="off" placeholder="node.example.com"></label>
+        <label id="balancer-reality-sni-label" class="hidden">Reality SNI / serverNames<input id="balancer-reality-sni" maxlength="253" autocomplete="off" placeholder="cover.example.com"></label>
         <label>Имя ноды<input id="balancer-name" required maxlength="120" autocomplete="off"></label>
         <label>Входящий IPv4<input id="balancer-ingress" required autocomplete="off"></label>
         <label>Исходящий IPv4 (необязательно)<input id="balancer-egress" autocomplete="off"></label>

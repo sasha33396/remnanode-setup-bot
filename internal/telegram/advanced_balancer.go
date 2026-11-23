@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"remnanode-setup-bot/internal/deployment"
 )
 
 func (c *Controller) beginAdvancedBalancer(ctx context.Context, message *Message) error {
@@ -24,9 +26,9 @@ func (c *Controller) beginAdvancedBalancer(ctx context.Context, message *Message
 		return err
 	}
 	if len(panels) == 1 {
-		session := &wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingBalancerSquad, expiresAt: c.now().Add(c.ttl), panels: panels, panel: panels[0], advancedBalancer: true}
+		session := &wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingBalancerType, expiresAt: c.now().Add(c.ttl), panels: panels, panel: panels[0], advancedBalancer: true}
 		c.putSession(session)
-		return c.showBalancerSquads(ctx, session, 0)
+		return c.showBalancerTypes(ctx, session, 0)
 	}
 	session := &wizard{userID: message.FromUserID, chatID: message.ChatID, nonce: nonce, state: stateSelectingBalancerPanel, expiresAt: c.now().Add(c.ttl), panels: panels, advancedBalancer: true}
 	c.putSession(session)
@@ -43,7 +45,38 @@ func (c *Controller) selectBalancerPanel(ctx context.Context, callback *Callback
 		return c.expiredCallback(ctx, callback)
 	}
 	panel := session.panels[index]
-	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerPanel, func(current *wizard) { current.panel = panel; current.state = stateSelectingBalancerSquad }) {
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerPanel, func(current *wizard) { current.panel = panel; current.state = stateSelectingBalancerType }) {
+		return c.expiredCallback(ctx, callback)
+	}
+	current, _, _ := c.loadSession(session.userID)
+	return c.showBalancerTypes(ctx, current, callback.Message.ID)
+}
+
+func (c *Controller) showBalancerTypes(ctx context.Context, session *wizard, messageID int) error {
+	text := "Выберите тип собственного Host/ноды:\n\nSelfSteal — текущая схема с Caddy.\nSelfSNI — отдельный Reality SNI, Certbot и NGINX на 127.0.0.1:9443."
+	keyboard := Keyboard{Inline: [][]Button{
+		{{Text: "SelfSteal", CallbackData: "bal:type:" + session.nonce + ":0"}},
+		{{Text: "SelfSNI", CallbackData: "bal:type:" + session.nonce + ":1"}},
+	}}
+	if messageID != 0 {
+		return c.messenger.EditMessage(ctx, session.chatID, messageID, text, keyboard)
+	}
+	_, err := c.messenger.SendMessage(ctx, session.chatID, text, keyboard)
+	return err
+}
+
+func (c *Controller) selectBalancerType(ctx context.Context, callback *CallbackQuery, session *wizard, index int) error {
+	if session.state != stateSelectingBalancerType || index < 0 || index > 1 {
+		return c.expiredCallback(ctx, callback)
+	}
+	hostType := deployment.AdvancedHostTypeSelfSteal
+	if index == 1 {
+		hostType = deployment.AdvancedHostTypeSelfSNI
+	}
+	if !c.updateSession(session.userID, session.nonce, stateSelectingBalancerType, func(current *wizard) {
+		current.advancedHostType = hostType
+		current.state = stateSelectingBalancerSquad
+	}) {
 		return c.expiredCallback(ctx, callback)
 	}
 	current, _, _ := c.loadSession(session.userID)
@@ -118,10 +151,34 @@ func (c *Controller) acceptBalancerFQDN(ctx context.Context, message *Message, s
 		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Некорректное доменное имя. Для Config Profile оно должно преобразовываться в имя длиной 2–30 символов без точки, например gmb.wey-land.net → gmb_wey-land.", Keyboard{})
 		return err
 	}
-	if !c.updateSession(session.userID, session.nonce, stateAwaitingBalancerFQDN, func(current *wizard) { current.hostFQDN = fqdn; current.state = stateAwaitingBalancerNodeName }) {
+	next := stateAwaitingBalancerNodeName
+	if session.advancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI {
+		next = stateAwaitingBalancerRealitySNI
+	}
+	if !c.updateSession(session.userID, session.nonce, stateAwaitingBalancerFQDN, func(current *wizard) { current.hostFQDN = fqdn; current.state = next }) {
 		return c.sendExpired(ctx, message.ChatID)
 	}
-	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Config Profile: "+profileName+"\n\nВведите имя новой Node (3–30 символов). Можно использовать флаг страны, например 🇵🇼 Palau-01 или 🇷🇺 RU-01.", Keyboard{})
+	text := "Config Profile: " + profileName + "\n\nВведите имя новой Node (3–30 символов). Можно использовать флаг страны, например 🇵🇼 Palau-01 или 🇷🇺 RU-01."
+	if next == stateAwaitingBalancerRealitySNI {
+		text = "Config Profile: " + profileName + "\n\nВведите полный Reality SNI для serverNames и сертификата Certbot. Он должен отличаться от адреса Host."
+	}
+	_, err := c.messenger.SendMessage(ctx, message.ChatID, text, Keyboard{})
+	return err
+}
+
+func (c *Controller) acceptBalancerRealitySNI(ctx context.Context, message *Message, session *wizard) error {
+	sni := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(message.Text), "."))
+	if !validBalancerDomain(sni, 253) || strings.EqualFold(sni, session.hostFQDN) {
+		_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите корректный полный SNI, отличный от адреса Host.", Keyboard{})
+		return err
+	}
+	if !c.updateSession(session.userID, session.nonce, stateAwaitingBalancerRealitySNI, func(current *wizard) {
+		current.realitySNI = sni
+		current.state = stateAwaitingBalancerNodeName
+	}) {
+		return c.sendExpired(ctx, message.ChatID)
+	}
+	_, err := c.messenger.SendMessage(ctx, message.ChatID, "Введите имя новой Node (3–30 символов).", Keyboard{})
 	return err
 }
 
@@ -249,7 +306,7 @@ func (c *Controller) acceptBalancerPasswordWorker(ctx context.Context, message *
 	}
 	close(ready)
 	defer func() { _ = c.messenger.DeleteMessage(ctx, message.ChatID, status.ID) }()
-	result, err := c.app.(AdvancedBalancerApplication).PreflightAdvancedBalancer(ctx, AdvancedBalancerPreflightInput{PanelID: current.panel.ID, OperatorUserID: current.userID, InternalSquadID: current.selectedSquad.ID, BalancerTag: current.balancerTag, HostFQDN: current.hostFQDN, NodeName: current.nodeName, IngressIP: current.vpsIP, EgressIP: current.egressIP, Password: requestPassword})
+	result, err := c.app.(AdvancedBalancerApplication).PreflightAdvancedBalancer(ctx, AdvancedBalancerPreflightInput{PanelID: current.panel.ID, OperatorUserID: current.userID, InternalSquadID: current.selectedSquad.ID, BalancerTag: current.balancerTag, HostFQDN: current.hostFQDN, HostType: current.advancedHostType, RealitySNI: current.realitySNI, NodeName: current.nodeName, IngressIP: current.vpsIP, EgressIP: current.egressIP, Password: requestPassword})
 	clearBytes(requestPassword)
 	if err != nil || strings.TrimSpace(result.PreparedDeploymentID) == "" {
 		removed := c.takeSession(session.userID, session.nonce, stateBalancerPreflighting)
@@ -309,11 +366,21 @@ func renderAdvancedBalancerConfirmation(session *wizard) string {
 		egress = session.egressIP.String()
 	}
 	profileName, _ := balancerProfileName(session.hostFQDN)
-	return fmt.Sprintf("Подтвердите Advanced Balancer Host\nПанель: %s\nInternal Squad: %s\nТег: %s\nHost/FQDN: %s\nConfig Profile: %s\nNode: %s\nВходной IP (Node, SSH, Cloudflare A): %s\nВыходной IP (интернет): %s\nРежим: %s\n\nБудут созданы отдельные Config Profile, Node, скрытый Host и inbound в Squad.", safeLine(session.panel.Name, 80), safeLine(session.selectedSquad.Name, 80), session.balancerTag, session.hostFQDN, profileName, safeLine(session.nodeName, 60), session.vpsIP, egress, mode)
+	hostType := "SelfSteal"
+	reality := "совпадает с Host"
+	if session.advancedHostType.Normalize() == deployment.AdvancedHostTypeSelfSNI {
+		hostType = "SelfSNI"
+		reality = session.realitySNI
+	}
+	return fmt.Sprintf("Подтвердите Advanced Balancer Host\nТип: %s\nПанель: %s\nInternal Squad: %s\nТег: %s\nHost/FQDN: %s\nReality SNI: %s\nConfig Profile: %s\nNode: %s\nВходной IP (Node, SSH, Cloudflare A): %s\nВыходной IP (интернет): %s\nРежим IP: %s\n\nБудут созданы отдельные Config Profile, Node, скрытый Host и inbound в Squad.", hostType, safeLine(session.panel.Name, 80), safeLine(session.selectedSquad.Name, 80), session.balancerTag, session.hostFQDN, reality, profileName, safeLine(session.nodeName, 60), session.vpsIP, egress, mode)
 }
 
 func validBalancerFQDN(value string) bool {
-	if len(value) < 4 || len(value) > 40 || !strings.Contains(value, ".") {
+	return validBalancerDomain(value, 40)
+}
+
+func validBalancerDomain(value string, maxLength int) bool {
+	if len(value) < 4 || len(value) > maxLength || !strings.Contains(value, ".") {
 		return false
 	}
 	for _, label := range strings.Split(value, ".") {

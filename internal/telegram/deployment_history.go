@@ -46,7 +46,11 @@ func renderDeploymentCard(details DeploymentDetails, notice string) string {
 	fmt.Fprintf(&builder, "Панель: %s\n", safeLine(details.PanelName, 80))
 	fmt.Fprintf(&builder, "Нода: %s\n", safeLine(details.NodeName, 80))
 	if details.Kind == "ADVANCED_BALANCER" {
-		fmt.Fprintf(&builder, "Тип: Advanced Balancer Host\nFQDN: %s\n", safeLine(details.SNI, 255))
+		hostType := details.AdvancedHostType
+		if hostType == "" {
+			hostType = "SelfSteal"
+		}
+		fmt.Fprintf(&builder, "Тип: Advanced Balancer Host / %s\nFQDN: %s\n", safeLine(hostType, 20), safeLine(details.SNI, 255))
 	}
 	if details.TargetIP.IsValid() {
 		fmt.Fprintf(&builder, "IP сервера: %s\n", details.TargetIP)

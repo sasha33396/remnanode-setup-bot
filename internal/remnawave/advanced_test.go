@@ -26,6 +26,34 @@ func TestAdvancedBalancerConfigControlsSendThroughByIPMode(t *testing.T) {
 	}
 }
 
+func TestSelfSNIAdvancedBalancerConfigUsesSeparateRealityDomain(t *testing.T) {
+	egress := netip.MustParseAddr("2.2.2.2")
+	config := SelfSNIAdvancedBalancerConfig("VLESS_REALITY_SELF_SNI", "reality-cover.example.net", "private-key", "0123456789abcdef", &egress)
+	inbound := config["inbounds"].([]any)[0].(map[string]any)
+	stream := inbound["streamSettings"].(map[string]any)
+	reality := stream["realitySettings"].(map[string]any)
+	if inbound["port"] != 443 || inbound["listen"] != "0.0.0.0" || stream["security"] != "reality" || stream["network"] != "raw" {
+		t.Fatalf("SelfSNI inbound = %#v", inbound)
+	}
+	if reality["target"] != "127.0.0.1:9443" || reality["xver"] != 1 || reality["privateKey"] != "private-key" {
+		t.Fatalf("SelfSNI reality settings = %#v", reality)
+	}
+	serverNames := reality["serverNames"].([]string)
+	shortIDs := reality["shortIds"].([]string)
+	if len(serverNames) != 1 || serverNames[0] != "reality-cover.example.net" || len(shortIDs) != 1 || shortIDs[0] != "0123456789abcdef" {
+		t.Fatalf("SelfSNI identity settings = %#v / %#v", serverNames, shortIDs)
+	}
+	direct := config["outbounds"].([]any)[0].(map[string]any)
+	if direct["sendThrough"] != "2.2.2.2" || direct["settings"].(map[string]any)["domainStrategy"] != "ForceIPv4" {
+		t.Fatalf("SelfSNI DIRECT outbound = %#v", direct)
+	}
+	rules := config["routing"].(map[string]any)["rules"].([]any)
+	lastRule := rules[len(rules)-1].(map[string]any)
+	if lastRule["port"] != "25" || lastRule["network"] != "tcp" || lastRule["outboundTag"] != "BLOCK" {
+		t.Fatalf("SelfSNI SMTP rule = %#v", lastRule)
+	}
+}
+
 func TestCreateConfigProfileRejectsDotsInName(t *testing.T) {
 	client := &Client{}
 	if _, err := client.CreateConfigProfile(context.Background(), CreateConfigProfileInput{Name: "gmb.wey-land.net", Config: map[string]any{}}); err == nil {
